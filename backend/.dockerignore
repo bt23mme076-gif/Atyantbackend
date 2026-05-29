@@ -1,0 +1,14 @@
+node_modules
+.env
+google-key.json
+backend/google-key.json
+uploads
+.git
+npm-debug.log
+.env.local
+.env.development
+node_modules/
+uploads/
+.env
+.git
+*.log

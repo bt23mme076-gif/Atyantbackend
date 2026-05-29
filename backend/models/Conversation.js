@@ -1,0 +1,12 @@
+// backend/models/Conversation.js
+import mongoose from 'mongoose';
+
+const conversationSchema = new mongoose.Schema({
+  participants: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User' // Links to our User model
+  }]
+}, { timestamps: true });
+
+const Conversation = mongoose.model('Conversation', conversationSchema);
+export default Conversation;
