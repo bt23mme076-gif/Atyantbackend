@@ -39,6 +39,10 @@ import pushRoutes          from './routes/pushRoutes.js';
 import notificationRoutes  from './routes/notificationRoutes.js';
 import meetingroutes       from './routes/meetings.js';
 import aiRoutes            from './routes/aiRoutes.js';
+import clarityRoutes       from './routes/clarityRoutes.js';
+import sessionRoutes       from './routes/sessionRoutes.js';
+import savedAnswerRoutes   from './routes/savedAnswerRoutes.js';
+import roadmapRoutes       from './routes/roadmapRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message      from './models/Message.js';
@@ -228,6 +232,10 @@ app.use('/api/push',            pushRoutes);
 app.use('/api/notifications',   notificationRoutes);
 app.use('/api/meetings',        meetingroutes);
 app.use('/api/ai',              aiRoutes);
+app.use('/api/clarity',         clarityRoutes);
+app.use('/api/sessions',        sessionRoutes);
+app.use('/api/saved-answers',   savedAnswerRoutes);
+app.use('/api/roadmap',         roadmapRoutes);
 
 // Centralized error handler (should be last app.use before server start)
 app.use(errorHandler);

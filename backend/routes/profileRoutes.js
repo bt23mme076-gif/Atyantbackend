@@ -78,11 +78,34 @@ router.put('/me', protect, async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // Basic scalar fields
+    // Basic scalar fields (name maps to username for display purposes)
     const basicFields = ['username', 'bio', 'city', 'linkedinProfile'];
     basicFields.forEach(field => {
       if (updateData[field] !== undefined) user[field] = updateData[field];
     });
+
+    // Frontend convenience fields: college/branch/year/cgpa → education[0]
+    const hasFlatEdu = updateData.college !== undefined
+      || updateData.branch !== undefined
+      || updateData.year !== undefined
+      || updateData.cgpa !== undefined;
+
+    if (hasFlatEdu) {
+      const existing = user.education?.[0]?.toObject?.() || user.education?.[0] || {};
+      const college = updateData.college !== undefined ? updateData.college : (existing.institutionName || existing.institution || '');
+      const branch  = updateData.branch  !== undefined ? updateData.branch  : (existing.field || '');
+      const yr      = updateData.year    !== undefined ? updateData.year    : (existing.year || '');
+      const cg      = updateData.cgpa    !== undefined ? Number(updateData.cgpa) : existing.cgpa;
+      user.education = [
+        { institution: college, institutionName: college, degree: existing.degree || '', field: branch, year: yr, cgpa: cg },
+        ...(user.education || []).slice(1),
+      ];
+    }
+
+    // Frontend convenience: goals array → interests (what the user is chasing)
+    if (updateData.goals !== undefined) {
+      user.interests = Array.isArray(updateData.goals) ? updateData.goals : [];
+    }
 
     // Strategy (deep merge)
     if (updateData.strategy && typeof updateData.strategy === 'object') {

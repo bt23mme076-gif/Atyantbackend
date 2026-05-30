@@ -8,6 +8,14 @@ import User from '../models/User.js';
 import passport from 'passport';
 import { protect } from '../middleware/authMiddleware.js';
 
+// Helper: pick frontend URL based on environment
+const getFrontendUrl = () => {
+  if (process.env.NODE_ENV !== 'production' && process.env.LOCAL_FRONTEND_URL) {
+    return process.env.LOCAL_FRONTEND_URL;
+  }
+  return process.env.FRONTEND_URL || 'http://localhost:5173';
+};
+
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const router = express.Router();
 
@@ -257,7 +265,7 @@ router.post('/forgot-password', async (req, res) => {
     user.passwordResetExpires = Date.now() + 3600000;
     await user.save();
 
-    const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
+    const resetLink = `${getFrontendUrl()}/reset-password?token=${resetToken}`;
 
     const transporter = nodemailer.createTransport({
       service: 'gmail',
@@ -332,7 +340,7 @@ router.get('/google',
 // OAuth callback
 router.get('/google/callback',
   passport.authenticate('google', { 
-    failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login?error=auth_failed`
+    failureRedirect: `${getFrontendUrl()}/login?error=auth_failed`
   }),
   (req, res) => {
     try {
@@ -351,11 +359,11 @@ router.get('/google/callback',
       );
 
       // Redirect to frontend with token
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      const frontendUrl = getFrontendUrl();
       res.redirect(`${frontendUrl}/auth-success?token=${token}`);
     } catch (error) {
       console.error('OAuth callback error:', error);
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      const frontendUrl = getFrontendUrl();
       res.redirect(`${frontendUrl}/login?error=auth_failed`);
     }
   }
