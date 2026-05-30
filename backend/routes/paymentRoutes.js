@@ -6,6 +6,8 @@ import User from '../models/User.js';
 import Payment from '../models/Payment.js';
 import Question from '../models/Question.js';
 import { sendMentorPaymentNotification } from '../utils/emailService.js';
+import { z } from 'zod';
+import validate from '../middleware/validateRequest.js';
 
 
 const router = express.Router();
@@ -55,7 +57,14 @@ function verifySignature(orderId, paymentId, signature) {
 // ─────────────────────────────────────────────
 //  1. CREATE ORDER  (credits purchase)
 // ─────────────────────────────────────────────
-router.post('/create-order', protect, async (req, res) => {
+const createOrderSchema = z.object({
+  body: z.object({
+    amount: z.number().positive().optional(),
+    credits: z.number().int().positive().optional()
+  })
+});
+
+router.post('/create-order', protect, validate(createOrderSchema), async (req, res) => {
   if (!razorpayReady(res)) return;
   try {
     const { amount = 1, credits = 5 } = req.body;
@@ -83,7 +92,15 @@ router.post('/create-order', protect, async (req, res) => {
 //  🔴 FIX: Use $inc instead of read-modify-write
 //          to prevent race condition on concurrent payments
 // ─────────────────────────────────────────────
-router.post('/verify-payment', protect, async (req, res) => {
+const verifyPaymentSchema = z.object({
+  body: z.object({
+    razorpay_order_id: z.string(),
+    razorpay_payment_id: z.string(),
+    razorpay_signature: z.string()
+  })
+});
+
+router.post('/verify-payment', protect, validate(verifyPaymentSchema), async (req, res) => {
   if (!razorpayReady(res)) return;
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
@@ -131,7 +148,15 @@ router.post('/verify-payment', protect, async (req, res) => {
 // ─────────────────────────────────────────────
 //  3. CREATE MENTORSHIP ORDER
 // ─────────────────────────────────────────────
-router.post('/create-mentorship-order', protect, async (req, res) => {
+const createMentorshipSchema = z.object({
+  body: z.object({
+    amount: z.number(),
+    mentorshipType: z.string(),
+    questionId: z.string()
+  })
+});
+
+router.post('/create-mentorship-order', protect, validate(createMentorshipSchema), async (req, res) => {
   if (!razorpayReady(res)) return;
   try {
     const { amount, mentorshipType, questionId } = req.body;
@@ -168,7 +193,17 @@ router.post('/create-mentorship-order', protect, async (req, res) => {
 //  4. VERIFY MENTORSHIP PAYMENT
 //  🔴 FIX: Idempotent — check duplicate payment before saving
 // ─────────────────────────────────────────────
-router.post('/verify-mentorship', protect, async (req, res) => {
+const verifyMentorshipSchema = z.object({
+  body: z.object({
+    razorpay_order_id: z.string(),
+    razorpay_payment_id: z.string(),
+    razorpay_signature: z.string(),
+    questionId: z.string(),
+    mentorshipType: z.string()
+  })
+});
+
+router.post('/verify-mentorship', protect, validate(verifyMentorshipSchema), async (req, res) => {
   if (!razorpayReady(res)) return;
   try {
     const {

@@ -15,6 +15,7 @@ import mongoose from 'mongoose';
 import { Resend } from 'resend';
 import path from 'path';
 import passport from 'passport';
+import errorHandler from './middleware/errorHandler.js';
 
 // ─── Routes ────────────────────────────────────────────────────────────────
 import authRoutes          from './routes/auth.js';
@@ -227,6 +228,9 @@ app.use('/api/push',            pushRoutes);
 app.use('/api/notifications',   notificationRoutes);
 app.use('/api/meetings',        meetingroutes);
 app.use('/api/ai',              aiRoutes);
+
+// Centralized error handler (should be last app.use before server start)
+app.use(errorHandler);
 
 // ─── Health check ──────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {

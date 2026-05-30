@@ -1,10 +1,11 @@
-const express = require('express');
+import express from 'express';
+import User from '../models/User.js';
+import auth from '../middleware/auth.js';
+import multer from 'multer';
+import path from 'path';
+import jwt from 'jsonwebtoken'; // ✅ ADD THIS
+
 const router = express.Router();
-const User = require('../models/User');
-const auth = require('../middleware/auth');
-const multer = require('multer');
-const path = require('path');
-const jwt = require('jsonwebtoken'); // ✅ ADD THIS
 
 // Multer config
 const upload = multer({
@@ -85,4 +86,4 @@ router.post('/upload-profile-picture', auth, upload.single('profilePicture'), as
   }
 });
 
-module.exports = router;
+export default router;

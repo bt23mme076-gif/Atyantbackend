@@ -119,7 +119,4 @@ function isAppropriateContent(text) {
     };
 }
 
-module.exports = {
-    isAppropriateContent,
-    maskProfanity
-};
+export { isAppropriateContent, maskProfanity };

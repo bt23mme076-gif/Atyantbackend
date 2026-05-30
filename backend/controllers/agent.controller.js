@@ -4,7 +4,7 @@
 // One Groq call per turn, structured JSON output, full conversation memory.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const Groq = require('groq-sdk');
+import Groq from 'groq-sdk';
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // Use Llama 3.3 70B for reasoning, fall back to 8B for speed if needed
@@ -79,7 +79,7 @@ Remember: output ONLY the JSON object. No backticks, no "Here's the response:", 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main controller
 // ─────────────────────────────────────────────────────────────────────────────
-exports.agentTurn = async (req, res) => {
+export const agentTurn = async (req, res) => {
   try {
     const { messages = [], profile = null } = req.body;
 

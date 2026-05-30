@@ -1,4 +1,4 @@
-const { isAppropriateContent, maskProfanity } = require('../utils/contentModeration');
+import { isAppropriateContent, maskProfanity } from '../utils/contentModeration.js';
 
 const badWords = [
     // English
@@ -52,4 +52,4 @@ const contentModerationMiddleware = async (req, res, next) => {
     }
 };
 
-module.exports = contentModerationMiddleware;
+export default contentModerationMiddleware;
