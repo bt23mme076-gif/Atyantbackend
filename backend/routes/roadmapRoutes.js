@@ -2,6 +2,7 @@ import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import Roadmap from '../models/Roadmap.js';
 import protect from '../middleware/authMiddleware.js';
+import { optionalAuth } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -62,11 +63,11 @@ router.get('/me', protect, async (req, res) => {
   }
 });
 
-// POST /api/roadmap/generate — generate + save a personalized roadmap with Gemini
-// Body: { goal, college?, branch?, year?, cgpa? }
-router.post('/generate', protect, async (req, res) => {
+// POST /api/roadmap/generate — generate a personalized roadmap (public, saves only if logged in)
+router.post('/generate', optionalAuth, async (req, res) => {
   try {
     const { goal, college, branch, year, cgpa } = req.body;
+    const userId = req.user?.userId || req.user?._id;
 
     if (!goal || !goal.trim()) {
       return res.status(400).json({ ok: false, error: 'goal is required' });
@@ -115,11 +116,17 @@ Rules:
 
     if (!steps) steps = FALLBACK_STEPS(goal);
 
-    const roadmap = await Roadmap.findOneAndUpdate(
-      { userId: req.user.userId },
-      { userId: req.user.userId, goal: goal.trim(), college, branch, steps, generatedAt: new Date() },
-      { upsert: true, new: true }
-    );
+    // Only save to DB if user is logged in
+    let roadmap;
+    if (userId) {
+      roadmap = await Roadmap.findOneAndUpdate(
+        { userId },
+        { userId, goal: goal.trim(), college, branch, steps, generatedAt: new Date() },
+        { upsert: true, new: true }
+      );
+    } else {
+      roadmap = { goal: goal.trim(), college, branch, steps, generatedAt: new Date() };
+    }
 
     res.json({ ok: true, roadmap });
   } catch (err) {

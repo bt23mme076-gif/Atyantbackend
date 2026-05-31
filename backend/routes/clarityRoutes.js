@@ -2,13 +2,12 @@ import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
+import { optionalAuth } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// POST /api/clarity/match
-// Body: { query, college, branch, year, goal }
-// Returns AI-matched mentors with matchPct, matchReason, story, outcome, tags
-router.post('/match', protect, async (req, res) => {
+// POST /api/clarity/match — public, no login needed
+router.post('/match', optionalAuth, async (req, res) => {
   try {
     const { query, college, branch, year, goal } = req.body;
 

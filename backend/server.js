@@ -18,31 +18,12 @@ import passport from 'passport';
 import errorHandler from './middleware/errorHandler.js';
 
 // ─── Routes ────────────────────────────────────────────────────────────────
-import authRoutes          from './routes/auth.js';
-import chatRoutes          from './routes/chatRoutes.js';
-import profileRoutes       from './routes/profileRoutes.js';
-import feedbackRoutes      from './routes/feedbackRoutes.js';
-import searchRoutes        from './routes/searchRoutes.js';
-import askRoutes           from './routes/askRoutes.js';
-import mentorRoutes        from './routes/mentorRoutes.js';
-import locationRoutes      from './routes/locationRoutes.js';
-import communityChatRoutes from './routes/communityChatRoutes.js';
-import ratingRoutes        from './routes/ratingRoutes.js';
-import engineRoutes        from './routes/engineRoutes.js';
-import iimRoutes           from './routes/iimRoutes.js';
-import adminRoutes         from './routes/adminRoutes.js';
-import questionRoutes      from './routes/questionRoutes.js';
-import paymentRoutes       from './routes/paymentRoutes.js';
-import resumeRoutes        from './routes/resumeRoutes.js';
-import monetizationRoutes  from './routes/monetizationRoutes.js';
-import pushRoutes          from './routes/pushRoutes.js';
-import notificationRoutes  from './routes/notificationRoutes.js';
-import meetingroutes       from './routes/meetings.js';
-import aiRoutes            from './routes/aiRoutes.js';
-import clarityRoutes       from './routes/clarityRoutes.js';
-import sessionRoutes       from './routes/sessionRoutes.js';
-import savedAnswerRoutes   from './routes/savedAnswerRoutes.js';
-import roadmapRoutes       from './routes/roadmapRoutes.js';
+import authRoutes        from './routes/auth.js';
+import profileRoutes     from './routes/profileRoutes.js';
+import clarityRoutes     from './routes/clarityRoutes.js';
+import sessionRoutes     from './routes/sessionRoutes.js';
+import savedAnswerRoutes from './routes/savedAnswerRoutes.js';
+import roadmapRoutes     from './routes/roadmapRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message      from './models/Message.js';
@@ -207,35 +188,35 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ─── Routes ────────────────────────────────────────────────────────────────
-app.use('/api/auth',            authRoutes);
-app.use('/auth',                authRoutes); // For Google OAuth callbacks
-app.use('/api',                 chatRoutes);
-app.use('/api/feedback',        feedbackRoutes);
-app.use('/api/profile',         profileRoutes);
-app.use('/api/search',          searchRoutes);
-app.use('/api/payment',         paymentRoutes);
-app.use('/api/payments',        paymentRoutes);
-// app.use('/api/resume',          resumeRoutes); // Removed duplicate
-app.use('/api/ask',             askRoutes);
-app.use('/api/mentor',          mentorRoutes);
-app.use('/api/users',           mentorRoutes);   // backward compat
-app.use('/api/location',        locationRoutes);
-app.use('/api/community-chat',  communityChatRoutes);
-app.use('/api/ratings',         ratingRoutes);
-app.use('/api/engine',          engineRoutes);
-app.use('/api/iim',             iimRoutes);
-app.use('/api/admin',           adminRoutes);
-app.use('/api/questions',       questionRoutes);
-app.use('/api/resume',          resumeRoutes);
-app.use('/api/monetization',    monetizationRoutes);
-app.use('/api/push',            pushRoutes);
-app.use('/api/notifications',   notificationRoutes);
-app.use('/api/meetings',        meetingroutes);
-app.use('/api/ai',              aiRoutes);
-app.use('/api/clarity',         clarityRoutes);
-app.use('/api/sessions',        sessionRoutes);
-app.use('/api/saved-answers',   savedAnswerRoutes);
-app.use('/api/roadmap',         roadmapRoutes);
+app.use('/api/auth',          authRoutes);
+app.use('/auth',              authRoutes);      // Google OAuth callback
+app.use('/api/profile',       profileRoutes);
+app.use('/api/clarity',       clarityRoutes);
+app.use('/api/sessions',      sessionRoutes);
+app.use('/api/saved-answers', savedAnswerRoutes);
+app.use('/api/roadmap',       roadmapRoutes);
+
+// ─── Book a session (from BookingPage) ─────────────────────────────────────
+app.post('/api/book-session', async (req, res) => {
+  try {
+    const { mentor, sessionType, date, time, amount, goals, brief, name, email, coupon } = req.body;
+    if (!date || !time || !name || !email) {
+      return res.status(400).json({ ok: false, error: 'Missing required fields' });
+    }
+    // Store booking in Session collection reusing the existing model
+    const { default: Session } = await import('./models/Session.js');
+    const scheduledAt = new Date(`${date} ${time}`);
+    await Session.create({
+      name, email, mentor, sessionType, scheduledAt,
+      amount, goals: goals || [], brief: brief || '',
+      coupon: coupon || null, status: 'pending',
+    });
+    res.json({ ok: true, message: 'Session booked successfully' });
+  } catch (err) {
+    console.error('book-session error:', err.message);
+    res.status(500).json({ ok: false, error: 'Booking failed' });
+  }
+});
 
 // Centralized error handler (should be last app.use before server start)
 app.use(errorHandler);

@@ -2,14 +2,19 @@ import express from 'express';
 import Session from '../models/Session.js';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
+import { optionalAuth } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// GET /api/sessions/my — upcoming + past sessions for logged-in user
-router.get('/my', protect, async (req, res) => {
+// GET /api/sessions/my — returns empty list for guests, real data for logged-in users
+router.get('/my', optionalAuth, async (req, res) => {
   try {
+    const userId = req.user?.userId || req.user?._id;
+    if (!userId) {
+      return res.json({ ok: true, upcoming: [], past: [] });
+    }
     const now = new Date();
-    const sessions = await Session.find({ userId: req.user.userId })
+    const sessions = await Session.find({ userId })
       .sort({ scheduledAt: -1 })
       .lean();
 
