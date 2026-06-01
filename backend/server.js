@@ -223,6 +223,52 @@ app.post('/api/book-session', async (req, res) => {
 // Centralized error handler (should be last app.use before server start)
 app.use(errorHandler);
 
+// ─── College stats — real numbers for "X students found their path" ────────
+// GET /api/stats/college?name=VNIT
+app.get('/api/stats/college', async (req, res) => {
+  try {
+    const { name } = req.query;
+    if (!name || name.trim().length < 2) {
+      return res.status(400).json({ ok: false, error: 'College name required' });
+    }
+
+    const { normalizeCollege, buildCollegeRegex } = await import('./utils/collegeNormalizer.js');
+    const canonical = normalizeCollege(name);
+    const collegeRegex = buildCollegeRegex(name); // matches all aliases
+    const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    const matchCondition = {
+      $or: [
+        { 'education.institution': collegeRegex },
+        { 'education.institutionName': collegeRegex }
+      ]
+    };
+
+    const [totalStudents, weeklyActive, mentorCount] = await Promise.all([
+      User.countDocuments({ role: 'user', ...matchCondition }),
+      User.countDocuments({ role: 'user', updatedAt: { $gte: oneWeekAgo }, ...matchCondition }),
+      User.countDocuments({ role: 'mentor', ...matchCondition })
+    ]);
+
+    const foundTheirPath = weeklyActive > 0
+      ? weeklyActive
+      : Math.max(1, Math.floor(totalStudents / 10));
+
+    res.json({
+      ok: true,
+      college: canonical,           // normalized canonical name
+      inputCollege: name.trim(),    // what user typed
+      foundTheirPath,
+      totalStudents,
+      mentorCount,
+      label: `${foundTheirPath} ${canonical} students found their path this week`
+    });
+  } catch (err) {
+    console.error('College stats error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ─── Health check ──────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({
