@@ -78,8 +78,12 @@ router.put('/me', protect, async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // Basic scalar fields (name maps to username for display purposes)
-    const basicFields = ['username', 'bio', 'city', 'linkedinProfile'];
+    // Basic scalar fields
+    const basicFields = [
+      'username', 'name', 'bio', 'city', 'linkedinProfile',
+      'phone', 'yearsOfExperience', 'price', 'acceptsCredits',
+      'isStrategyComplete', 'chatDisabled'
+    ];
     basicFields.forEach(field => {
       if (updateData[field] !== undefined) user[field] = updateData[field];
     });
@@ -95,15 +99,16 @@ router.put('/me', protect, async (req, res) => {
       const college = updateData.college !== undefined ? updateData.college : (existing.institutionName || existing.institution || '');
       const branch  = updateData.branch  !== undefined ? updateData.branch  : (existing.field || '');
       const yr      = updateData.year    !== undefined ? updateData.year    : (existing.year || '');
-      const cg      = updateData.cgpa    !== undefined ? Number(updateData.cgpa) : existing.cgpa;
+      const cgRaw   = updateData.cgpa    !== undefined ? Number(updateData.cgpa) : existing.cgpa;
+      const cg      = (cgRaw === null || cgRaw === undefined || isNaN(cgRaw)) ? undefined : cgRaw;
       user.education = [
         { institution: college, institutionName: college, degree: existing.degree || '', field: branch, year: yr, cgpa: cg },
         ...(user.education || []).slice(1),
       ];
     }
 
-    // Frontend convenience: goals array → interests (what the user is chasing)
-    if (updateData.goals !== undefined) {
+    // Frontend convenience: goals array → interests (only if interests not sent directly)
+    if (updateData.goals !== undefined && updateData.interests === undefined) {
       user.interests = Array.isArray(updateData.goals) ? updateData.goals : [];
     }
 
@@ -145,7 +150,7 @@ router.put('/me', protect, async (req, res) => {
               degree         : e.degree || '',
               field          : e.field  || '',
               year           : e.year   || '',
-              cgpa           : e.cgpa ? Number(e.cgpa) : undefined
+              cgpa           : e.cgpa && !isNaN(Number(e.cgpa)) ? Number(e.cgpa) : undefined
             }))
         : [];
     }
@@ -210,9 +215,12 @@ router.post('/parse-linkedin', protect, upload.single('resumePdf'), async (req, 
       return res.status(400).json({ message: 'Could not read text from PDF.' });
     }
 
-    // 2. Call Gemini API to extract data
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    // 2. Gemini disabled — return extracted text for frontend to handle
+    return res.json({ 
+      success: false, 
+      message: 'AI parsing temporarily disabled. Please fill in your profile manually.',
+      rawText: resumeText.substring(0, 500)
+    });
 
     const prompt = `
       You are an expert resume parser. Extract profile details from the text below.

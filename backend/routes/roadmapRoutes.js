@@ -1,5 +1,4 @@
 import express from 'express';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import Roadmap from '../models/Roadmap.js';
 import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
@@ -73,48 +72,8 @@ router.post('/generate', optionalAuth, async (req, res) => {
       return res.status(400).json({ ok: false, error: 'goal is required' });
     }
 
-    const prompt = `You are a career advisor for Indian Tier-2/3 engineering students.
-
-Student: ${college || 'NIT'}, ${branch || 'Engineering'}, Year ${year || '3'}, CGPA ${cgpa || '7.5'}
-Goal: ${goal}
-
-Generate a 4-phase personalized roadmap. Return ONLY valid JSON, no markdown:
-{
-  "steps": [
-    {
-      "phase": "Phase 1",
-      "title": "Short title (3–5 words)",
-      "duration": "X–Y weeks",
-      "status": "active",
-      "tasks": ["specific task 1", "specific task 2", "specific task 3"]
-    }
-  ]
-}
-
-Rules:
-- Phase 1 status must be "active", Phase 2–3 "upcoming", Phase 4 "locked"
-- Exactly 3 tasks per phase — specific, actionable, realistic for the goal
-- Titles must be short (3–5 words)
-- Phases must build logically toward the goal`;
-
-    let steps = null;
-    try {
-      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (Array.isArray(parsed.steps) && parsed.steps.length === 4) {
-          steps = parsed.steps;
-        }
-      }
-    } catch (aiErr) {
-      console.error('Roadmap AI error:', aiErr.message);
-    }
-
-    if (!steps) steps = FALLBACK_STEPS(goal);
+    // Use fallback steps directly (Gemini disabled to save quota)
+    const steps = FALLBACK_STEPS(goal);
 
     // Only save to DB if user is logged in
     let roadmap;

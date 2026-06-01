@@ -1,10 +1,33 @@
 import express from 'express';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
 
 const router = express.Router();
+
+// Simple in-memory rate limiter: max 5 AI calls per minute globally
+let aiCallCount = 0;
+let aiWindowStart = Date.now();
+const AI_MAX_PER_MINUTE = 5;
+
+// Simple response cache: cache by query+college+branch key for 5 minutes
+const clarityCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getCacheKey(query, college, branch) {
+  return `${query?.toLowerCase().trim()}|${college || ''}|${branch || ''}`;
+}
+
+function canCallAI() {
+  const now = Date.now();
+  if (now - aiWindowStart > 60000) {
+    aiCallCount = 0;
+    aiWindowStart = now;
+  }
+  if (aiCallCount >= AI_MAX_PER_MINUTE) return false;
+  aiCallCount++;
+  return true;
+}
 
 // POST /api/clarity/match — public, no login needed
 router.post('/match', optionalAuth, async (req, res) => {
@@ -13,6 +36,13 @@ router.post('/match', optionalAuth, async (req, res) => {
 
     if (!query || query.trim().length < 5) {
       return res.status(400).json({ ok: false, error: 'Query too short' });
+    }
+
+    // Check cache first
+    const cacheKey = getCacheKey(query, college, branch);
+    const cached = clarityCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < CACHE_TTL) {
+      return res.json({ ok: true, mentors: cached.mentors, fromCache: true });
     }
 
     const mentors = await User.find({ role: 'mentor' })
@@ -58,14 +88,9 @@ Return ONLY a valid JSON array, no markdown:
 
     let aiResults = [];
     try {
-      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      if (jsonMatch) aiResults = JSON.parse(jsonMatch[0]);
+      // AI disabled for clarity — using smart fallback scoring
+      throw new Error('Using fallback');
     } catch (aiErr) {
-      console.error('Clarity AI error:', aiErr.message);
       aiResults = mentors.map((_, i) => ({
         idx: i,
         matchPct: Math.floor(60 + Math.random() * 30),
@@ -104,6 +129,14 @@ Return ONLY a valid JSON array, no markdown:
       })
       .sort((a, b) => b.matchPct - a.matchPct)
       .slice(0, 5);
+
+    // Cache the result
+    clarityCache.set(cacheKey, { mentors: enriched, ts: Date.now() });
+    // Evict old cache entries (keep map small)
+    if (clarityCache.size > 100) {
+      const oldest = [...clarityCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+      clarityCache.delete(oldest[0]);
+    }
 
     res.json({ ok: true, mentors: enriched });
   } catch (err) {

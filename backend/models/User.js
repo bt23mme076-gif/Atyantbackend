@@ -27,6 +27,13 @@ const userSchema = new mongoose.Schema({
     maxlength: 50
   },
 
+  name: {
+    type: String,
+    trim: true,
+    maxlength: 100,
+    default: null
+  },
+
   email: {
     type: String,
     required: true,
@@ -128,6 +135,8 @@ const userSchema = new mongoose.Schema({
   isOnline: { type: Boolean, default: false },
   lastActive: { type: Date, default: Date.now, index: true },
   yearsOfExperience: { type: Number, default: 0 },
+  chatDisabled: { type: Boolean, default: false },
+  isStrategyComplete: { type: Boolean, default: false },
 
   // ─── MENTOR STATS ──────────────────────────
   profileViews: { type: Number, default: 0 },

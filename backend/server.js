@@ -24,6 +24,7 @@ import clarityRoutes     from './routes/clarityRoutes.js';
 import sessionRoutes     from './routes/sessionRoutes.js';
 import savedAnswerRoutes from './routes/savedAnswerRoutes.js';
 import roadmapRoutes     from './routes/roadmapRoutes.js';
+import aiRoutes          from './routes/aiRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message      from './models/Message.js';
@@ -195,6 +196,7 @@ app.use('/api/clarity',       clarityRoutes);
 app.use('/api/sessions',      sessionRoutes);
 app.use('/api/saved-answers', savedAnswerRoutes);
 app.use('/api/roadmap',       roadmapRoutes);
+app.use('/api/ai',            aiRoutes);
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────
 app.post('/api/book-session', async (req, res) => {
