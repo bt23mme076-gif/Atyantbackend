@@ -3,7 +3,7 @@ import Booking from '../models/Booking.js';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
-
+import BookingService from '../services/BookingService.js';
 const router = express.Router();
 
 // GET /api/bookings/my — returns empty list for guests, real data for logged-in users
@@ -85,18 +85,29 @@ router.post('/book', protect, async (req, res) => {
   }
 });
 
-// PATCH /api/bookings/:id/cancel — cancel a booking
-router.patch('/:id/cancel', protect, async (req, res) => {
+// PATCH /api/bookings/:id/reschedule
+router.patch('/:id/reschedule', protect, async (req, res) => {
   try {
-    const booking = await Booking.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user.userId },
-      { status: 'cancelled', cancelledAt: new Date() },
-      { new: true }
+    const { newDate, newTime } = req.body;
+    const booking = await BookingService.rescheduleBooking(
+      req.params.id, newDate, newTime, req.user.userId
     );
-    if (!booking) return res.status(404).json({ ok: false, error: 'Booking not found' });
     res.json({ ok: true, booking });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+// Replace your existing cancel route with this (adds reason + BookingService)
+router.patch('/:id/cancel', protect, async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const result = await BookingService.cancelBooking(
+      req.params.id, req.user.userId, reason
+    );
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
   }
 });
 

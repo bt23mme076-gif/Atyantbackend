@@ -83,7 +83,10 @@ const bookingSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
-
+  rescheduledFrom: {        // ← track original scheduledAt before reschedule
+  type: Date,
+  default: null
+},
   // --- Financials & Gateway Transactions ---
   amount: {
     type: Number,
