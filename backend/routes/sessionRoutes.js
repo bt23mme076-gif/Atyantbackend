@@ -14,7 +14,7 @@ router.get('/my', optionalAuth, async (req, res) => {
       return res.json({ ok: true, upcoming: [], past: [] });
     }
     const now = new Date();
-    const bookings = await Booking.find({ userId })
+    const bookings = await Booking.find({ userId }).populate('mentorId')
       .sort({ scheduledAt: -1 })
       .lean();
 

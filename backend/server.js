@@ -219,9 +219,10 @@ async function getSlotsForDate(date, mentorObjectId) {
 
   const dayStart = new Date(`${date}T00:00:00+05:30`);
   const dayEnd   = new Date(`${date}T23:59:59.999+05:30`);
+  const now      = new Date(); // current UTC timestamp
 
   let bookedTimes = new Set();
-  if (mentorObjectId) {                         // ← only query if we have a real ID
+  if (mentorObjectId) {
     const booked = await Booking.find({
       mentorId: mentorObjectId,
       scheduledAt: { $gte: dayStart, $lte: dayEnd },
@@ -234,14 +235,19 @@ async function getSlotsForDate(date, mentorObjectId) {
     }));
   }
 
-  return ALL_SLOTS.map((slot, i) => ({
-    id: i + 1,
-    time: slot.time,
-    period: slot.period,
-    available: !bookedTimes.has(slot.time),
-  }));
-}
+  return ALL_SLOTS.map((slot, i) => {
+    const [hours, minutes] = slot.time.split(':').map(Number);
+    const slotTime = new Date(`${date}T${slot.time}:00+05:30`);
+    const isPast = slotTime <= now;
 
+    return {
+      id: i + 1,
+      time: slot.time,
+      period: slot.period,
+      available: !isPast && !bookedTimes.has(slot.time),
+    };
+  });
+}
 // Existing route — mentor-specific
 app.get('/api/mentors/:mentorId/slots', async (req, res) => {
   const { mentorId } = req.params;
