@@ -1,147 +1,166 @@
 import express from 'express';
 import User from '../models/User.js';
-import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
+import atyantEngine from '../services/AtyantEngine.js';
+import { generateProblemStatement } from '../services/ProblemStatementGenerator.js';
+import { normalizeCollege, buildCollegeRegex } from '../utils/collegeNormalizer.js';
 
 const router = express.Router();
 
-// Simple in-memory rate limiter: max 5 AI calls per minute globally
-let aiCallCount = 0;
-let aiWindowStart = Date.now();
-const AI_MAX_PER_MINUTE = 5;
-
-// Simple response cache: cache by query+college+branch key for 5 minutes
+// Response cache by query+college+branch for 5 minutes
 const clarityCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 5 * 60 * 1000;
 
 function getCacheKey(query, college, branch) {
   return `${query?.toLowerCase().trim()}|${college || ''}|${branch || ''}`;
 }
 
-function canCallAI() {
-  const now = Date.now();
-  if (now - aiWindowStart > 60000) {
-    aiCallCount = 0;
-    aiWindowStart = now;
-  }
-  if (aiCallCount >= AI_MAX_PER_MINUTE) return false;
-  aiCallCount++;
-  return true;
+// Build a short, specific "why matched" line from real shared signals.
+function buildMatchReason(mentor, ctx) {
+  const mEdu = mentor.education?.[0] || {};
+  const mCollege = (mEdu.institutionName || '').trim();
+  const mBranch = (mEdu.field || '').trim();
+  const company = (mentor.topCompanies || [])[0];
+
+  if (ctx.college && mCollege && mCollege.toLowerCase().includes(ctx.college.toLowerCase().split(' ')[0]))
+    return `Same college — ${mCollege}${mBranch ? `, ${mBranch}` : ''}`;
+  if (ctx.branch && mBranch && mBranch.toLowerCase() === ctx.branch.toLowerCase())
+    return `Same branch — ${mBranch}${company ? `, now at ${company}` : ''}`;
+  if (company) return `Cracked ${company} from a similar background`;
+  if ((mentor.expertise || []).length) return `Expert in ${mentor.expertise.slice(0, 2).join(', ')}`;
+  return 'Matched on your goal and background';
+}
+
+function buildTags(mentor, ctx) {
+  const tags = [];
+  const mEdu = mentor.education?.[0] || {};
+  if (ctx.college && (mEdu.institutionName || '').toLowerCase().includes(ctx.college.toLowerCase().split(' ')[0])) tags.push('Same College');
+  if (ctx.branch && (mEdu.field || '').toLowerCase() === ctx.branch.toLowerCase()) tags.push('Same Branch');
+  (mentor.specialTags || []).slice(0, 3).forEach(t => tags.push(t));
+  if (tags.length === 0) tags.push('Verified Mentor');
+  return [...new Set(tags)].slice(0, 5);
 }
 
 // POST /api/clarity/match — public, no login needed
 router.post('/match', optionalAuth, async (req, res) => {
   try {
-    const { query, college, branch, year, goal } = req.body;
+    const { query, college, branch, year, goal, cgpa, gap, timeline, constraints } = req.body;
 
     if (!query || query.trim().length < 5) {
       return res.status(400).json({ ok: false, error: 'Query too short' });
     }
 
-    // Check cache first
     const cacheKey = getCacheKey(query, college, branch);
     const cached = clarityCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < CACHE_TTL) {
-      return res.json({ ok: true, mentors: cached.mentors, fromCache: true });
+      return res.json({ ...cached.payload, fromCache: true });
     }
 
-    const mentors = await User.find({ role: 'mentor' })
-      .select('_id username name profilePicture bio expertise education skills topCompanies milestones rating yearsOfExperience')
-      .limit(20)
-      .lean();
+    const userId = req.user?.userId || req.user?._id || null;
+    const ctx = { college, branch };
 
-    if (mentors.length === 0) {
-      return res.json({ ok: true, mentors: [] });
-    }
+    // 1. Build the structured problem statement from conversation context.
+    const problem = generateProblemStatement(
+      { college, branch, year, cgpa, goal: goal || query, gap, timeline, constraints },
+      null
+    );
 
-    const mentorSummaries = mentors.map((m, i) => ({
-      idx:       i,
-      name:      m.name || m.username,
-      college:   m.education?.[0]?.institutionName || '',
-      branch:    m.education?.[0]?.field || '',
-      expertise: (m.expertise || []).slice(0, 5).join(', '),
-      bio:       (m.bio || '').slice(0, 180),
-      companies: (m.topCompanies || []).slice(0, 3).join(', '),
-    }));
+    // engineText (structured brief) + raw query gives the richest vector signal.
+    const engineQuery = [problem.engineText, query].filter(Boolean).join('\n');
 
-    const prompt = `You are a mentor-matching AI for Atyant, a platform for Tier-2/3 Indian engineering students.
+    // 2. Dual output: AnswerCard + matched mentors, simultaneously.
+    const clarity = await atyantEngine.getClarity(userId, engineQuery, { mentorLimit: 5 });
 
-Student Profile:
-- College: ${college || 'Tier-2 NIT'}
-- Branch: ${branch || 'Engineering'}
-- Year: ${year || '3rd Year'}
-- Goal: ${goal || 'Career guidance'}
-- Question: ${query}
+    // 3. Enrich mentors with display fields (name/photo not in the match cache).
+    const ids = (clarity.mentors || []).map(m => m._id);
+    const display = ids.length
+      ? await User.find({ _id: { $in: ids } })
+          .select('name username profilePicture yearsOfExperience')
+          .lean()
+      : [];
+    const dmap = new Map(display.map(d => [String(d._id), d]));
 
-Available Mentors:
-${mentorSummaries.map(m => `[${m.idx}] ${m.name} | College: ${m.college || 'NIT'} | Branch: ${m.branch || 'Engineering'} | Expertise: ${m.expertise || 'Tech'} | Companies: ${m.companies || ''} | Bio: ${m.bio || ''}`).join('\n')}
+    const mentors = (clarity.mentors || []).map(m => {
+      const d = dmap.get(String(m._id)) || {};
+      const rawName = d.name || d.username || m.username || 'Mentor';
+      const initials = rawName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+      const mEdu = m.education?.[0] || {};
+      const company = (m.topCompanies || [])[0] || '';
+      const role = (m.expertise || [])[0] || 'Industry Professional';
+      return {
+        id: String(m._id),
+        name: rawName,
+        initials,
+        role,
+        company,
+        college: mEdu.institutionName || '',
+        branch: mEdu.field || '',
+        matchPct: m.matchScore || 0,
+        matchReason: buildMatchReason(m, ctx),
+        verifiedVia: 'LinkedIn',
+        story: m.bio || 'Walked a similar path and now mentors students on Atyant.',
+        outcome: company ? `${role} @ ${company}` : 'Active mentor on Atyant',
+        tags: buildTags(m, ctx),
+        studentsHelped: String(m.successfulMatches || 0),
+        rating: m.rating ? `${m.rating.toFixed(1)}★` : '4.8★',
+        timeline: d.yearsOfExperience ? `${d.yearsOfExperience} yrs exp` : 'Active',
+        profilePicture: d.profilePicture || null,
+      };
+    });
 
-For each mentor compute:
-- matchPct: 0-100 based on shared background with student
-- matchReason: 1 sentence, specific (e.g. "Same VNIT Metallurgy background, pivoted to ML in 6 months")
-- story: 2-3 sentences in mentor's voice about how they solved a similar challenge. Use <strong> tags for key insights.
-- outcome: format "Role @ Company · Salary · Timeline" (infer from expertise/companies)
-- tags: 3-5 tags like "Same College", "Same Branch", "Core → Tech", "Tier-2 NIT", "Zero CS Start"
+    const payload = {
+      ok: true,
+      mentors,
+      answerCard: clarity.answerCard,        // instant verified answer (or null)
+      hasInstantAnswer: clarity.hasInstantAnswer,
+      problemStatement: problem.statement,   // full statement incl. confidence
+      confidence: problem.confidence,
+    };
 
-Return ONLY a valid JSON array, no markdown:
-[{"idx":0,"matchPct":95,"matchReason":"...","story":"...","outcome":"...","tags":["tag1","tag2"]}]`;
-
-    let aiResults = [];
-    try {
-      // AI disabled for clarity — using smart fallback scoring
-      throw new Error('Using fallback');
-    } catch (aiErr) {
-      aiResults = mentors.map((_, i) => ({
-        idx: i,
-        matchPct: Math.floor(60 + Math.random() * 30),
-        matchReason: 'Matched based on expertise alignment with your goal',
-        story: 'I started from a similar position and found that consistent effort on the right projects made all the difference. The key was building one solid project and cold-emailing 30+ companies.',
-        outcome: 'Working in target domain · Active mentor on Atyant',
-        tags: ['Verified Mentor', 'Tier-2 College'],
-      }));
-    }
-
-    const enriched = aiResults
-      .filter(r => typeof r.idx === 'number' && r.idx < mentors.length)
-      .map(r => {
-        const m = mentors[r.idx];
-        const rawName = m.name || m.username || 'Mentor';
-        const initials = rawName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
-        return {
-          id:            String(m._id),
-          name:          rawName,
-          initials,
-          role:          m.expertise?.[0] || 'Industry Professional',
-          company:       m.topCompanies?.[0] || '',
-          college:       m.education?.[0]?.institutionName || '',
-          branch:        m.education?.[0]?.field || '',
-          matchPct:      r.matchPct,
-          matchReason:   r.matchReason,
-          verifiedVia:   'LinkedIn',
-          story:         r.story,
-          outcome:       r.outcome,
-          tags:          r.tags || [],
-          studentsHelped: String(Math.floor(10 + Math.random() * 50)),
-          rating:         m.rating ? `${m.rating.toFixed(1)}★` : '4.8★',
-          timeline:       m.yearsOfExperience ? `${m.yearsOfExperience} yrs exp` : 'Active',
-          profilePicture: m.profilePicture || null,
-        };
-      })
-      .sort((a, b) => b.matchPct - a.matchPct)
-      .slice(0, 5);
-
-    // Cache the result
-    clarityCache.set(cacheKey, { mentors: enriched, ts: Date.now() });
-    // Evict old cache entries (keep map small)
+    clarityCache.set(cacheKey, { payload, ts: Date.now() });
     if (clarityCache.size > 100) {
       const oldest = [...clarityCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
       clarityCache.delete(oldest[0]);
     }
 
-    res.json({ ok: true, mentors: enriched });
+    res.json(payload);
   } catch (err) {
     console.error('Clarity match error:', err);
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Community count cache (5 min) — keyed by normalized college
+const countCache = new Map();
+const COUNT_TTL = 5 * 60 * 1000;
+
+// GET /api/clarity/community-count?college=VNIT Nagpur
+// Counts everyone (mentors + students) from that college, alias-aware.
+router.get('/community-count', optionalAuth, async (req, res) => {
+  try {
+    const college = (req.query.college || '').trim();
+    if (!college) return res.json({ ok: true, count: 0 });
+
+    const cacheKey = college.toLowerCase();
+    const cached = countCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < COUNT_TTL) {
+      return res.json({ ok: true, count: cached.count, fromCache: true });
+    }
+
+    // Match any known alias of the college across both education field names.
+    const regex = buildCollegeRegex(college);
+    const count = await User.countDocuments({
+      $or: [
+        { 'education.institutionName': regex },
+        { 'education.institution': regex },
+      ],
+    });
+
+    countCache.set(cacheKey, { count, ts: Date.now() });
+    res.json({ ok: true, count });
+  } catch (err) {
+    console.error('community-count error:', err);
+    res.json({ ok: true, count: 0 }); // never break the hero on a count failure
   }
 });
 
