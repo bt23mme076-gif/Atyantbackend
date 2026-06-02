@@ -11,7 +11,9 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import MongoStore from 'connect-mongo';
+
 import mongoose from 'mongoose';
+
 import { Resend } from 'resend';
 import path from 'path';
 import passport from 'passport';
@@ -29,10 +31,13 @@ import aiRoutes          from './routes/aiRoutes.js';
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message      from './models/Message.js';
 import User         from './models/User.js';
+import Booking from './models/Booking.js';
+import Session     from './models/Session.js';
 import { moderator } from './utils/ContentModerator.js';
 import { globalRateLimit } from './middleware/globalRateLimiter.js';
 import { sendAutoReply }   from './controllers/messageController.js';
 import ReminderCron from './services/ReminderCron.js';
+;
 
 // ─── Passport Configuration ────────────────────────────────────────────────
 import './config/passport.js';
@@ -42,7 +47,7 @@ import './config/passport.js';
 // ─────────────────────────────────────────────
 const app  = express();
 const PORT = process.env.PORT || 3000;
-
+const Types= mongoose.Types;
 app.set('trust proxy', 1);
 
 
@@ -199,24 +204,142 @@ app.use('/api/roadmap',       roadmapRoutes);
 app.use('/api/ai',            aiRoutes);
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────
+
+// GET /api/mentors/:mentorId/slots?date=2025-08-10
+app.get('/api/mentors/:mentorId/slots', async (req, res) => {
+  try {
+    const { mentorId } = req.params;
+    const { date } = req.query; // Expecting 'YYYY-MM-DD'
+
+    if (!date) {
+      return res.status(400).json({ error: 'date query param required (YYYY-MM-DD)' });
+    }
+
+    // 1. CRITICAL: Validate and enforce explicit ObjectId casting
+    if (!Types.ObjectId.isValid(mentorId)) {
+      return res.status(400).json({ error: 'Invalid mentorId format' });
+    }
+    const mentorObjectId = new Types.ObjectId(mentorId);
+
+    const ALL_SLOTS = [
+      { time: '10:00', period: 'Morning' },
+      { time: '11:30', period: 'Morning' },
+      { time: '14:00', period: 'Afternoon' },
+      { time: '16:30', period: 'Afternoon' },
+      { time: '19:00', period: 'Evening' },
+      { time: '20:30', period: 'Evening' },
+    ];
+
+    // 2. Clear boundaries for the selected day in IST
+    const dayStart = new Date(`${date}T00:00:00+05:30`);
+    const dayEnd   = new Date(`${date}T23:59:59.999+05:30`);
+
+    // 3. Find active bookings (safely handled with the casted ObjectId)
+    const bookedSlots = await Booking.find({//bookings are never created! fix its Creation with Session creation
+      mentorId: mentorObjectId,
+      scheduledAt: { $gte: dayStart, $lte: dayEnd },
+      status: { $in: ['pending', 'confirmed'] }, 
+    }).select('scheduledAt').lean();
+    console.log("bookedSlots: ", bookedSlots);
+    // 4. Map booked times to an "HH:MM" string array
+    const bookedTimes = new Set(
+      bookedSlots.map(b => {
+        const d = new Date(b.scheduledAt);
+        // Force conversion into IST numerical strings to bypass OS string configuration mismatches
+        const istDate = new Date(d.getTime() + (5.5 * 60 * 60 * 1000)); 
+        const hours = String(istDate.getUTCHours()).padStart(2, '0');
+        const minutes = String(istDate.getUTCMinutes()).padStart(2, '0');
+        return `${hours}:${minutes}`;
+      })
+    );
+    console.log("bookedTimes: ", bookedTimes);
+    // 5. Always map ALL_SLOTS so slots are returned regardless of DB results
+    const slots = ALL_SLOTS.map((slot, i) => ({
+      id:        i + 1,
+      time:      slot.time,
+      period:    slot.period,
+      available: !bookedTimes.has(slot.time), // True if not found in bookedTimes
+    }));
+
+    // This ensures your frontend receives the array structure it expects
+    console.log(`Slots for mentor ${mentorId} on ${date}:`, slots);
+    res.json({ date, slots });
+  } catch (err) {
+    console.error('slots error:', err);
+    res.status(500).json({ error: 'Failed to fetch slots' });
+  }
+});
+
+app.get('/api/my-bookings', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'Email required' });
+
+    const sessions = await Session.find({ email: email.toLowerCase() })
+      .sort({ scheduledAt: -1 })
+      .lean();
+
+    res.json(sessions);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch bookings' });
+  }
+});
 app.post('/api/book-session', async (req, res) => {
   try {
-    const { mentor, sessionType, date, time, amount, goals, brief, name, email, coupon } = req.body;
-    if (!date || !time || !name || !email) {
+    const { mentor, mentorId, sessionType, date, time, amount, goals, brief, name, email, phone, coupon } = req.body;
+    // Validation
+    if (!date || !time || !name?.trim() || !email?.trim() || !sessionType || !amount) {
       return res.status(400).json({ ok: false, error: 'Missing required fields' });
     }
-    // Store booking in Session collection reusing the existing model
-    const { default: Session } = await import('./models/Session.js');
-    const scheduledAt = new Date(`${date} ${time}`);
-    await Session.create({
-      name, email, mentor, sessionType, scheduledAt,
-      amount, goals: goals || [], brief: brief || '',
-      coupon: coupon || null, status: 'pending',
+
+    // Build scheduledAt from date + time (e.g. "2025-08-10" + "10:00")
+    const scheduledAt = new Date(`${date}T${time}:00+05:30`); // IST offset
+    if (isNaN(scheduledAt.getTime())) {
+      return res.status(400).json({ ok: false, error: 'Invalid date or time' });
+    }
+
+    // Prevent double-booking the same slot for the same mentor
+    if (mentorId) {
+      const conflict = await Session.findOne({
+        mentorId,
+        scheduledAt,
+        status: { $in: ['pending', 'upcoming'] }
+      });
+      console.log(conflict);
+      if (conflict) {
+        return res.status(409).json({ ok: false, error: 'This slot is already booked. Please choose another time.' });
+      }
+    }
+
+    const session = await Session.create({
+      mentorId:  mentorId || null,
+      mentorName: mentor || 'Your Mentor',
+      name:       name.trim(),
+      email:      email.trim().toLowerCase(),
+      phone:      phone || '',
+      sessionType,
+      amount,
+      goals:      goals || [],
+      brief:      brief || '',
+      coupon:     coupon || null,
+      scheduledAt,
+      status:     'pending',
     });
-    res.json({ ok: true, message: 'Session booked successfully' });
+
+    // Send confirmation email (non-blocking)
+    if (resend) {
+      resend.emails.send({
+        from:    'Atyant <notification@atyant.in>',
+        to:      [email.trim()],
+        subject: `Your session is confirmed — ${sessionType}`,
+        text:    `Hi ${name},\n\nYour ${sessionType} session with ${mentor} is scheduled for ${date} at ${time} IST.\n\nBooking ID: ${session._id}\n\nWe'll send the meeting link 30 minutes before your session.\n\n— Atyant Team`,
+      }).catch(err => console.error('Confirmation email failed:', err.message));
+    }
+
+    res.json({ ok: true, bookingId: session._id, message: 'Session booked successfully' });
   } catch (err) {
-    console.error('book-session error:', err.message);
-    res.status(500).json({ ok: false, error: 'Booking failed' });
+    console.error('book-session error:', err);
+    res.status(500).json({ ok: false, error: 'Server: Booking failed. Please try again.' });
   }
 });
 
