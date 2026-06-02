@@ -3,7 +3,7 @@ import User from '../models/User.js';
 import { optionalAuth } from '../middleware/auth.js';
 import atyantEngine from '../services/AtyantEngine.js';
 import { generateProblemStatement } from '../services/ProblemStatementGenerator.js';
-import { normalizeCollege, buildCollegeRegex } from '../utils/collegeNormalizer.js';
+import { normalizeCollege, buildCollegeRegex, isSameBranch } from '../utils/collegeNormalizer.js';
 
 const router = express.Router();
 
@@ -24,7 +24,7 @@ function buildMatchReason(mentor, ctx) {
 
   if (ctx.college && mCollege && mCollege.toLowerCase().includes(ctx.college.toLowerCase().split(' ')[0]))
     return `Same college — ${mCollege}${mBranch ? `, ${mBranch}` : ''}`;
-  if (ctx.branch && mBranch && mBranch.toLowerCase() === ctx.branch.toLowerCase())
+  if (isSameBranch(ctx.branch, mBranch))
     return `Same branch — ${mBranch}${company ? `, now at ${company}` : ''}`;
   if (company) return `Cracked ${company} from a similar background`;
   if ((mentor.expertise || []).length) return `Expert in ${mentor.expertise.slice(0, 2).join(', ')}`;
@@ -35,7 +35,7 @@ function buildTags(mentor, ctx) {
   const tags = [];
   const mEdu = mentor.education?.[0] || {};
   if (ctx.college && (mEdu.institutionName || '').toLowerCase().includes(ctx.college.toLowerCase().split(' ')[0])) tags.push('Same College');
-  if (ctx.branch && (mEdu.field || '').toLowerCase() === ctx.branch.toLowerCase()) tags.push('Same Branch');
+  if (isSameBranch(ctx.branch, mEdu.field)) tags.push('Same Branch');
   (mentor.specialTags || []).slice(0, 3).forEach(t => tags.push(t));
   if (tags.length === 0) tags.push('Verified Mentor');
   return [...new Set(tags)].slice(0, 5);
@@ -69,7 +69,12 @@ router.post('/match', optionalAuth, async (req, res) => {
     const engineQuery = [problem.engineText, query].filter(Boolean).join('\n');
 
     // 2. Dual output: AnswerCard + matched mentors, simultaneously.
-    const clarity = await atyantEngine.getClarity(userId, engineQuery, { mentorLimit: 5 });
+    //    Pass the student's chat-collected identity so same-college / same-branch
+    //    are credited in scoring even when the user is logged out (no DB profile).
+    const clarity = await atyantEngine.getClarity(userId, engineQuery, {
+      mentorLimit: 5,
+      studentContext: { college, branch, year },
+    });
 
     // 3. Enrich mentors with display fields (name/photo not in the match cache).
     const ids = (clarity.mentors || []).map(m => m._id);

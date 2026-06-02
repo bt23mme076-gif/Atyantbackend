@@ -4,7 +4,7 @@ import AnswerCard from '../models/AnswerCard.js';
 import { sendMentorNewQuestionNotification } from '../utils/emailNotifications.js';
 import { getQuestionEmbedding } from './AIService.js';
 import aiServiceInstance from './AIService.js';
-import { normalizeCollege } from '../utils/collegeNormalizer.js';
+import { normalizeCollege, isSameBranch, normalizeBranch } from '../utils/collegeNormalizer.js';
 import crypto from 'crypto';
 import { LRUCache } from 'lru-cache';
 
@@ -35,7 +35,8 @@ let MENTOR_INDEX = {
   byCompany: new Map(), // 'amazon'      → Set<mentorId>
   byDomain: new Map(), // 'internship'  → Set<mentorId>
   byTag: new Map(), // 'iit'         → Set<mentorId>
-  byBranch: new Map(), // 'cse'         → Set<mentorId>
+  byBranch: new Map(), // 'metallurgy'  → Set<mentorId>  (normalized)
+  byCollege: new Map(), // 'nit nagpur'  → Set<mentorId>  (normalized, alias-aware)
 };
 
 // ─────────────────────────────────────────────
@@ -224,6 +225,26 @@ function isSameCollege(a, b) {
   return ca === cb && !GENERIC_COLLEGE.has(ca);
 }
 
+// Resolve the student's education for scoring. Prefers the logged-in user's DB
+// profile, but falls back to the context collected in the chat (college/branch/
+// year) so same-college / same-branch are credited even for logged-out users.
+// Without this, a guest's college/branch contributed ZERO to the match score.
+async function resolveStudentEdu(studentId, studentContext = null) {
+  let dbEdu = {};
+  if (studentId) {
+    try {
+      const student = await User.findById(studentId).select('education').lean();
+      dbEdu = student?.education?.[0] || {};
+    } catch { /* fall back to context */ }
+  }
+  return {
+    ...dbEdu,
+    institutionName: dbEdu.institutionName || dbEdu.institution || studentContext?.college || null,
+    field:           dbEdu.field           || studentContext?.branch  || null,
+    year:            dbEdu.year             || studentContext?.year    || null,
+  };
+}
+
 function extractSmartKeywords(text) {
   const stopwords = new Set([
     'the', 'is', 'at', 'which', 'on', 'a', 'an', 'as', 'are', 'was', 'were',
@@ -262,6 +283,7 @@ function buildMentorIndex(mentors) {
   const byDomain = new Map();
   const byTag = new Map();
   const byBranch = new Map();
+  const byCollege = new Map();
 
   for (const mentor of mentors) {
     const id = mentor._id.toString();
@@ -291,25 +313,49 @@ function buildMentorIndex(mentors) {
       byTag.get(key).add(id);
     }
 
-    // Branch index
-    const branch = mentor.education?.[0]?.field?.toLowerCase();
+    const mEdu = mentor.education?.[0] || {};
+
+    // Branch index — normalized so "MME" and "Metallurgy …" land in one bucket
+    const branch = normalizeBranch(mEdu.field);
     if (branch) {
       if (!byBranch.has(branch)) byBranch.set(branch, new Set());
       byBranch.get(branch).add(id);
     }
+
+    // College index — normalized/alias-aware ("vnit" === "nit nagpur")
+    const college = normalizeCollege(mEdu.institutionName || mEdu.institution).toLowerCase();
+    if (college && !GENERIC_COLLEGE.has(college)) {
+      if (!byCollege.has(college)) byCollege.set(college, new Set());
+      byCollege.get(college).add(id);
+    }
   }
 
-  dlog(`✅ Index built — Companies:${byCompany.size} Domains:${byDomain.size} Tags:${byTag.size}`);
-  return { byCompany, byDomain, byTag, byBranch };
+  dlog(`✅ Index built — Companies:${byCompany.size} Domains:${byDomain.size} Tags:${byTag.size} Branches:${byBranch.size} Colleges:${byCollege.size}`);
+  return { byCompany, byDomain, byTag, byBranch, byCollege };
 }
 
 // ─────────────────────────────────────────────
 //  CANDIDATE FILTER  ← NEW (replaces scoring all mentors)
 //  "Amazon internship" → intersection of amazon ∩ internship
 // ─────────────────────────────────────────────
-function getCandidateMentors(allMentors, queryDetails) {
+function getCandidateMentors(allMentors, queryDetails, studentEdu = null) {
   const { intent, mentionedCompanies, relatedCompanies, foundTags } = queryDetails;
   const mentorMap = new Map(allMentors.map(m => [m._id.toString(), m]));
+
+  // "Someone exactly like you" — same-college and same-branch mentors must ALWAYS
+  // be candidates, even when the query has no company/domain/tag signal. Otherwise
+  // a perfect background match could be filtered out before scoring ever runs.
+  const identityIds = new Set();
+  if (studentEdu) {
+    const sCollege = normalizeCollege(studentEdu.institutionName || '').toLowerCase();
+    if (sCollege && !GENERIC_COLLEGE.has(sCollege)) {
+      (MENTOR_INDEX.byCollege.get(sCollege) || new Set()).forEach(id => identityIds.add(id));
+    }
+    const sBranch = normalizeBranch(studentEdu.field);
+    if (sBranch) {
+      (MENTOR_INDEX.byBranch.get(sBranch) || new Set()).forEach(id => identityIds.add(id));
+    }
+  }
 
   const companyIds = new Set();
   const domainIds = new Set();
@@ -356,8 +402,12 @@ function getCandidateMentors(allMentors, queryDetails) {
   } else if (hasTag) {
     candidateIds = tagIds;
     strategy = 'tag-only';
+  } else if (identityIds.size > 0) {
+    // No query signal, but we know the student's college/branch → use those.
+    candidateIds = new Set();
+    strategy = 'identity-only';
   } else {
-    // Fully general question — score everyone
+    // Fully general question, no identity → score everyone
     dlog(`⚠️ No signals — scoring all ${allMentors.length} mentors`);
     return allMentors;
   }
@@ -367,10 +417,27 @@ function getCandidateMentors(allMentors, queryDetails) {
     tagIds.forEach(id => candidateIds.add(id));
   }
 
+  // ALWAYS fold in same-college / same-branch mentors so "someone exactly like
+  // you" is never filtered out by the query-signal pre-filter.
+  identityIds.forEach(id => candidateIds.add(id));
+
   const candidates = [...candidateIds].map(id => mentorMap.get(id)).filter(Boolean);
 
-  dlog(`🎯 Candidates: ${allMentors.length} → ${candidates.length} [${strategy}]`);
+  dlog(`🎯 Candidates: ${allMentors.length} → ${candidates.length} [${strategy}${identityIds.size ? ` +${identityIds.size} identity` : ''}]`);
   return candidates;
+}
+
+// ─────────────────────────────────────────────
+//  MATCH % CALIBRATION
+//  Map raw points → a 1–99% confidence with diminishing returns. Tuned so a
+//  same-college + same-branch ("exactly like you") match (~600 pts) reads ~70%,
+//  a college-only match reads ~55%, and a full goal+company+college match
+//  approaches the high 90s. K=500 controls the curve's steepness.
+// ─────────────────────────────────────────────
+function pointsToMatchPct(points) {
+  if (!points || points <= 0) return 0;
+  const pct = 99 * (1 - Math.exp(-points / 500));
+  return Math.max(12, Math.min(99, Math.round(pct)));
 }
 
 // ─────────────────────────────────────────────
@@ -441,8 +508,8 @@ function scoreMentor(mentor, context) {
     points += LW.COLLEGE_TYPE; breakdown.push(`${studentCollegeType.toUpperCase()}(+${LW.COLLEGE_TYPE})`);
   }
 
-  // Same branch
-  if (sEdu.field && mEdu.field && sEdu.field.toLowerCase() === mEdu.field.toLowerCase()) {
+  // Same branch (alias-aware: "MME" === "Metallurgy and Materials Engineering")
+  if (isSameBranch(sEdu.field, mEdu.field)) {
     points += LW.SAME_BRANCH; breakdown.push(`Branch(+${LW.SAME_BRANCH})`);
   }
 
@@ -651,7 +718,7 @@ class AtyantEngine {
   /* =============================================
       🔥 PATH A: VECTOR SEMANTIC MATCHING
      ============================================= */
-  async findBestSemanticMatch(studentId, vector, questionText) {
+  async findBestSemanticMatch(studentId, vector, questionText, studentContext = null) {
     try {
       const cacheKey = crypto.createHash('sha1').update(questionText).digest('hex');
       if (VECTOR_CACHE.has(cacheKey)) {
@@ -659,8 +726,7 @@ class AtyantEngine {
         return VECTOR_CACHE.get(cacheKey);
       }
 
-      const student = await User.findById(studentId).select('education').lean();
-      const sEdu = student?.education?.[0] || {};
+      const sEdu = await resolveStudentEdu(studentId, studentContext);
       const studentCollegeType = getCollegeType(sEdu.institutionName);
 
       const queryDetails = await this.detectQueryDetails(questionText);
@@ -755,7 +821,7 @@ class AtyantEngine {
         if (studentCollegeType === mentorCollegeType && studentCollegeType !== 'unknown') {
           totalBonus += W.COLLEGE_TYPE; bonusLogs.push(`${studentCollegeType.toUpperCase()}(+${(W.COLLEGE_TYPE * 100).toFixed(1)}%)`);
         }
-        if (sEdu.field && mEdu.field && sEdu.field.toLowerCase() === mEdu.field.toLowerCase()) {
+        if (isSameBranch(sEdu.field, mEdu.field)) {
           totalBonus += W.SAME_BRANCH; bonusLogs.push(`Branch(+${(W.SAME_BRANCH * 100).toFixed(1)}%)`);
         }
         if (mentor.rating >= 4.5) { totalBonus += W.HIGH_RATING; bonusLogs.push(`★${mentor.rating}`); }
@@ -820,11 +886,10 @@ class AtyantEngine {
   /* =============================================
       🔥 PATH B: LIVE MENTOR ROUTING
      ============================================= */
-  async findBestMentor(studentId, keywords, questionCategory = null) {
+  async findBestMentor(studentId, keywords, questionCategory = null, studentContext = null) {
     try {
       const questionText = keywords.join(' ');
-      const student = await User.findById(studentId).select('education').lean();
-      const sEdu = student?.education?.[0] || {};
+      const sEdu = await resolveStudentEdu(studentId, studentContext);
 
       const queryDetails = await this.detectQueryDetails(questionText);
       const { intent, confidence, mentionedCompanies, relatedCompanies, foundTags, mentionedTech } = queryDetails;
@@ -833,7 +898,7 @@ class AtyantEngine {
 
       const allMentors = await getActiveMentors();
       // ← INVERTED INDEX: score only relevant candidates, not all 1000
-      const candidates = getCandidateMentors(allMentors, queryDetails);
+      const candidates = getCandidateMentors(allMentors, queryDetails, sEdu);
 
       const context = {
         questionCategory, mentionedCompanies, relatedCompanies,
@@ -882,18 +947,17 @@ class AtyantEngine {
   /* =============================================
       🔥 FIND TOP N MENTORS (carousel)
      ============================================= */
-  async findTopMentors(studentId, keywords, questionCategory = null, limit = 3) {
+  async findTopMentors(studentId, keywords, questionCategory = null, limit = 3, studentContext = null) {
     try {
       const questionText = keywords.join(' ');
-      const student = await User.findById(studentId).select('education').lean();
-      const sEdu = student?.education?.[0] || {};
+      const sEdu = await resolveStudentEdu(studentId, studentContext);
 
       const queryDetails = await this.detectQueryDetails(questionText);
 
       dlog(`\n🤝 ===== FINDING TOP ${limit} MENTORS =====`);
 
       const allMentors = await getActiveMentors();
-      const candidates = getCandidateMentors(allMentors, queryDetails); // ← index filter
+      const candidates = getCandidateMentors(allMentors, queryDetails, sEdu); // ← index filter + identity
 
       const context = {
         questionCategory,
@@ -916,7 +980,7 @@ class AtyantEngine {
         .filter(s => s.points >= CONFIG.LIVE_MATCH_THRESHOLD)
         .slice(0, limit)
         .map(s => {
-          s.mentor.matchScore = Math.min(Math.round((s.points / 2000) * 100), 99);
+          s.mentor.matchScore = pointsToMatchPct(s.points);
           return s.mentor;
         });
 
@@ -1102,6 +1166,7 @@ class AtyantEngine {
       await Promise.all([getAllTargetCompanies(), getActiveMentors()]);
 
       const limit = options.mentorLimit || 3;
+      const studentContext = options.studentContext || null; // {college, branch, year} from chat
       const queryDetails = await this.detectQueryDetails(questionText);
       const inferredCategory = options.category || queryDetails?.intent || null;
       const keywords = extractSmartKeywords(questionText);
@@ -1117,12 +1182,12 @@ class AtyantEngine {
       // ── Run BOTH paths simultaneously ──
       const [answerMatch, mentors] = await Promise.all([
         vector
-          ? this.findBestSemanticMatch(userId, vector, questionText).catch(e => {
+          ? this.findBestSemanticMatch(userId, vector, questionText, studentContext).catch(e => {
               console.error('Clarity vector path error:', e.message);
               return null;
             })
           : Promise.resolve(null),
-        this.findTopMentors(userId, keywords, inferredCategory, limit).catch(e => {
+        this.findTopMentors(userId, keywords, inferredCategory, limit, studentContext).catch(e => {
           console.error('Clarity mentor path error:', e.message);
           return null;
         }),

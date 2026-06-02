@@ -166,6 +166,58 @@ export function getCollegeAliases(name) {
 }
 
 /**
+ * Normalize an engineering branch/department to a canonical code so that
+ * "MME", "Metallurgy", and "Metallurgy and Materials Engineering" all match.
+ * Pattern-based (most specific first) to survive free-text variations.
+ * @param {string} name
+ * @returns {string} canonical branch code, or '' when unknown
+ */
+export function normalizeBranch(name) {
+  if (!name) return '';
+  const n = String(name).toLowerCase();
+
+  if (/metall|materials|\bmme\b|\bmet\b/.test(n)) return 'metallurgy';
+  if (/mining/.test(n)) return 'mining';
+  if (/comput|\bcse\b|\bcs\b|software|computer science/.test(n)) return 'cse';
+  if (/information tech|\bit\b/.test(n)) return 'it';
+  if (/data science|\bds\b|machine learning|\bai\b|artificial intelligence/.test(n)) return 'ai-ds';
+  if (/communication|\bece\b|electronics and comm/.test(n)) return 'ece';
+  if (/electrical|\beee\b|\bee\b/.test(n)) return 'eee';
+  if (/electronic/.test(n)) return 'ece';
+  if (/mechanical|\bme\b|\bmech\b/.test(n)) return 'mechanical';
+  if (/civil|\bce\b/.test(n)) return 'civil';
+  if (/chemical|\bche\b|\bchem\b/.test(n)) return 'chemical';
+  if (/aero|aeronaut|avionic/.test(n)) return 'aerospace';
+  if (/bio/.test(n)) return 'biotech';
+  if (/instrument/.test(n)) return 'instrumentation';
+  if (/production|industrial/.test(n)) return 'production';
+  if (/petro/.test(n)) return 'petroleum';
+  if (/textile/.test(n)) return 'textile';
+  if (/automobile|automotive/.test(n)) return 'automobile';
+  if (/architect/.test(n)) return 'architecture';
+
+  // Fallback: strip boilerplate words and punctuation so loose strings still compare.
+  return n
+    .replace(/engineering|technology|department|dept|branch|\bin\b|\bof\b|\band\b/g, '')
+    .replace(/[^a-z]/g, '')
+    .trim();
+}
+
+/**
+ * True when two branch strings refer to the same engineering branch,
+ * alias/abbreviation-aware. "MME" === "Metallurgy and Materials Engineering".
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+export function isSameBranch(a, b) {
+  if (!a || !b) return false;
+  const na = normalizeBranch(a);
+  const nb = normalizeBranch(b);
+  return !!na && na === nb;
+}
+
+/**
  * Build a MongoDB regex condition that matches any known alias of a college.
  * @param {string} name
  * @returns {RegExp}

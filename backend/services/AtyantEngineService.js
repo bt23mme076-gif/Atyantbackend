@@ -6,12 +6,24 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_MODEL   = process.env.GROQ_MODEL || 'llama3-70b-8192';
 const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
 
-async function callGroq(messages, { temperature = 0.7, maxTokens = 300 } = {}) {
+// Reasoning models (qwen3, deepseek-r1) wrap their chain-of-thought in <think>…</think>.
+// On Groq the default reasoning_format is 'raw', which inlines that trace into the reply —
+// and if max_tokens cuts it off before the closing tag, the raw reasoning leaks to the user.
+// We disable thinking entirely for these models so the reply is always clean user-facing text.
+const IS_REASONING_MODEL = /qwen|deepseek|r1/i.test(GROQ_MODEL);
+
+async function callGroq(messages, { temperature = 0.7, maxTokens = 800 } = {}) {
   if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not configured');
+  const body = { model: GROQ_MODEL, messages, temperature, max_tokens: maxTokens };
+  if (IS_REASONING_MODEL) {
+    // 'none' turns thinking off (qwen3); 'hidden' keeps reasoning out of `content` as a backstop.
+    body.reasoning_effort = 'none';
+    body.reasoning_format = 'hidden';
+  }
   const res = await fetch(GROQ_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify({ model: GROQ_MODEL, messages, temperature, max_tokens: maxTokens }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(20000), // hung socket throws → route returns a friendly error
   });
   if (!res.ok) {
@@ -22,6 +34,105 @@ async function callGroq(messages, { temperature = 0.7, maxTokens = 300 } = {}) {
   }
   const data = await res.json();
   return data?.choices?.[0]?.message?.content || '';
+}
+
+// ─── Dedicated context extractor ──────────────────────────────────────────────
+// A small, fast, deterministic model with JSON mode. This is the SOURCE OF TRUTH
+// for the 5-layer context — it does not depend on the chat model emitting tags.
+const EXTRACT_MODEL = process.env.GROQ_EXTRACT_MODEL || 'llama-3.1-8b-instant';
+
+async function callGroqJSON(messages, { maxTokens = 400 } = {}) {
+  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not configured');
+  const res = await fetch(GROQ_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
+    body: JSON.stringify({
+      model: EXTRACT_MODEL,
+      messages,
+      temperature: 0,                       // deterministic — extraction, not creativity
+      max_tokens: maxTokens,
+      response_format: { type: 'json_object' }, // Groq guarantees valid JSON back
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Groq extract ${res.status}: ${body.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content || '{}';
+}
+
+const EXTRACTION_PROMPT = `You extract structured profile data for an Indian engineering student career platform.
+
+CRITICAL RULES — follow exactly:
+- Use ONLY facts the STUDENT explicitly typed in their own messages.
+- If a field was not explicitly stated by the student, its value MUST be null (or [] for arrays).
+- NEVER guess, infer, assume, or copy any example. NEVER invent a college name. NEVER invent a CGPA or any number.
+- The comments below describe the TYPE of each field. They are NOT defaults and must never be used as values.
+
+Return ONLY a JSON object with these keys:
+{
+  "college": null,        // exact college/institute name the student stated; else null
+  "collegeType": null,    // only if a college was stated: one of IIT, NIT-top, NIT-other, IIIT, BITS, Tier-2, Tier-3, private; else null
+  "branch": null,         // the student's stated branch/department; else null
+  "year": null,           // "1","2","3","4" or "final" if stated; else null
+  "cgpa": null,           // the student's stated CGPA as a string; else null
+  "target": null,         // the student's stated goal; else null
+  "timeline": null,       // the student's stated timeframe; else null
+  "gap": [],               // blockers the student stated, as short strings
+  "constraint": []         // hard limits the student stated, as short strings
+}
+Output ONLY the JSON object, nothing else.`;
+
+// Small models occasionally return the wrong shape (a number for cgpa, an array
+// for a scalar field). Coerce defensively so the problem statement never breaks.
+function toScalarString(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (Array.isArray(v)) v = v.filter(x => x !== null && x !== undefined).join(' ');
+  const s = String(v).trim();
+  return s && s.toLowerCase() !== 'null' ? s : null;
+}
+function toStringArray(v) {
+  if (v === null || v === undefined) return [];
+  const arr = Array.isArray(v) ? v : [v];
+  return arr.map(x => (x === null || x === undefined ? '' : String(x).trim())).filter(Boolean);
+}
+
+// Map the extractor's flat output → the conversation context schema mergeContext expects.
+function extractionToContext(parsed = {}) {
+  return {
+    identity: {
+      college:     toScalarString(parsed.college),
+      collegeType: toScalarString(parsed.collegeType),
+      branch:      toScalarString(parsed.branch),
+      year:        toScalarString(parsed.year),
+      cgpa:        toScalarString(parsed.cgpa),
+    },
+    target:     toScalarString(parsed.target),
+    timeline:   toScalarString(parsed.timeline),
+    gap:        toStringArray(parsed.gap),
+    constraint: toStringArray(parsed.constraint),
+  };
+}
+
+async function extractStudentContext(messages) {
+  try {
+    const convoText = messages
+      .slice(-12)
+      .map(m => `${m.role === 'assistant' ? 'atyant' : 'student'}: ${m.content}`)
+      .join('\n');
+
+    const raw = await callGroqJSON([
+      { role: 'system', content: EXTRACTION_PROMPT },
+      { role: 'user', content: `Conversation:\n${convoText}\n\nExtract the JSON now.` },
+    ]);
+
+    return extractionToContext(JSON.parse(raw));
+  } catch (err) {
+    console.error('extractStudentContext failed (non-fatal):', err.message);
+    return null; // fall back to whatever context we already had
+  }
 }
 
 // Build Groq/OpenAI messages: system + recent turns.
@@ -47,25 +158,35 @@ Rule: every reply ends with ONE next step OR one question. Never both. Never nei
 const COLLECTION_SYSTEM = `${MASTER_SYSTEM_PROMPT}
 
 INTAKE MODE:
-- Ask ONE question per reply. The last sentence is always the question.
+- Ask about exactly ONE field per reply. NEVER combine two — e.g. never "What's your branch and year?". Branch and year are SEPARATE turns.
+- The last sentence is always the single question.
 - Max 60 words per reply.
 - Never open with filler. Start with the substance.
-- Priority order for missing info: year → target → what they've tried → timeline
+- College/institute is the MOST important signal — if it's missing, ask for it by name first.
+- Priority order (one at a time): college → branch → year → target → FIELD/DOMAIN of the target → biggest blocker → timeline → constraints (time/money/resource limits)
+- Keep going until ALL of these are known. Do not wrap up early.
 - Never ask CGPA unless directly relevant.
+- Never ask for something the "Context extracted so far" block already contains.
+- Output ONLY your reply to the student. No JSON, no tags, no system notes.
 
-After reply, emit context JSON (invisible to user):
-<context_update>{"identity":{"college":null,"collegeType":null,"branch":null,"year":null,"cgpa":null},"target":null,"gap":[],"timeline":null,"constraint":[]}</context_update>
-Only fill fields you're confident about. null = unknown. collegeType: IIT/NIT-top/NIT-other/BITS/Tier-2/Tier-3/private.`;
+PERSONALIZATION — this is what makes Atyant ≠ ChatGPT. Do this EVERY reply once you know their college/branch:
+- Reference their college and branch BY NAME. Never ask a generic question that ignores who they are.
+- Frame the choices using what students from THEIR college + branch actually do. Example for a VNIT Metallurgy student: "At VNIT, Metallurgy folks usually split three ways — core (Tata Steel, JSW, Vedanta), tech/SDE, or non-core (consulting, analytics, product). Which side pulls you?"
+- When their goal is broad ("internship"/"placement"/"job"), the NEXT question MUST ask WHICH FIELD/DOMAIN — tech vs core vs non-core (or a specific role) — framed by their college's common paths. Ask this BEFORE blockers.
+- Occasionally drop ONE short senior-path pattern for flavour (e.g. "Plenty of VNIT MME seniors pivoted to SDE via DSA + 2 projects"). Reference paths as PATTERNS only — never invent a senior's name or fake specifics.`;
 
-// Engine phase — ~100 tokens
+// Engine phase — final handoff. NO more questions; wrap up and route to clarity.
 const ENGINE_SYSTEM = `${MASTER_SYSTEM_PROMPT}
 
-EXECUTION MODE — context is known. Give specific, actionable guidance.
-Modes: AI_ANSWER / MENTOR_ROUTING / CLARIFY — pick one.
-Rules: specific to their college+branch+year. No IIT advice for Tier-2 students. Max 150 words. End with one action they can do today.
-For MENTOR_ROUTING: describe the type of mentor needed. Never invent a mentor name or profile.
-
-End with: <output_mode>AI_ANSWER</output_mode>`;
+EXECUTION MODE — you now have enough context. DO NOT ask any more questions.
+Give ONE tight, confident wrap-up (max 90 words):
+- Name their EXACT college and their branch + year. Generic advice that could apply to any student is BANNED.
+- Say what students from the SAME college (or a similar NIT / same-tier background) actually did to reach this goal — concrete moves: specific skills, projects, clubs, or paths. Not "pick product design or coding".
+- One sharp, tailored next step.
+Then end with ONE handoff line that names their goal and their college/NIT background and leads into the next screen, in this exact style:
+"Found seniors who <achieved their goal> from similar <their college / NIT> backgrounds. Let me show you their exact paths."
+Never end with a question. Never say results are "below" — the next screen shows them.
+Use ONLY facts in the Problem Statement. Never invent a college, CGPA, or number that is not listed.`;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -130,8 +251,13 @@ function parseOutputMode(text) {
 
 function stripTags(text) {
   return text
-    // Strip <think>...</think> blocks (DeepSeek/Qwen reasoning traces)
+    // Strip closed <think>...</think> reasoning blocks (DeepSeek/Qwen traces)
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    // Strip an UNCLOSED <think> (response truncated mid-reasoning): drop everything
+    // from the opening tag to the end — this is the leak that broke the chat.
+    .replace(/<think>[\s\S]*$/gi, '')
+    // Drop any stray standalone reasoning tags
+    .replace(/<\/?\s*think\s*>/gi, '')
     // Tolerant of malformed openers ("/context_update>", "context_update>") and a
     // missing close tag (strips to end of text). This is what was leaking JSON to users.
     .replace(/<?\/?\s*context_update\s*>[\s\S]*?(?:<\/?\s*context_update\s*>|$)/gi, '')
@@ -238,32 +364,20 @@ function isGreeting(message) {
   return GREETING_PATTERNS.test(message.trim());
 }
 
-function buildGreeting(user) {
-  const name = user?.name || user?.username || null;
-  const college = user?.education?.[0]?.institutionName || user?.education?.[0]?.institution || null;
-  const branch  = user?.education?.[0]?.field || null;
-  const year    = user?.education?.[0]?.year || null;
-
-  const nameStr = name ? `${name}` : 'there';
-
-  // Build context-aware topic suggestions based on profile
-  const topics = [];
-  if (branch && branch.toLowerCase().match(/metallurgy|mechanical|civil|chemical|electrical|ece/)) {
-    topics.push('core vs software switch');
-  }
-  if (year && (year === '3' || year === '3rd' || year === '2' || year === '2nd')) {
-    topics.push('internships');
-  }
-  if (year && (year === '4' || year === '4th' || year === 'final')) {
-    topics.push('placements');
-  }
-  topics.push('roadmap', 'resume', 'higher studies');
-
-  const topicStr = topics.slice(0, 4).join(', ');
-  const collegeStr = college ? ` from ${college}` : '';
-
-  return `Hey ${nameStr}! 👋\n\nGood to see you${collegeStr}. What are you working on today — ${topicStr}, or something else on your mind?`;
+// Problem-first opener. Signals immediately that Atyant is about career confusion
+// (internships / placements / path / higher studies), not a generic chat assistant.
+function buildGreeting() {
+  return `What's confusing you right now?`;
 }
+
+// Quick-reply chips shown under the opener. `value` is what gets sent to the
+// engine when tapped (clean text — no emoji — so extraction stays accurate).
+const GREETING_QUICK_REPLIES = [
+  { label: "🎯  I want an internship but don't know where to start", value: "I want an internship but I don't know where to start" },
+  { label: "🏢  Placement season is coming and I'm not prepared",    value: "Placement season is coming and I'm not prepared" },
+  { label: "🤔  Career confused — don't know what path to take",     value: "I'm career confused and don't know what path to take" },
+  { label: "📚  Thinking about higher studies (MS / MBA / GATE)",    value: "I'm thinking about higher studies — MS, MBA or GATE" },
+];
 
 // ─── Core Engine ────────────────────────────────────────────────────────────
 
@@ -300,9 +414,9 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
     }
   }
 
-  // ── Greeting shortcut — warm reply, no AI call needed ───────────────────
+  // ── Greeting shortcut — problem-first opener + quick replies, no AI call ──
   if (isGreeting(userMessage)) {
-    const reply = buildGreeting(userProfile);
+    const reply = buildGreeting();
     conv.messages.push({ role: 'user', content: userMessage });
     conv.messages.push({ role: 'assistant', content: reply });
     if (conv.messages.length > 30) conv.messages = conv.messages.slice(-30);
@@ -315,23 +429,64 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
       problemStatement: conv.problemStatement,
       outputMode: null,
       matchedMentors: [],
+      quickReplies: GREETING_QUICK_REPLIES,
       sessionId
     };
   }
 
   conv.messages.push({ role: 'user', content: userMessage });
 
+  // ── Reliable context extraction (runs EVERY turn, before we reply) ────────
+  // Dedicated JSON-mode model reads the whole conversation and returns the 5
+  // layers. This is the source of truth — the chat model no longer has to emit
+  // tags, so context is captured even when the reply is purely conversational.
+  const extracted = await extractStudentContext(conv.messages);
+  if (extracted) {
+    conv.context = mergeContext(conv.context, extracted);
+    conv.contextLayers = countLayers(conv.context);
+  }
+
+  // ── Decide the phase BEFORE replying ─────────────────────────────────────
+  // Using the freshly-extracted context. This kills the old bug where the turn
+  // that crossed the threshold still asked an intake question AND showed the
+  // clarity button at the same time. Once we have 3+ layers, we stop asking.
+  conv.problemStatement = generateProblemStatement(conv.context);
+
+  // Do NOT show the mentor / clarity option until the FULL 5-layer profile is
+  // collected: identity + target + gap + timeline + constraint. We also require
+  // the core identity fields (college + branch + year) to be individually known,
+  // since the identity layer counts as filled with any one of them. Safety cap:
+  // after many turns, proceed anyway so we never loop forever on a missing layer.
+  const cid = conv.context?.identity || {};
+  const hasCoreIdentity = !!conv.context?.target && !!cid.college && !!cid.branch && !!cid.year;
+  const allFiveLayers = conv.contextLayers >= 5;
+  const userTurns = conv.messages.filter(m => m.role === 'user').length;
+  if ((hasCoreIdentity && allFiveLayers) || userTurns >= 10) {
+    conv.phase = 'engine';
+  }
+
   let reply, outputMode = null;
 
-  // ── Phase 1: Context Collection ──────────────────────────────────────────
+  // ── Phase 1: Context Collection — ask ONE question ───────────────────────
   if (conv.phase === 'collecting') {
     const ctx = conv.context || {};
     const layers = countLayers(ctx);
 
+    const id = ctx.identity || {};
+
+    // Is the goal specific about a field/domain yet (tech vs core vs non-core, or a
+    // concrete role)? If the goal is still broad, the field question comes next —
+    // framed by their college's common paths — BEFORE we ask about blockers.
+    const ctxGoalText = [ctx.target, ...(ctx.gap || []), ...(ctx.constraint || [])].filter(Boolean).join(' ');
+    const hasDomainSignal = /\btech\b|software|\bsde\b|\bswe\b|\bdata\b|\bml\b|\bai\b|\bcore\b|non-?core|consult|finance|fintech|product|analyst|analytics|research|design|hardware|embedded|quant|trading|marketing|\bdev\b/i.test(ctxGoalText);
+
     const missing = [];
-    if (!ctx.identity?.branch && !ctx.identity?.year && !ctx.identity?.college) missing.push('identity (college/branch/year)');
+    if (!id.college) missing.push('college/institute name (ASK THIS FIRST — most important)');
+    if (!id.branch) missing.push('branch/department');
+    if (!id.year) missing.push('current year of study');
     if (!ctx.target) missing.push('target goal');
-    if (!ctx.gap?.length) missing.push('what\'s blocking them');
+    else if (!hasDomainSignal) missing.push('FIELD/DOMAIN of the goal — tech vs core vs non-core (frame it with what students from their college + branch typically do)');
+    if (!ctx.gap?.length) missing.push('biggest blocker');
     if (!ctx.timeline) missing.push('timeline/urgency');
     if (!ctx.constraint?.length) missing.push('constraints');
 
@@ -345,24 +500,10 @@ Still missing: ${missing.length ? missing.join(', ') : 'Nothing — all layers c
 ---`;
 
     const rawReply = await callGroq(toGroqMessages(systemWithContext, conv.messages));
-
-    const contextUpdate = parseContextUpdate(rawReply);
-    conv.context = mergeContext(conv.context, contextUpdate);
-    conv.contextLayers = countLayers(conv.context);
-
     reply = stripTags(rawReply);
 
-    // Switch to engine once 3+ layers are collected
-    if (conv.contextLayers >= 3) {
-      conv.phase = 'engine';
-      conv.problemStatement = generateProblemStatement(conv.context);
-    }
-
-  // ── Phase 2: Execution Engine ────────────────────────────────────────────
+  // ── Phase 2: Execution Engine — final wrap-up, NO questions ──────────────
   } else {
-    // Regenerate problem statement in case context updated mid-engine
-    conv.problemStatement = generateProblemStatement(conv.context);
-
     const systemWithProblem = `${ENGINE_SYSTEM}
 
 ---
@@ -371,10 +512,11 @@ ${conv.problemStatement}
 ---`;
 
     const rawReply = await callGroq(toGroqMessages(systemWithProblem, conv.messages));
-
-    outputMode = parseOutputMode(rawReply);
-    conv.outputMode = outputMode;
     reply = stripTags(rawReply);
+
+    // Engine is ready → always route to the clarity page (verified seniors below).
+    outputMode = 'MENTOR_ROUTING';
+    conv.outputMode = outputMode;
   }
 
   // When the engine routes to a mentor, attach REAL matches from the DB. The LLM
@@ -386,6 +528,14 @@ ${conv.problemStatement}
     } catch (err) {
       console.error('Mentor match failed (non-fatal):', err.message);
     }
+  }
+
+  // Safety net: never persist or return an empty bubble. If stripping removed
+  // everything (model emitted only tags/reasoning), fall back to a useful prompt.
+  if (!reply || !reply.trim()) {
+    reply = conv.phase === 'collecting'
+      ? "Tell me a bit more so I can point you the right way — what's the main thing blocking you right now?"
+      : "Found seniors who walked a similar path from the same kind of background. Let me show you their exact paths.";
   }
 
   conv.messages.push({ role: 'assistant', content: reply });
