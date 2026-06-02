@@ -21,7 +21,7 @@ const sessionSchema = new mongoose.Schema({
   status:         { type: String, enum: ['upcoming', 'completed', 'cancelled', 'pending'], default: 'pending', index: true },
   meetingLink:    { type: String },
   notes:          { type: String, maxlength: 500 },
-}, { timestamps: true });
+}, { timestamps: true,collection: 'mentorship_sessions' });
 
 sessionSchema.index({ userId: 1, status: 1, scheduledAt: -1 });
 sessionSchema.index({ email: 1, scheduledAt: -1 });  // for guest lookups

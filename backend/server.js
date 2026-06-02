@@ -37,7 +37,7 @@ import { moderator } from './utils/ContentModerator.js';
 import { globalRateLimit } from './middleware/globalRateLimiter.js';
 import { sendAutoReply }   from './controllers/messageController.js';
 import ReminderCron from './services/ReminderCron.js';
-;
+import auth from './middleware/auth.js';
 
 // ─── Passport Configuration ────────────────────────────────────────────────
 import './config/passport.js';
@@ -206,63 +206,55 @@ app.use('/api/ai',            aiRoutes);
 // ─── Book a session (from BookingPage) ─────────────────────────────────────
 
 // GET /api/mentors/:mentorId/slots?date=2025-08-10
-app.get('/api/mentors/:mentorId/slots', async (req, res) => {
-  try {
-    const { mentorId } = req.params;
-    const { date } = req.query; // Expecting 'YYYY-MM-DD'
+// Shared slot logic — extract so both routes can use it
+async function getSlotsForDate(date, mentorObjectId) {
+  const ALL_SLOTS = [
+    { time: '10:00', period: 'Morning' },
+    { time: '11:30', period: 'Morning' },
+    { time: '14:00', period: 'Afternoon' },
+    { time: '16:30', period: 'Afternoon' },
+    { time: '19:00', period: 'Evening' },
+    { time: '20:30', period: 'Evening' },
+  ];
 
-    if (!date) {
-      return res.status(400).json({ error: 'date query param required (YYYY-MM-DD)' });
-    }
+  const dayStart = new Date(`${date}T00:00:00+05:30`);
+  const dayEnd   = new Date(`${date}T23:59:59.999+05:30`);
 
-    // 1. CRITICAL: Validate and enforce explicit ObjectId casting
-    if (!Types.ObjectId.isValid(mentorId)) {
-      return res.status(400).json({ error: 'Invalid mentorId format' });
-    }
-    const mentorObjectId = new Types.ObjectId(mentorId);
-
-    const ALL_SLOTS = [
-      { time: '10:00', period: 'Morning' },
-      { time: '11:30', period: 'Morning' },
-      { time: '14:00', period: 'Afternoon' },
-      { time: '16:30', period: 'Afternoon' },
-      { time: '19:00', period: 'Evening' },
-      { time: '20:30', period: 'Evening' },
-    ];
-
-    // 2. Clear boundaries for the selected day in IST
-    const dayStart = new Date(`${date}T00:00:00+05:30`);
-    const dayEnd   = new Date(`${date}T23:59:59.999+05:30`);
-
-    // 3. Find active bookings (safely handled with the casted ObjectId)
-    const bookedSlots = await Booking.find({//bookings are never created! fix its Creation with Session creation
+  let bookedTimes = new Set();
+  if (mentorObjectId) {                         // ← only query if we have a real ID
+    const booked = await Booking.find({
       mentorId: mentorObjectId,
       scheduledAt: { $gte: dayStart, $lte: dayEnd },
-      status: { $in: ['pending', 'confirmed'] }, 
+      status: { $in: ['pending', 'confirmed'] },
     }).select('scheduledAt').lean();
-    console.log("bookedSlots: ", bookedSlots);
-    // 4. Map booked times to an "HH:MM" string array
-    const bookedTimes = new Set(
-      bookedSlots.map(b => {
-        const d = new Date(b.scheduledAt);
-        // Force conversion into IST numerical strings to bypass OS string configuration mismatches
-        const istDate = new Date(d.getTime() + (5.5 * 60 * 60 * 1000)); 
-        const hours = String(istDate.getUTCHours()).padStart(2, '0');
-        const minutes = String(istDate.getUTCMinutes()).padStart(2, '0');
-        return `${hours}:${minutes}`;
-      })
-    );
-    console.log("bookedTimes: ", bookedTimes);
-    // 5. Always map ALL_SLOTS so slots are returned regardless of DB results
-    const slots = ALL_SLOTS.map((slot, i) => ({
-      id:        i + 1,
-      time:      slot.time,
-      period:    slot.period,
-      available: !bookedTimes.has(slot.time), // True if not found in bookedTimes
-    }));
 
-    // This ensures your frontend receives the array structure it expects
-    console.log(`Slots for mentor ${mentorId} on ${date}:`, slots);
+    bookedTimes = new Set(booked.map(b => {
+      const ist = new Date(b.scheduledAt.getTime() + 5.5 * 60 * 60 * 1000);
+      return `${String(ist.getUTCHours()).padStart(2,'0')}:${String(ist.getUTCMinutes()).padStart(2,'0')}`;
+    }));
+  }
+
+  return ALL_SLOTS.map((slot, i) => ({
+    id: i + 1,
+    time: slot.time,
+    period: slot.period,
+    available: !bookedTimes.has(slot.time),
+  }));
+}
+
+// Existing route — mentor-specific
+app.get('/api/mentors/:mentorId/slots', async (req, res) => {
+  const { mentorId } = req.params;
+  const { date } = req.query;
+  if (!date) return res.status(400).json({ error: 'date required' });
+
+  // Accept "null" string (sent by frontend when no mentor prop is passed)
+  const objectId = (mentorId && mentorId !== 'null' && Types.ObjectId.isValid(mentorId))
+    ? new Types.ObjectId(mentorId)
+    : null;
+
+  try {
+    const slots = await getSlotsForDate(date, objectId);
     res.json({ date, slots });
   } catch (err) {
     console.error('slots error:', err);
@@ -270,79 +262,109 @@ app.get('/api/mentors/:mentorId/slots', async (req, res) => {
   }
 });
 
-app.get('/api/my-bookings', async (req, res) => {
+// GET /api/my-bookings — fetches guest/public bookings via email lookup
+app.get('/api/my-bookings',auth, async (req, res) => {
   try {
     const { email } = req.query;
     if (!email) return res.status(400).json({ error: 'Email required' });
 
-    const sessions = await Session.find({ email: email.toLowerCase() })
+    // Migrated from Session to Booking
+    const bookings = await Booking.find({ email: email.toLowerCase() })
       .sort({ scheduledAt: -1 })
       .lean();
 
-    res.json(sessions);
+    res.json(bookings);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch bookings' });
   }
 });
-app.post('/api/book-session', async (req, res) => {
+
+// POST /api/book-session — public/guest session booking entrypoint
+app.post('/api/book-session',auth, async (req, res) => {
   try {
-    const { mentor, mentorId, sessionType, date, time, amount, goals, brief, name, email, phone, coupon } = req.body;
+    const {
+      mentor, mentorId, sessionType, date, time,
+      amount, goals, brief, name, email, phone, coupon
+    } = req.body;
+
     // Validation
-    if (!date || !time || !name?.trim() || !email?.trim() || !sessionType || !amount) {
+    if (!date || !time || !name?.trim() || !email?.trim() || !sessionType || !amount || !mentorId) {
       return res.status(400).json({ ok: false, error: 'Missing required fields' });
     }
 
-    // Build scheduledAt from date + time (e.g. "2025-08-10" + "10:00")
-    const scheduledAt = new Date(`${date}T${time}:00+05:30`); // IST offset
+    // Validate mentorId is a real ObjectId before any DB call
+    if (!Types.ObjectId.isValid(mentorId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid mentor' });
+    }
+    const mentorObjectId = new Types.ObjectId(mentorId);
+
+    // Build scheduledAt in IST
+    const scheduledAt = new Date(`${date}T${time}:00+05:30`);
     if (isNaN(scheduledAt.getTime())) {
       return res.status(400).json({ ok: false, error: 'Invalid date or time' });
     }
 
-    // Prevent double-booking the same slot for the same mentor
-    if (mentorId) {
-      const conflict = await Session.findOne({
-        mentorId,
-        scheduledAt,
-        status: { $in: ['pending', 'upcoming'] }
-      });
-      console.log(conflict);
-      if (conflict) {
-        return res.status(409).json({ ok: false, error: 'This slot is already booked. Please choose another time.' });
-      }
+    // Prevent double-booking — use casted ObjectId for reliable match
+    const conflict = await Booking.findOne({
+      mentorId:    mentorObjectId,
+      scheduledAt,
+      status: { $in: ['pending', 'confirmed', 'upcoming'] },
+    });
+    if (conflict) {
+      return res.status(409).json({ ok: false, error: 'This slot is already booked. Please choose another time.' });
     }
 
-    const session = await Session.create({
-      mentorId:  mentorId || null,
-      mentorName: mentor || 'Your Mentor',
-      name:       name.trim(),
-      email:      email.trim().toLowerCase(),
-      phone:      phone || '',
-      sessionType,
-      amount,
-      goals:      goals || [],
-      brief:      brief || '',
-      coupon:     coupon || null,
+    // Normalize sessionType → serviceType enum
+    // Fix: use /g flag + trim so "Career Roadmap" → "career-roadmap" correctly
+    const validServiceTypes = ['video-call', 'audio-call', 'chat', 'review', 'career-roadmap'];
+    const formattedServiceType = sessionType.trim().toLowerCase().replace(/\s+/g, '-');
+    const serviceType = validServiceTypes.includes(formattedServiceType)
+      ? formattedServiceType
+      : 'video-call';
+
+    // Derive duration from session title for record-keeping
+    const durationMap = { 'audio-call': 30, 'video-call': 45, 'career-roadmap': 60 };
+    const duration = durationMap[serviceType] || 30;
+
+    const booking = await Booking.create({
+      userId:         req.user?._id || null,   // populated if auth middleware runs
+      mentorId:       mentorObjectId,
+      name:           name.trim(),
+      email:          email.trim().toLowerCase(),
+      phone:          phone || '',
+      serviceType,
+      topic:          sessionType,
+      duration,
+      amount:         Number(amount),
+      currency:       'INR',
+      goals:          goals || [],
+      brief:          brief || '',
+      coupon:         coupon || null,
       scheduledAt,
-      status:     'pending',
+      status:         'pending',
+      meetingPlatform:'google-meet',
+      rescheduleCount: 0,
+      refundAmount:   0,
+      refundStatus:   'none',
+      notes:          '',
     });
 
-    // Send confirmation email (non-blocking)
+    // Confirmation email — non-blocking
     if (resend) {
       resend.emails.send({
         from:    'Atyant <notification@atyant.in>',
         to:      [email.trim()],
         subject: `Your session is confirmed — ${sessionType}`,
-        text:    `Hi ${name},\n\nYour ${sessionType} session with ${mentor} is scheduled for ${date} at ${time} IST.\n\nBooking ID: ${session._id}\n\nWe'll send the meeting link 30 minutes before your session.\n\n— Atyant Team`,
+        text:    `Hi ${name},\n\nYour ${sessionType} session with ${mentor || 'Your Mentor'} is scheduled for ${date} at ${time} IST.\n\nBooking ID: ${booking._id}\n\nWe'll send the meeting link 30 minutes before your session.\n\n— Atyant Team`,
       }).catch(err => console.error('Confirmation email failed:', err.message));
     }
 
-    res.json({ ok: true, bookingId: session._id, message: 'Session booked successfully' });
+    res.json({ ok: true, bookingId: booking._id, message: 'Session booked successfully' });
   } catch (err) {
     console.error('book-session error:', err);
     res.status(500).json({ ok: false, error: 'Server: Booking failed. Please try again.' });
   }
 });
-
 // Centralized error handler (should be last app.use before server start)
 app.use(errorHandler);
 

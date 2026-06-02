@@ -1,12 +1,12 @@
 import express from 'express';
-import Session from '../models/Session.js';
+import Booking from '../models/Booking.js';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// GET /api/sessions/my — returns empty list for guests, real data for logged-in users
+// GET /api/bookings/my — returns empty list for guests, real data for logged-in users
 router.get('/my', optionalAuth, async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?._id;
@@ -14,15 +14,15 @@ router.get('/my', optionalAuth, async (req, res) => {
       return res.json({ ok: true, upcoming: [], past: [] });
     }
     const now = new Date();
-    const sessions = await Session.find({ userId })
+    const bookings = await Booking.find({ userId })
       .sort({ scheduledAt: -1 })
       .lean();
 
-    const upcoming = sessions.filter(
-      s => new Date(s.scheduledAt) > now && s.status !== 'cancelled'
+    const upcoming = bookings.filter(
+      b => new Date(b.scheduledAt) > now && b.status !== 'cancelled'
     );
-    const past = sessions.filter(
-      s => new Date(s.scheduledAt) <= now || s.status === 'completed'
+    const past = bookings.filter(
+      b => new Date(b.scheduledAt) <= now || b.status === 'completed'
     );
 
     res.json({ ok: true, upcoming, past });
@@ -31,86 +31,85 @@ router.get('/my', optionalAuth, async (req, res) => {
   }
 });
 
-// POST /api/sessions/book — book a new session
-// Body: { mentorId?, date, time, topic? }
-// date format: "May 26, 2026" or "2026-05-26"
-// time format: "9:00 AM" or "09:00"
+// POST /api/bookings/book — book a new session
+// Body: { mentorId, date, time, topic, serviceType, amount }
 router.post('/book', protect, async (req, res) => {
   try {
-    const { mentorId, date, time, topic } = req.body;
+    const { mentorId, date, time, topic, serviceType, amount } = req.body;
 
     if (!date || !time) {
       return res.status(400).json({ ok: false, error: 'date and time are required' });
     }
 
+    if (!mentorId) {
+      return res.status(400).json({ ok: false, error: 'mentorId is required' });
+    }
+
     const scheduledAt = new Date(`${date} ${time}`);
     if (isNaN(scheduledAt.getTime())) {
-      return res.status(400).json({ ok: false, error: 'Invalid date/time — use format "May 26, 2026" and "9:00 AM"' });
+      return res.status(400).json({ ok: false, error: 'Invalid date/time format' });
     }
 
     if (scheduledAt < new Date()) {
       return res.status(400).json({ ok: false, error: 'Cannot book a session in the past' });
     }
 
-    let mentorName = 'Your Mentor';
-    let mentorInitials = 'YM';
-    let resolvedMentorId = null;
-
-    if (mentorId) {
-      const mentor = await User.findById(mentorId).select('name username').lean();
-      if (mentor) {
-        resolvedMentorId = mentor._id;
-        mentorName = mentor.name || mentor.username;
-        mentorInitials = mentorName
-          .split(' ')
-          .map(n => n[0])
-          .join('')
-          .toUpperCase()
-          .slice(0, 2);
-      }
+    // Fetch mentor details
+    const mentor = await User.findById(mentorId).lean();
+    if (!mentor) {
+      return res.status(404).json({ ok: false, error: 'Mentor not found' });
     }
 
-    const session = await Session.create({
-      userId:         req.user.userId,
-      mentorId:       resolvedMentorId,
-      mentorName,
-      mentorInitials,
-      topic:          topic || 'Career Guidance Session',
+    // Fetch active user details to populate required booking schema details
+    const activeUser = await User.findById(req.user.userId).lean();
+    if (!activeUser) {
+      return res.status(404).json({ ok: false, error: 'User profile not found' });
+    }
+
+    const booking = await Booking.create({
+      userId:       req.user.userId,
+      mentorId:     mentor._id,
+      name:         activeUser.name || activeUser.username || 'Logged In User',
+      email:        activeUser.email,
+      phone:        activeUser.phone || '',
+      serviceType:  serviceType || 'video-call', // Falls back to schema default safe enum
+      topic:        topic || 'Career Guidance Session',
       scheduledAt,
-      status:         'upcoming',
+      amount:       amount || 0, // Fulfilled required amount field
+      status:       'upcoming',
     });
 
-    res.status(201).json({ ok: true, session });
+    res.status(201).json({ ok: true, booking });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// PATCH /api/sessions/:id/cancel — cancel a session
+// PATCH /api/bookings/:id/cancel — cancel a booking
 router.patch('/:id/cancel', protect, async (req, res) => {
   try {
-    const session = await Session.findOneAndUpdate(
+    const booking = await Booking.findOneAndUpdate(
       { _id: req.params.id, userId: req.user.userId },
-      { status: 'cancelled' },
+      { status: 'cancelled', cancelledAt: new Date() },
       { new: true }
     );
-    if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
-    res.json({ ok: true, session });
+    if (!booking) return res.status(404).json({ ok: false, error: 'Booking not found' });
+    res.json({ ok: true, booking });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// PATCH /api/sessions/:id/complete — mark a session complete (mentor/admin)
+// PATCH /api/bookings/:id/complete — mark a booking complete (mentor/admin)
 router.patch('/:id/complete', protect, async (req, res) => {
   try {
-    const session = await Session.findOneAndUpdate(
+    const booking = await Booking.findOneAndUpdate(
       { _id: req.params.id },
-      { status: 'completed' },
+      { status: 'completed', completedAt: new Date() },
       { new: true }
     );
-    if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
-    res.json({ ok: true, session });
+    if (!booking) return res.status(404).json({ ok: false, error: 'Booking not found' });
+    res.json({ ok: true, booking });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
