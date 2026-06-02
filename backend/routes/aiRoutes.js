@@ -1,5 +1,4 @@
 import express from 'express';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { optionalAuth } from '../middleware/auth.js';
 import {
   processAtyantMessage,
@@ -9,11 +8,54 @@ import {
 
 const router = express.Router();
 
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL   = 'llama3-70b-8192';
+
 // Simple in-memory conversation store (per session, not persisted)
-// For production, use Redis or MongoDB
 const conversations = new Map();
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+async function groqChat(messages) {
+  const response = await fetch(GROQ_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages,
+      temperature: 0.7,
+      max_tokens: 512
+    })
+  });
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Groq API error ${response.status}: ${err}`);
+  }
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || '';
+}
+
+const SYSTEM_PROMPT = `You are Atyant — India's career execution intelligence. You are not a chatbot. You are not a generic AI assistant. You are the voice of a platform built by VNIT students, for Indian engineering students who are trying to figure out exactly what to do next in their career.
+
+YOUR PERSONALITY:
+- You speak like a sharp, warm senior from the same college — not a corporate bot.
+- You are direct. You do not give vague, generic advice.
+- You ask smart questions before giving answers.
+- You never say "Great question!" or "Certainly!" or "As an AI..."
+- You speak in short, clear sentences. You do not lecture.
+- You mix Hindi naturally only if the student starts in Hindi. Otherwise stay in clean English.
+
+WHAT YOU NEVER DO:
+- Never give a numbered list of 10 generic steps.
+- Never say "it depends" without immediately asking the specific question that resolves it.
+- Never end a message without a clear next step or one specific question.
+- Never use: "leverage", "utilize", "synergy", "empower", "journey", "passion", "unlock", "delve".
+
+HOW YOU START:
+Ask one direct question that gets to the point. Example: "Hey — what are you trying to crack? Tell me the goal and where you're starting from."
+
+LANGUAGE: Short sentences. Max 3 per paragraph. Use: "Here's the thing", "The honest answer is", "What actually works is".`;
 
 // POST /api/ai/chat
 // Body: { message, sessionId? }
@@ -24,36 +66,30 @@ router.post('/chat', optionalAuth, async (req, res) => {
     if (!message || !message.trim()) {
       return res.status(400).json({ ok: false, error: 'Message is required' });
     }
-
     if (message.trim().length > 1000) {
       return res.status(400).json({ ok: false, error: 'Message too long (max 1000 chars)' });
     }
 
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      systemInstruction: `You are Atyant AI, a friendly career guidance assistant for Indian engineering students. 
-Keep responses concise (2-4 sentences max for simple questions). 
-Be warm, helpful, and practical. Focus on career, internships, placements, and college life.
-If asked something unrelated to career/education, gently redirect.`
-    });
-
-    // Get or create chat history for this session
     const sid = sessionId || (req.user?._id?.toString()) || 'guest';
     const history = conversations.get(sid) || [];
 
-    const chat = model.startChat({ history });
-    const result = await chat.sendMessage(message.trim());
-    const reply = result.response.text();
+    // Build messages array for Groq (OpenAI format)
+    const messages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...history,
+      { role: 'user', content: message.trim() }
+    ];
 
-    // Update history (keep last 10 turns to avoid token bloat)
+    const reply = await groqChat(messages);
+
+    // Update history (keep last 10 turns)
     history.push(
-      { role: 'user',  parts: [{ text: message.trim() }] },
-      { role: 'model', parts: [{ text: reply }] }
+      { role: 'user',      content: message.trim() },
+      { role: 'assistant', content: reply }
     );
-    if (history.length > 20) history.splice(0, 2); // remove oldest turn
+    if (history.length > 20) history.splice(0, 2);
     conversations.set(sid, history);
 
-    // Clean up old sessions (keep map small)
     if (conversations.size > 500) {
       const firstKey = conversations.keys().next().value;
       conversations.delete(firstKey);
@@ -63,14 +99,9 @@ If asked something unrelated to career/education, gently redirect.`
 
   } catch (error) {
     console.error('AI chat error:', error.message);
-
     if (error.message?.includes('429')) {
       return res.status(429).json({ ok: false, error: 'Too many requests. Please wait a moment and try again.' });
     }
-    if (error.message?.includes('API key')) {
-      return res.status(500).json({ ok: false, error: 'AI service unavailable. Please try again later.' });
-    }
-
     res.status(500).json({ ok: false, error: 'Something went wrong. Please try again.' });
   }
 });

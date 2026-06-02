@@ -1,69 +1,71 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import AtyantConversation from '../models/AtyantConversation.js';
 import User from '../models/User.js';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// ─── Groq (OpenAI-compatible chat completions) ───────────────────────────────
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_MODEL   = process.env.GROQ_MODEL || 'llama3-70b-8192';
+const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
+
+async function callGroq(messages, { temperature = 0.7, maxTokens = 300 } = {}) {
+  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not configured');
+  const res = await fetch(GROQ_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
+    body: JSON.stringify({ model: GROQ_MODEL, messages, temperature, max_tokens: maxTokens }),
+    signal: AbortSignal.timeout(20000), // hung socket throws → route returns a friendly error
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`Groq ${res.status}: ${body.slice(0, 200)}`);
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content || '';
+}
+
+// Build Groq/OpenAI messages: system + recent turns.
+// conv.messages already includes the current user turn, so no re-append needed.
+function toGroqMessages(systemText, messages) {
+  const recent = messages.slice(-10); // last 5 turns only — saves input tokens
+  return [
+    { role: 'system', content: systemText },
+    ...recent.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
+  ];
+}
 
 // ─── Prompts ────────────────────────────────────────────────────────────────
 
-const COLLECTION_SYSTEM = `You are Atyant's AI intake system for Indian engineering students. Atyant is a career guidance platform connecting Tier-2/3 engineering students with alumni mentors who've cracked real placements, internships, and higher studies.
+// Lean base — ~80 tokens vs ~600 before
+const MASTER_SYSTEM_PROMPT = `You are Atyant — career AI for Indian engineering students. Built by VNIT students.
+Voice: sharp senior, not a bot. Direct. Warm. No filler.
+Banned words: "Great question", "Certainly", "As an AI", "leverage", "empower", "delve", "journey", "unlock", "Let me help", "I'd be happy to", "Got it —".
+Format: short sentences, max 3 per paragraph, no bullet dumps.
+Rule: every reply ends with ONE next step OR one question. Never both. Never neither.`;
 
-Your job is to have a natural conversation that collects the student's career context across 5 layers:
-1. Identity — college, branch, year, CGPA
-2. Target — what they want (internship, placement, higher studies, skill roadmap, resume review, etc.)
-3. Gap — what's blocking them (no projects, low CGPA, non-CS branch, no network, weak communication, etc.)
-4. Timeline — urgency (this month, next semester, 6 months, long-term plan)
-5. Constraint — hard limits (no paid courses, first-gen student, no CS peers, time-constrained, etc.)
+// Collection phase — ~120 tokens
+const COLLECTION_SYSTEM = `${MASTER_SYSTEM_PROMPT}
 
-Conversation rules:
-- Be warm and direct. Not corporate. Not a chatbot. Talk like a sharp senior.
-- If the student asks a career question, give a short useful answer first, then collect context
-- Ask exactly ONE missing context question per response — woven naturally, never listed
-- Never ask multiple questions in one response
-- Keep responses under 120 words unless giving a detailed roadmap
-- Be specific to India — reference real companies, timelines, and playbooks that work for Tier-2/3 students
+INTAKE MODE:
+- Ask ONE question per reply. The last sentence is always the question.
+- Max 60 words per reply.
+- Never open with filler. Start with the substance.
+- Priority order for missing info: year → target → what they've tried → timeline
+- Never ask CGPA unless directly relevant.
 
-After your conversational reply, output a JSON block with what you've learned from the ENTIRE conversation:
-<context_update>
-{
-  "identity": {
-    "college": null,
-    "collegeType": null,
-    "branch": null,
-    "year": null,
-    "cgpa": null
-  },
-  "target": null,
-  "gap": [],
-  "timeline": null,
-  "constraint": []
-}
-</context_update>
+After reply, emit context JSON (invisible to user):
+<context_update>{"identity":{"college":null,"collegeType":null,"branch":null,"year":null,"cgpa":null},"target":null,"gap":[],"timeline":null,"constraint":[]}</context_update>
+Only fill fields you're confident about. null = unknown. collegeType: IIT/NIT-top/NIT-other/BITS/Tier-2/Tier-3/private.`;
 
-Rules for the JSON:
-- Only fill in fields you're confident about from the ENTIRE conversation history
-- null means genuinely unknown — never guess
-- Arrays: include all values mentioned across the conversation
-- collegeType: one of "IIT", "NIT-top", "NIT-other", "BITS", "Tier-2", "Tier-3", "private"`;
+// Engine phase — ~100 tokens
+const ENGINE_SYSTEM = `${MASTER_SYSTEM_PROMPT}
 
-const ENGINE_SYSTEM = `You are Atyant's career execution engine for Indian engineering students from Tier-2/3 colleges.
+EXECUTION MODE — context is known. Give specific, actionable guidance.
+Modes: AI_ANSWER / MENTOR_ROUTING / CLARIFY — pick one.
+Rules: specific to their college+branch+year. No IIT advice for Tier-2 students. Max 150 words. End with one action they can do today.
+For MENTOR_ROUTING: describe the type of mentor needed. Never invent a mentor name or profile.
 
-You operate in 3 output modes — pick the right one:
-- AI_ANSWER: You can give a specific, actionable execution plan right now
-- MENTOR_ROUTING: The problem is nuanced enough that a mentor who walked this exact path will provide more value than AI advice
-- CLARIFY: You need one more critical piece of context before giving useful guidance
-
-Response rules:
-- Be brutally specific to the student's actual college, branch, year, and constraints
-- Don't give IIT-style advice to Tier-2/3 students — different network, different playbook
-- Reference real timelines: what to do in week 1, week 2, etc. for time-constrained students
-- Name specific skills, platforms, or companies relevant to their background
-- End every response with a concrete action the student can take TODAY, not eventually
-- If routing to mentor: explain what type of mentor background would best serve this student
-- Keep responses under 300 words unless giving a full roadmap (then be as specific as needed)
-
-After your response, declare your mode:
-<output_mode>AI_ANSWER</output_mode>`;
+End with: <output_mode>AI_ANSWER</output_mode>`;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -105,11 +107,16 @@ function generateProblemStatement(context = {}) {
 }
 
 function parseContextUpdate(text) {
-  const match = text.match(/<context_update>([\s\S]*?)<\/context_update>/);
+  // Tolerant of malformed openers the model sometimes emits: "/context_update>",
+  // "context_update>", "<context_update>". Close tag optional (falls back to end).
+  const match = text.match(/<?\/?\s*context_update\s*>\s*([\s\S]*?)\s*(?:<\/?\s*context_update\s*>|$)/i);
   if (!match) return null;
   try {
     return JSON.parse(match[1].trim());
   } catch {
+    // Last resort: grab the first {...} block after the marker
+    const obj = match[1].match(/\{[\s\S]*\}/);
+    if (obj) { try { return JSON.parse(obj[0]); } catch { /* noop */ } }
     return null;
   }
 }
@@ -123,8 +130,16 @@ function parseOutputMode(text) {
 
 function stripTags(text) {
   return text
-    .replace(/<context_update>[\s\S]*?<\/context_update>/g, '')
-    .replace(/<output_mode>[\s\S]*?<\/output_mode>/g, '')
+    // Strip <think>...</think> blocks (DeepSeek/Qwen reasoning traces)
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    // Tolerant of malformed openers ("/context_update>", "context_update>") and a
+    // missing close tag (strips to end of text). This is what was leaking JSON to users.
+    .replace(/<?\/?\s*context_update\s*>[\s\S]*?(?:<\/?\s*context_update\s*>|$)/gi, '')
+    .replace(/<?\/?\s*output_mode\s*>[\s\S]*?(?:<\/?\s*output_mode\s*>|$)/gi, '')
+    // Sweep any stray tag fragments left behind
+    .replace(/<\/?\s*(?:context_update|output_mode)\s*>/gi, '')
+    // A bare JSON blob with our exact context keys also gets stripped as a fallback
+    .replace(/\{[\s\S]*?"identity"[\s\S]*?\}\s*\}/gi, '')
     .trim();
 }
 
@@ -162,63 +177,146 @@ function mergeContext(existing = {}, update) {
   return merged;
 }
 
-// Build Gemini-compatible history from stored messages, excluding the last user message
-function buildGeminiHistory(messages) {
-  // Exclude the last message (current user turn, passed via sendMessage)
-  const history = messages.slice(0, -1);
+// Find REAL mentors from the DB to back a MENTOR_ROUTING decision. The LLM must
+// never invent mentors — this is the only source of truth the frontend renders.
+async function matchMentors(context = {}, limit = 3) {
+  const { identity = {}, target, gap = [] } = context;
+  const terms = [target, identity.branch, ...(gap || [])]
+    .filter(Boolean)
+    .map(t => String(t).toLowerCase());
 
-  // Gemini requires strict user/model alternation starting with user
-  // Filter to ensure valid alternation
-  const valid = [];
-  let lastRole = null;
+  const base = { role: 'mentor' };
+  let mentors = [];
 
-  for (const msg of history) {
-    const geminiRole = msg.role === 'assistant' ? 'model' : 'user';
-    if (geminiRole === lastRole) continue; // skip duplicates
-    valid.push({ role: geminiRole, parts: [{ text: msg.content }] });
-    lastRole = geminiRole;
+  // Loose relevance match on expertise / interests / domain when we have signals.
+  if (terms.length) {
+    const rx = terms.map(t => new RegExp(t.split(/\s+/).slice(0, 2).join('|'), 'i'));
+    mentors = await User.find({
+      ...base,
+      $or: [
+        { expertise: { $in: rx } },
+        { interests: { $in: rx } },
+        { domainExperience: { $in: rx } },
+        { topCompanies: { $in: rx } },
+      ],
+    })
+      .select('name username profilePicture bio expertise interests topCompanies companyDomain education')
+      .limit(limit)
+      .lean();
   }
 
-  // History must start with 'user'
-  if (valid.length > 0 && valid[0].role !== 'user') {
-    valid.shift();
+  // Fallback: most recently active mentors so the user is never shown nothing.
+  if (mentors.length < limit) {
+    const existing = new Set(mentors.map(m => String(m._id)));
+    const fill = await User.find({ ...base, _id: { $nin: [...existing] } })
+      .select('name username profilePicture bio expertise interests topCompanies companyDomain education')
+      .sort({ lastActive: -1 })
+      .limit(limit - mentors.length)
+      .lean();
+    mentors = [...mentors, ...fill];
   }
 
-  // History must end with 'model' (the last assistant response before current user msg)
-  if (valid.length > 0 && valid[valid.length - 1].role !== 'model') {
-    valid.pop();
-  }
+  return mentors.map(m => ({
+    id: String(m._id),
+    // Most mentor records have no `name` set — fall back to username so cards never render blank.
+    name: m.name || m.username || 'Atyant Mentor',
+    username: m.username,
+    profilePicture: m.profilePicture,
+    bio: m.bio,
+    expertise: m.expertise || [],
+    topCompanies: m.topCompanies || [],
+    companyDomain: m.companyDomain,
+    college: m.education?.[0]?.institutionName || m.education?.[0]?.institution || null,
+  }));
+}
 
-  // Keep last 20 turns (10 exchanges) to stay within token limits
-  return valid.slice(-20);
+// ─── Greeting Detection ─────────────────────────────────────────────────────
+
+const GREETING_PATTERNS = /^(hi|hello|hey|hii|helo|helloo|heyy|yo|sup|namaste|hola|good morning|good evening|good afternoon|gm|ge)\s*[!.]*\s*$/i;
+
+function isGreeting(message) {
+  return GREETING_PATTERNS.test(message.trim());
+}
+
+function buildGreeting(user) {
+  const name = user?.name || user?.username || null;
+  const college = user?.education?.[0]?.institutionName || user?.education?.[0]?.institution || null;
+  const branch  = user?.education?.[0]?.field || null;
+  const year    = user?.education?.[0]?.year || null;
+
+  const nameStr = name ? `${name}` : 'there';
+
+  // Build context-aware topic suggestions based on profile
+  const topics = [];
+  if (branch && branch.toLowerCase().match(/metallurgy|mechanical|civil|chemical|electrical|ece/)) {
+    topics.push('core vs software switch');
+  }
+  if (year && (year === '3' || year === '3rd' || year === '2' || year === '2nd')) {
+    topics.push('internships');
+  }
+  if (year && (year === '4' || year === '4th' || year === 'final')) {
+    topics.push('placements');
+  }
+  topics.push('roadmap', 'resume', 'higher studies');
+
+  const topicStr = topics.slice(0, 4).join(', ');
+  const collegeStr = college ? ` from ${college}` : '';
+
+  return `Hey ${nameStr}! 👋\n\nGood to see you${collegeStr}. What are you working on today — ${topicStr}, or something else on your mind?`;
 }
 
 // ─── Core Engine ────────────────────────────────────────────────────────────
 
 export async function processAtyantMessage(sessionId, userMessage, userId = null) {
   let conv = await AtyantConversation.findOne({ sessionId });
+  let userProfile = null;
+
+  // Fetch user profile once — used for greeting + context seeding
+  if (userId) {
+    try {
+      userProfile = await User.findById(userId)
+        .select('name username education interests')
+        .lean();
+    } catch (err) {
+      console.error('Profile fetch failed (non-fatal):', err.message);
+    }
+  }
+
   if (!conv) {
     conv = new AtyantConversation({ sessionId, userId: userId || null });
-    // Seed identity from the logged-in user's profile so the intake never
-    // re-asks college/branch/year it already knows. ("understand first.")
-    if (userId) {
-      try {
-        const u = await User.findById(userId).select('education interests').lean();
-        const edu = u?.education?.[0] || {};
-        conv.context = mergeContext(conv.context, {
-          identity: {
-            college: edu.institutionName || edu.institution || null,
-            branch: edu.field || null,
-            year: edu.year || null,
-            cgpa: edu.cgpa != null ? String(edu.cgpa) : null,
-          },
-          target: u?.interests?.[0] || null,
-        });
-        conv.contextLayers = countLayers(conv.context);
-      } catch (err) {
-        console.error('Profile seed failed (non-fatal):', err.message);
-      }
+    // Seed identity from profile so intake never re-asks what it already knows
+    if (userProfile) {
+      const edu = userProfile.education?.[0] || {};
+      conv.context = mergeContext(conv.context, {
+        identity: {
+          college: edu.institutionName || edu.institution || null,
+          branch:  edu.field || null,
+          year:    edu.year  || null,
+          cgpa:    edu.cgpa != null ? String(edu.cgpa) : null,
+        },
+        target: userProfile.interests?.[0] || null,
+      });
+      conv.contextLayers = countLayers(conv.context);
     }
+  }
+
+  // ── Greeting shortcut — warm reply, no AI call needed ───────────────────
+  if (isGreeting(userMessage)) {
+    const reply = buildGreeting(userProfile);
+    conv.messages.push({ role: 'user', content: userMessage });
+    conv.messages.push({ role: 'assistant', content: reply });
+    if (conv.messages.length > 30) conv.messages = conv.messages.slice(-30);
+    await conv.save();
+    return {
+      reply,
+      phase: conv.phase,
+      contextLayers: conv.contextLayers,
+      context: conv.context,
+      problemStatement: conv.problemStatement,
+      outputMode: null,
+      matchedMentors: [],
+      sessionId
+    };
   }
 
   conv.messages.push({ role: 'user', content: userMessage });
@@ -246,15 +344,7 @@ ${JSON.stringify(ctx, null, 2)}
 Still missing: ${missing.length ? missing.join(', ') : 'Nothing — all layers collected!'}
 ---`;
 
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      systemInstruction: systemWithContext
-    });
-
-    const history = buildGeminiHistory(conv.messages);
-    const chat = model.startChat({ history });
-    const result = await chat.sendMessage(userMessage);
-    const rawReply = result.response.text();
+    const rawReply = await callGroq(toGroqMessages(systemWithContext, conv.messages));
 
     const contextUpdate = parseContextUpdate(rawReply);
     conv.context = mergeContext(conv.context, contextUpdate);
@@ -280,19 +370,22 @@ Student's Problem Statement (fully mapped by intake system):
 ${conv.problemStatement}
 ---`;
 
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      systemInstruction: systemWithProblem
-    });
-
-    const history = buildGeminiHistory(conv.messages);
-    const chat = model.startChat({ history });
-    const result = await chat.sendMessage(userMessage);
-    const rawReply = result.response.text();
+    const rawReply = await callGroq(toGroqMessages(systemWithProblem, conv.messages));
 
     outputMode = parseOutputMode(rawReply);
     conv.outputMode = outputMode;
     reply = stripTags(rawReply);
+  }
+
+  // When the engine routes to a mentor, attach REAL matches from the DB. The LLM
+  // describes the type of mentor; the frontend renders these actual cards.
+  let matchedMentors = [];
+  if (outputMode === 'MENTOR_ROUTING') {
+    try {
+      matchedMentors = await matchMentors(conv.context);
+    } catch (err) {
+      console.error('Mentor match failed (non-fatal):', err.message);
+    }
   }
 
   conv.messages.push({ role: 'assistant', content: reply });
@@ -311,6 +404,7 @@ ${conv.problemStatement}
     context: conv.context,
     problemStatement: conv.problemStatement,
     outputMode: conv.outputMode,
+    matchedMentors,
     sessionId
   };
 }

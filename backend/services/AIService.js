@@ -35,62 +35,62 @@ export const getQuestionEmbedding = async (text) => {
 
 class AIService {
   constructor() {
-    this.apiKey = process.env.GEMINI_API_KEY;
-    // Use gemini-1.5-flash for v1beta endpoint compatibility (public API key)
-    this.model = 'gemini-1.5-flash';
-    
+    this.apiKey = process.env.GROQ_API_KEY;
+    this.model  = 'llama3-70b-8192';
+    this.apiUrl = 'https://api.groq.com/openai/v1/chat/completions';
+
     if (!this.apiKey) {
-      console.error('❌ GEMINI_API_KEY not found in .env!');
+      console.error('❌ GROQ_API_KEY not found in .env!');
       return;
     }
-    console.log('✅ Gemini AI initialized successfully');
+    console.log('✅ Groq AI initialized successfully');
+  }
+
+  async _groqRequest(systemPrompt, userPrompt) {
+    const response = await fetch(this.apiUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: this.model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user',   content: userPrompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 1024
+      })
+    });
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Groq API error ${response.status}: ${err}`);
+    }
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || '';
   }
   // AIService class ke andar refineExperience function mein prompt ko aise change karein:
-async refineExperience(rawData) {
-  try {
-    if (!this.apiKey) return rawData;
+  async refineExperience(rawData) {
+    try {
+      if (!this.apiKey) return rawData;
 
-    // 🔥 NEW HUMAN PROMPT: Isse AI feeling khatam hogi
-    const prompt = `You are a senior mentor at Atyant. A mentor shared their raw journey below. 
-    Your task: Fix only the grammar and make the structure readable. 
-    STRICT RULES:
-    1. DO NOT change the mentor's original story or specific details.
-    2. KEEP the tone casual and "Senior-like". 
-    3. If they used Hinglish (Hindi + English), PRESERVE IT.
-    4. AVOID robotic words like 'delve', 'unleash', 'comprehensive', or 'empower'.
-    5. Return ONLY a JSON object with these keys: 
-    6. Map 'What failed' text to the 'keyMistakes' array.
-    7. Map 'Step-by-step actions' to the 'actionableSteps' array.
-{
-  "mainAnswer": "Short summary",
-  "situation": "The backstory",
-  "firstAttempt": "Initially tried...",
-  "keyMistakes": [
-    { "mistake": "Mistake Title", "description": "Why it failed" }
-  ],
-  "whatWorked": "Final success solution",
-  "actionableSteps": [
-    { "step": "Step Title", "description": "What to do exactly" }
-  ],
-  "timeline": "Months/Days",
-  "differentApproach": "If I did it today...",
-  "additionalNotes": "Final tips"
-}
-    
-    RAW DATA: ${JSON.stringify(rawData)}`;
+      const systemPrompt = `You are a senior mentor at Atyant. Fix grammar and structure of mentor journeys.
+STRICT RULES:
+1. DO NOT change the mentor's original story or specific details.
+2. KEEP the tone casual and "Senior-like".
+3. If they used Hinglish (Hindi + English), PRESERVE IT.
+4. AVOID robotic words like 'delve', 'unleash', 'comprehensive', or 'empower'.
+5. Return ONLY a valid JSON object, no markdown.`;
 
-    // Use v1 endpoint for gemini-1.5-flash
-    const url = `https://generativelanguage.googleapis.com/v1/models/${this.model}:generateContent?key=${this.apiKey}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-    });
+      const userPrompt = `Fix this mentor's raw journey and return JSON with keys:
+mainAnswer, situation, firstAttempt, keyMistakes (array), whatWorked, actionableSteps (array), timeline, differentApproach, additionalNotes.
 
-    const data = await response.json();
-    const aiText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-    const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : rawData;
+RAW DATA: ${JSON.stringify(rawData)}`;
+
+      const aiText = await this._groqRequest(systemPrompt, userPrompt);
+      const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : rawData;
     
     // 🔴 FIX: Validate and normalize actionableSteps format
     if (parsed.actionableSteps) {
@@ -154,10 +154,19 @@ async refineExperience(rawData) {
 }
   // Aapka Platform Knowledge Prompt
   getSystemPrompt() {
-    return `You are Atyant AI Assistant - an expert on the Atyant student mentorship platform.
-    ABOUT ATYANT: ${ATYANT_KNOWLEDGE.platform.description}
-    KEY FEATURES: ${ATYANT_KNOWLEDGE.platform.features.map(f => `${f.icon} ${f.name}`).join(', ')}
-    YOUR ROLE: Help students find mentors and answer Atyant related queries concisely. 😊`;
+    return `You are Atyant's AI — talk like a sharp senior who already cracked college, not like a support bot.
+
+ABOUT ATYANT: ${ATYANT_KNOWLEDGE.platform.description}
+KEY FEATURES: ${ATYANT_KNOWLEDGE.platform.features.map(f => `${f.icon} ${f.name}`).join(', ')}
+
+YOUR JOB: Help Tier-2/3 engineering students find the right mentor and answer Atyant questions. When the student has a real career problem, point them to the mentor who walked that exact path instead of faking a full answer.
+
+VOICE:
+- Plain, direct sentences. Get to the point in the first line. Contractions are fine.
+- Warm but never soft. Specific over generic — name real companies, platforms, timelines.
+- Keep it short. 2-4 sentences unless they ask for a roadmap.
+
+NEVER write (instant robot tells — banned): "Great question!", "I'd be happy to", "Let me help you with that", "delve", "unleash", "comprehensive", "empower", "leverage", "seamless", "In today's competitive world", "Feel free to". No emoji spam. Don't recap what you just said.`;
   }
 
   /**
@@ -184,24 +193,8 @@ async refineExperience(rawData) {
       if (platformInfo) {
         aiResponse = platformInfo.type === 'faq' ? platformInfo.content.answer : "I can help with that Atyant feature!";
       } else {
-        // Gemini API logic - use v1 endpoint for gemini-1.5-flash
-        const url = `https://generativelanguage.googleapis.com/v1/models/${this.model}:generateContent?key=${this.apiKey}`;
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: `${this.getSystemPrompt()}\nUser: ${userMessage}` }] }]
-          })
-        });
-        const data = await response.json();
-        console.log('🔎 Gemini API raw response:', JSON.stringify(data, null, 2));
-        if (data.error) {
-          console.error('❌ Gemini API Error:', data.error);
-        }
-        aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "I'm here to help! 😊";
-        if (!aiResponse || aiResponse === "I'm here to help! 😊") {
-          console.warn('⚠️ Gemini API did not return a valid answer. See above for details.');
-        }
+        aiResponse = await this._groqRequest(this.getSystemPrompt(), userMessage);
+        if (!aiResponse) aiResponse = "I'm here to help! 😊";
       }
 
       conversation.messages.push({ role: 'assistant', content: aiResponse, timestamp: new Date() });

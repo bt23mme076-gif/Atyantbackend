@@ -4,7 +4,6 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import cloudinary from '../config/cloudinary.js';
 import protect from '../middleware/authMiddleware.js';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
