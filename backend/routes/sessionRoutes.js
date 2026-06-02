@@ -19,10 +19,10 @@ router.get('/my', optionalAuth, async (req, res) => {
       .lean();
 
     const upcoming = bookings.filter(
-      b => new Date(b.scheduledAt) > now && b.status !== 'cancelled'
+      b => new Date(b.scheduledAt) > now && b.status !== 'cancelled' && b.status !== 'completed'
     );
-    const past = bookings.filter(
-      b => new Date(b.scheduledAt) <= now || b.status === 'completed'
+    const past = bookings.filter( 
+      b => new Date(b.scheduledAt) <= now || b.status === 'completed' || b.status === 'cancelled'
     );
 
     res.json({ ok: true, upcoming, past });
