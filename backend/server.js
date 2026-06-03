@@ -25,6 +25,8 @@ import sessionRoutes     from './routes/sessionRoutes.js';
 import savedAnswerRoutes from './routes/savedAnswerRoutes.js';
 import roadmapRoutes     from './routes/roadmapRoutes.js';
 import aiRoutes          from './routes/aiRoutes.js';
+import chatRoutes        from './routes/chatRoutes.js';
+import mentorRoutes      from './routes/mentorRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message      from './models/Message.js';
@@ -197,6 +199,8 @@ app.use('/api/sessions',      sessionRoutes);
 app.use('/api/saved-answers', savedAnswerRoutes);
 app.use('/api/roadmap',       roadmapRoutes);
 app.use('/api/ai',            aiRoutes);
+app.use('/api/mentor',        mentorRoutes); // mentor onboarding (LinkedIn-PDF flow)
+app.use('/api',               chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────
 app.post('/api/book-session', async (req, res) => {
@@ -636,23 +640,7 @@ io.on('connection', socket => {
 });
 
 // ─── Message history ───────────────────────────────────────────────────────
-app.get('/api/messages/:userId1/:userId2', async (req, res) => {
-  try {
-    const { userId1, userId2 } = req.params;
-    const messages = await Message.find({
-      $or: [
-        { sender: userId1, receiver: userId2 },
-        { sender: userId2, receiver: userId1 }
-      ]
-    })
-      .populate('sender receiver', 'username name')
-      .sort({ createdAt: 1 })
-      .lean();
-    res.json(messages);
-  } catch (error) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+// NOTE: /api/messages/:userId1/:userId2 (paginated) is now served by chatRoutes.
 
 // ─────────────────────────────────────────────
 //  GRACEFUL SHUTDOWN

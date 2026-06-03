@@ -73,7 +73,7 @@ router.post('/match', optionalAuth, async (req, res) => {
     //    are credited in scoring even when the user is logged out (no DB profile).
     const clarity = await atyantEngine.getClarity(userId, engineQuery, {
       mentorLimit: 5,
-      studentContext: { college, branch, year },
+      studentContext: { college, branch, year, goal: goal || query },
     });
 
     // 3. Enrich mentors with display fields (name/photo not in the match cache).

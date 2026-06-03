@@ -103,8 +103,27 @@ const CONFIG = {
     PROVEN_MENTOR: 150,
     FEEDBACK_BONUS: 200, // ← NEW: good feedback adds points
     COLD_START_BOOST: 100, // ← NEW: new mentors get a boost
+    GOAL_MATCH: 700,    // ← NEW: mentor actually did the EXACT thing in the goal (e.g. IIM for an IIM goal)
   },
 };
+
+// Distinctive institution / path tokens that, when named in a student's GOAL,
+// should decisively favour a mentor who actually did THAT specific thing — not a
+// look-alike (an IIM goal must beat an IIT credential, not tie it).
+const GOAL_SIGNAL_TAGS = [
+  'iim', 'iit', 'iiit', 'bits', 'isb',
+  'faang', 'maang', 'google', 'amazon', 'microsoft', 'meta', 'apple', 'netflix',
+  'mba', 'mtech', 'phd', 'gate', 'gre', 'gmat', 'cat', 'upsc',
+  'consulting', 'quant', 'trading', 'fintech', 'product',
+  'research', 'startup', 'foreign', 'abroad', 'gsoc',
+];
+
+// Pull the distinctive goal tokens the student actually named in their GOAL text.
+function extractGoalSignals(goalText) {
+  if (!goalText) return [];
+  const t = String(goalText).toLowerCase();
+  return GOAL_SIGNAL_TAGS.filter(tag => new RegExp(`\\b${tag}\\b`, 'i').test(t) || t.includes(tag));
+}
 
 // ─────────────────────────────────────────────
 //  COMPANY ALIASES
@@ -447,12 +466,30 @@ function scoreMentor(mentor, context) {
   const {
     questionCategory, mentionedCompanies, relatedCompanies,
     foundTags, mentionedTech, intent, confidence,
-    keywords, studentCollegeType, sEdu,
+    keywords, studentCollegeType, sEdu, goalSignals = [],
   } = context;
 
   let points = 0;
   const breakdown = [];
   const LW = CONFIG.LIVE_WEIGHTS;
+
+  // ── EXACT GOAL ALIGNMENT ── the single most important signal: did this mentor
+  // actually do the specific thing the student's GOAL names? "IIM internship" must
+  // reward a mentor whose tag/company IS IIM, and NOT an IIT/IISc look-alike.
+  if (goalSignals.length) {
+    const hay = [
+      ...(mentor.specialTags || []),
+      ...(mentor.topCompanies || []),
+      ...(mentor.milestones || []),
+      mentor.bio || '',
+      mentor.companyDomain || '',
+    ].join(' ').toLowerCase();
+    const aligned = goalSignals.filter(g => new RegExp(`\\b${g}\\b`, 'i').test(hay) || hay.includes(g));
+    if (aligned.length) {
+      const p = LW.GOAL_MATCH * aligned.length;
+      points += p; breakdown.push(`GoalMatch(${aligned.join(',')})+${p}`);
+    }
+  }
 
   // Company domain match
   if (questionCategory && mentor.companyDomain === questionCategory) {
@@ -494,9 +531,10 @@ function scoreMentor(mentor, context) {
   if (expExact > 0) { const p = LW.EXPERTISE_EXACT * expExact; points += p; breakdown.push(`ExactTech(+${p})`); }
   if (expPartial > 0) { const p = LW.EXPERTISE_PARTIAL * expPartial; points += p; breakdown.push(`PartialTech(+${p})`); }
 
-  // Bio keywords
+  // Bio keywords — capped so a long, keyword-stuffed bio can't out-rank a precise
+  // credential. Background/goal alignment should decide ranking, not bio verbosity.
   const bioCount = keywords.filter(kw => mentor.bio?.toLowerCase().includes(kw)).length;
-  if (bioCount >= 3) { const p = LW.BIO_KEYWORD * bioCount; points += p; breakdown.push(`Bio(+${p})`); }
+  if (bioCount >= 3) { const p = LW.BIO_KEYWORD * Math.min(bioCount, 3); points += p; breakdown.push(`Bio(+${p})`); }
 
   // College — exact same college (strong) stacks on top of same tier
   const mEdu = mentor.education?.[0] || {};
@@ -604,6 +642,7 @@ async function getActiveMentors() {
 
     const mentors = await User.find({
       role: 'mentor',
+      mentorListed: { $ne: false }, // exclude mentors still finishing onboarding
       $and: [
         {
           $or: [
@@ -904,6 +943,7 @@ class AtyantEngine {
         questionCategory, mentionedCompanies, relatedCompanies,
         foundTags, mentionedTech, intent, confidence,
         keywords, studentCollegeType: getCollegeType(sEdu.institutionName), sEdu,
+        goalSignals: extractGoalSignals(studentContext?.goal),
       };
 
       // ← DRY: use shared scoreMentor function
@@ -970,6 +1010,7 @@ class AtyantEngine {
         keywords,
         studentCollegeType: getCollegeType(sEdu.institutionName),
         sEdu,
+        goalSignals: extractGoalSignals(studentContext?.goal),
       };
 
       // ← DRY: same scoreMentor function

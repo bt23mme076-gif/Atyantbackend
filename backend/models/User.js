@@ -138,6 +138,12 @@ const userSchema = new mongoose.Schema({
   chatDisabled: { type: Boolean, default: false },
   isStrategyComplete: { type: Boolean, default: false },
 
+  // Whether this mentor is listed in the live matching pool. Set true once they
+  // complete onboarding (passes the completeness gate). Existing/imported mentors
+  // have this undefined, which is treated as listed (engine filters on `$ne false`).
+  mentorListed: { type: Boolean, default: true },
+  mentorOnboardedAt: { type: Date, default: null },
+
   // ─── MENTOR STATS ──────────────────────────
   profileViews: { type: Number, default: 0 },
   totalChats: { type: Number, default: 0 },

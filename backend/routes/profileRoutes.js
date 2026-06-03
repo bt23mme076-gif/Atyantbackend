@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import cloudinary from '../config/cloudinary.js';
 import protect from '../middleware/authMiddleware.js';
+import { callGroqJSON } from '../utils/groqJSON.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -214,46 +215,29 @@ router.post('/parse-linkedin', protect, upload.single('resumePdf'), async (req, 
       return res.status(400).json({ message: 'Could not read text from PDF.' });
     }
 
-    // 2. Gemini disabled — return extracted text for frontend to handle
-    return res.json({ 
-      success: false, 
-      message: 'AI parsing temporarily disabled. Please fill in your profile manually.',
-      rawText: resumeText.substring(0, 500)
-    });
+    // 2. Groq JSON-mode extraction → maps straight onto the mentor-matching fields.
+    const system = `You extract a mentor profile from a LinkedIn/résumé PDF for an Indian engineering career platform.
+Return ONLY a JSON object with EXACTLY these keys (use "" or [] when unknown — never invent):
+{
+  "name": "",
+  "bio": "a sharp 2-sentence summary of who they are and what they cracked",
+  "city": "",
+  "linkedinProfile": "",
+  "topCompanies": ["company/institute names they worked or interned at, e.g. Amazon, IIM Ahmedabad"],
+  "expertise": ["concrete skills, e.g. Python, DSA, System Design, Guesstimates"],
+  "specialTags": ["distinctive achievements from this fixed list when applicable: IIM, IIT, IIIT, BITS, FAANG, Off Campus Internship, Research Intern, Foreign Internship, PPO, GATE, Consulting, Product, Quant, SDE, Startup"],
+  "primaryDomain": "one of: internship | placement | both (their main mentoring area)",
+  "companyDomain": "one of: Tech | Data Analytics | Consulting | Product | Core Engineering",
+  "education": [{ "institution": "full college name", "degree": "B.Tech/M.Tech/MBA", "field": "branch/major", "year": "grad year YYYY" }]
+}
+Output ONLY the JSON object.`;
 
-    const prompt = `
-      You are an expert resume parser. Extract profile details from the text below.
-      Format the output ONLY as a strict JSON object matching this schema exactly:
-      {
-        "bio": "A precise 2-sentence professional summary",
-        "city": "Extracted City Name (e.g. Pune, Bangalore, Delhi)",
-        "topCompanies": ["Company1", "Company2"],
-        "expertise": ["Skill1", "Skill2", "Skill3"],
-        "education": [
-          {
-            "institution": "Full College Name", 
-            "degree": "Clean Degree Name (e.g. B.Tech, Master's)", 
-            "year": "Graduation Year (YYYY)", 
-            "field": "Branch/Major (e.g. Computer Science)"
-          }
-        ]
-      }
-      
-      RULES:
-      - Return ONLY raw JSON, NO markdown wrapping (no \`\`\`json).
-      - If a field is not found, leave it empty.
-      
-      RESUME TEXT:
-      ${resumeText.substring(0, 8000)}
-    `;
+    const parsedData = await callGroqJSON([
+      { role: 'system', content: system },
+      { role: 'user', content: `RESUME / LINKEDIN TEXT:\n${resumeText.substring(0, 9000)}\n\nExtract the JSON now.` },
+    ]);
 
-    const result = await model.generateContent(prompt);
-    let cleanJson = result.response.text();
-    // Strip markdown formatting if AI accidentally adds it
-    cleanJson = cleanJson.replace(/```json/g, '').replace(/```/g, '').trim();
-
-    const parsedData = JSON.parse(cleanJson);
-    res.json({ success: true, data: parsedData });
+    return res.json({ success: true, data: parsedData, rawTextLength: resumeText.length });
   } catch (error) {
     console.error('POST /parse-linkedin error:', error);
     res.status(500).json({ message: 'Failed to process resume', error: error.message });

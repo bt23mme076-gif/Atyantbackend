@@ -10,11 +10,11 @@ const messageSchema = new mongoose.Schema(
     receiver: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: false, // Optional for community chat messages
+      required: false, // optional for community/group messages
     },
     conversationId: {
       type: String,
-      required: false, // Used for community chat ('community-chat') or group conversations
+      required: false,
     },
     text: {
       type: String,
@@ -24,39 +24,26 @@ const messageSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
-    // Message status tracking (WhatsApp/Instagram style)
+    // WhatsApp-style status tracking
     status: {
       type: String,
       enum: ['sent', 'delivered', 'read'],
-      default: 'sent'
+      default: 'sent',
     },
     seen: {
       type: Boolean,
       default: false,
     },
-    deliveredAt: {
-      type: Date,
-      default: null
-    },
-    readAt: {
-      type: Date,
-      default: null
-    },
-    isAutoReply: {
-      type: Boolean,
-      default: false,
-    },
-    isAnonymous: {
-      type: Boolean,
-      default: false,
-    },
+    deliveredAt: { type: Date, default: null },
+    readAt: { type: Date, default: null },
+    isAutoReply: { type: Boolean, default: false },
+    isAnonymous: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
 
-// Index for better query performance
 messageSchema.index({ sender: 1, receiver: 1, createdAt: -1 });
-messageSchema.index({ conversationId: 1, createdAt: -1 }); // For community chat
+messageSchema.index({ conversationId: 1, createdAt: -1 });
 messageSchema.index({ status: 1 });
 
 export default mongoose.model('Message', messageSchema);
