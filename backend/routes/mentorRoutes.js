@@ -6,6 +6,7 @@ import protect from '../middleware/authMiddleware.js';
 import atyantEngine from '../services/AtyantEngine.js';
 import { getQuestionEmbedding } from '../services/AIService.js';
 import { normalizeCollege } from '../utils/collegeNormalizer.js';
+import { sendMentorWelcomeEmail } from '../utils/emailService.js';
 
 const router = express.Router();
 
@@ -43,6 +44,10 @@ router.post('/onboard', protect, async (req, res) => {
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // Send the mentor welcome only the first time they become a mentor
+    // (not on subsequent profile edits via this route).
+    const isNewMentor = user.role !== 'mentor' && !user.mentorOnboardedAt;
 
     // ── Completeness gate (replaces admin approval) ──
     const missing = [];
@@ -118,6 +123,12 @@ router.post('/onboard', protect, async (req, res) => {
 
     // ── Make them visible to the engine right away ──
     try { atyantEngine.flushAllCaches(); } catch { /* noop */ }
+
+    // ── Mentor welcome / how-Atyant-helps-you email (first onboard only, non-blocking) ──
+    if (isNewMentor) {
+      sendMentorWelcomeEmail(user.email, user.name || user.username)
+        .catch(err => console.error('Mentor welcome email failed (non-fatal):', err.message));
+    }
 
     return res.json({
       success: true,

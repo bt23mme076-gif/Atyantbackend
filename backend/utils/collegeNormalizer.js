@@ -137,16 +137,42 @@ for (const [canonical, aliases] of Object.entries(COLLEGE_ALIASES)) {
   }
 }
 
+// Pre-built scan list: every alias/canonical with a word-boundary regex,
+// sorted longest-first so the most specific name wins (e.g. the full
+// "visvesvaraya national institute of technology" before bare "vnit").
+const aliasScanList = [...aliasToCanonical.entries()]
+  .map(([alias, canonical]) => ({
+    canonical,
+    re: new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'),
+    len: alias.length,
+  }))
+  .sort((a, b) => b.len - a.len);
+
 /**
  * Normalize a college name to its canonical form.
- * Returns the canonical name if found, otherwise returns the input trimmed.
+ * 1) Exact alias match (fast path).
+ * 2) Fallback: scan for any known alias *inside* the string, so values with
+ *    extra suffixes/punctuation like "Visvesvaraya National Institute of
+ *    Technology (VNIT), Nagpur" still resolve to their canonical college.
+ * Returns the canonical name if found, otherwise the input trimmed.
  * @param {string} name
  * @returns {string} canonical college name
  */
 export function normalizeCollege(name) {
   if (!name) return '';
-  const key = name.trim().toLowerCase();
-  return aliasToCanonical.get(key) || name.trim();
+  const trimmed = name.trim();
+  const key = trimmed.toLowerCase();
+
+  // 1) exact match
+  const exact = aliasToCanonical.get(key);
+  if (exact) return exact;
+
+  // 2) word-boundary contains-match (longest alias wins)
+  for (const { canonical, re } of aliasScanList) {
+    if (re.test(key)) return canonical;
+  }
+
+  return trimmed;
 }
 
 /**

@@ -146,7 +146,9 @@ router.get('/community-count', optionalAuth, async (req, res) => {
     const college = (req.query.college || '').trim();
     if (!college) return res.json({ ok: true, count: 0 });
 
-    const cacheKey = college.toLowerCase();
+    // Key by canonical college so "vnit" and "Visvesvaraya National Institute
+    // of Technology (VNIT), Nagpur" hit the same cached count.
+    const cacheKey = normalizeCollege(college).toLowerCase();
     const cached = countCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < COUNT_TTL) {
       return res.json({ ok: true, count: cached.count, fromCache: true });

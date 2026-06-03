@@ -7,6 +7,14 @@ import nodemailer from 'nodemailer';
 import User from '../models/User.js';
 import passport from 'passport';
 import { protect } from '../middleware/authMiddleware.js';
+import { sendUserWelcomeEmail, sendMentorWelcomeEmail } from '../utils/emailService.js';
+
+// Fire-and-forget welcome email — never blocks or breaks signup if email fails.
+const sendWelcomeEmail = (user) => {
+  const fn = user.role === 'mentor' ? sendMentorWelcomeEmail : sendUserWelcomeEmail;
+  fn(user.email, user.name || user.username)
+    .catch(err => console.error('Welcome email failed (non-fatal):', err.message));
+};
 
 // Helper: pick frontend URL based on environment
 const getFrontendUrl = () => {
@@ -80,7 +88,10 @@ router.post('/signup', async (req, res) => {
     });
     
     await newUser.save();
-    
+
+    // Welcome / mentor-invitation email (non-blocking)
+    sendWelcomeEmail(newUser);
+
     // Generate token
     const token = jwt.sign(
       { userId: newUser._id, role: newUser.role },
@@ -211,6 +222,8 @@ router.post('/google-login', async (req, res) => {
       });
       try {
         await user.save();
+        // New Google user — send welcome email (non-blocking)
+        sendWelcomeEmail(user);
       } catch (err) {
         return res.status(400).json({ message: 'Signup required. Please sign up first.' });
       }
