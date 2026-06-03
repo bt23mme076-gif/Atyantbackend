@@ -62,6 +62,7 @@ app.use(compression({
 // ─── CORS ──────────────────────────────────────────────────────────────────
 const allowedOrigins = Array.from(new Set([
   'https://atyant.in',
+  'https://atyantfrontend.vercel.app',
   'https://www.atyant.in',
   'http://localhost:5173',
   process.env.FRONTEND_URL,
