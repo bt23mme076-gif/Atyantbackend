@@ -5,6 +5,7 @@ import User from '../models/User.js';
 import cloudinary from '../config/cloudinary.js';
 import protect from '../middleware/authMiddleware.js';
 import { callGroqJSON } from '../utils/groqJSON.js';
+import { SERVICE_CATALOG, sanitizeServiceIds } from '../config/serviceCatalog.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -34,6 +35,14 @@ router.get('/me', protect, async (req, res) => {
     console.error('GET /profile/me error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
+});
+
+// ─────────────────────────────────────────────
+//  GET /services-catalog — public platform service catalog
+//  (labels + platform-fixed prices). Registered before /:username.
+// ─────────────────────────────────────────────
+router.get('/services-catalog', (req, res) => {
+  res.json({ ok: true, services: SERVICE_CATALOG });
 });
 
 // ─────────────────────────────────────────────
@@ -138,6 +147,11 @@ router.put('/me', protect, async (req, res) => {
         user[field] = Array.isArray(updateData[field]) ? updateData[field] : [];
       }
     });
+
+    // Services offered — validate against the platform catalog (ignore unknown ids)
+    if (updateData.servicesOffered !== undefined) {
+      user.servicesOffered = sanitizeServiceIds(updateData.servicesOffered);
+    }
 
     // Education — 🔴 FIX: sync both institution & institutionName for AtyantEngine
     if (updateData.education !== undefined) {

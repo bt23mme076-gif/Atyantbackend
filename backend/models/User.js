@@ -131,6 +131,9 @@ const userSchema = new mongoose.Schema({
 
   // ─── MENTOR OPERATIONAL FIELDS ─────────────
   price: { type: Number, default: 0, min: 0 },
+  // Which platform services this mentor offers (ids from config/serviceCatalog.js).
+  // Prices are platform-fixed; mentors only choose what they offer.
+  servicesOffered: { type: [String], default: [] },
   acceptsCredits: { type: Boolean, default: false },
   isOnline: { type: Boolean, default: false },
   lastActive: { type: Date, default: Date.now, index: true },

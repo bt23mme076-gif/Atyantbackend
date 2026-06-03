@@ -116,7 +116,8 @@ router.post('/match', optionalAuth, async (req, res) => {
     const payload = {
       ok: true,
       mentors,
-      answerCard: clarity.answerCard,        // instant verified answer (or null)
+      answerCard: clarity.answerCard,        // best single answer (or null) — kept for compat
+      answerCards: clarity.answerCards || [],// scrollable feed: top seniors who solved a similar problem
       hasInstantAnswer: clarity.hasInstantAnswer,
       problemStatement: problem.statement,   // full statement incl. confidence
       confidence: problem.confidence,

@@ -1244,17 +1244,85 @@ class AtyantEngine {
           }
         : null;
 
+      // Scrollable feed: top N answer cards (one per senior who solved a similar problem)
+      let answerCards = [];
+      if (vector) {
+        try { answerCards = await this.getTopAnswerCards(vector, options.answerLimit || 4); }
+        catch (e) { console.error('getTopAnswerCards error:', e.message); }
+      }
+
       return {
         success: true,
-        answerCard,                 // may be null — mentors still returned
-        mentors: mentors || [],     // may be empty — answerCard still returned
-        hasInstantAnswer: !!answerCard,
+        answerCard,                 // best single match (full-scored) — kept for compat
+        answerCards,                // feed of top matches (one per mentor)
+        mentors: mentors || [],     // may be empty — answer cards still returned
+        hasInstantAnswer: !!answerCard || answerCards.length > 0,
         mentorCount: (mentors || []).length,
       };
     } catch (error) {
       console.error('🔥 getClarity error:', error);
-      return { success: false, answerCard: null, mentors: [], hasInstantAnswer: false, mentorCount: 0 };
+      return { success: false, answerCard: null, answerCards: [], mentors: [], hasInstantAnswer: false, mentorCount: 0 };
     }
+  }
+
+  /* =============================================
+      📚 TOP ANSWER CARDS (scrollable Clarity feed)
+      Returns up to `n` distinct seniors' answer cards,
+      ranked by semantic similarity to the question.
+     ============================================= */
+  async getTopAnswerCards(vector, n = 4) {
+    const candidates = await AnswerCard.aggregate([
+      {
+        $vectorSearch: {
+          index: 'vector_index',
+          path: 'embedding',
+          queryVector: vector,
+          numCandidates: 80,
+          limit: 20,
+          filter: {},
+        },
+      },
+      { $project: { answerContent: 1, mentorId: 1, score: { $meta: 'vectorSearchScore' } } },
+    ]);
+
+    // Feed is lenient (surfaces relevant journeys for free insight) — unlike the
+    // strict instant-answer floor used for the single auto-answer.
+    const FEED_FLOOR = 0.45;
+    const passing = candidates.filter(c => (c.score || 0) >= FEED_FLOOR);
+    if (passing.length === 0) return [];
+
+    const mentorIds = [...new Set(passing.map(c => String(c.mentorId)))];
+    const mentors = await User.find({ _id: { $in: mentorIds }, role: 'mentor' })
+      .select('name username profilePicture education topCompanies expertise specialTags rating successfulMatches')
+      .lean();
+    const mmap = new Map(mentors.map(m => [String(m._id), m]));
+
+    const seen = new Set();
+    const cards = [];
+    for (const c of passing) {
+      const m = mmap.get(String(c.mentorId));
+      if (!m || seen.has(String(m._id))) continue;   // one card per mentor
+      seen.add(String(m._id));
+      cards.push({
+        id: c._id,
+        content: c.answerContent,
+        matchScore: Math.round((c.score || 0) * 100),
+        mentor: {
+          _id: m._id,
+          username: m.username,
+          name: m.name,
+          profilePicture: m.profilePicture || null,
+          education: m.education?.[0] || {},
+          topCompanies: m.topCompanies || [],
+          expertise: m.expertise || [],
+          specialTags: m.specialTags || [],
+          rating: m.rating || null,
+          successfulMatches: m.successfulMatches || 0,
+        },
+      });
+      if (cards.length >= n) break;
+    }
+    return cards;
   }
 
   /* =============================================

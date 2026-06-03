@@ -22,6 +22,7 @@ import authRoutes        from './routes/auth.js';
 import profileRoutes     from './routes/profileRoutes.js';
 import clarityRoutes     from './routes/clarityRoutes.js';
 import sessionRoutes     from './routes/sessionRoutes.js';
+import paymentRoutes     from './routes/paymentRoutes.js';
 import savedAnswerRoutes from './routes/savedAnswerRoutes.js';
 import roadmapRoutes     from './routes/roadmapRoutes.js';
 import aiRoutes          from './routes/aiRoutes.js';
@@ -126,7 +127,12 @@ app.use(helmet({
 // Parse cookies so we can read HttpOnly tokens
 app.use(cookieParser());
 
-app.use(express.json({ limit: '10mb' }));
+// Parse JSON for everything EXCEPT the Razorpay webhook, which needs the raw
+// body to verify its signature (handled by express.raw inside paymentRoutes).
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/payments/webhook') return next();
+  return express.json({ limit: '10mb' })(req, res, next);
+});
 
 // Cache-control headers
 app.use((req, res, next) => {
@@ -196,6 +202,7 @@ app.use('/auth',              authRoutes);      // Google OAuth callback
 app.use('/api/profile',       profileRoutes);
 app.use('/api/clarity',       clarityRoutes);
 app.use('/api/sessions',      sessionRoutes);
+app.use('/api/payments',      paymentRoutes);
 app.use('/api/saved-answers', savedAnswerRoutes);
 app.use('/api/roadmap',       roadmapRoutes);
 app.use('/api/ai',            aiRoutes);

@@ -155,6 +155,77 @@ export const sendMentorWelcomeEmail = async (email, mentorName) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────
+//  Session confirmed (after payment) — emails BOTH student & mentor
+//  with the auto-generated Google Meet link.
+// ─────────────────────────────────────────────────────────────
+export const sendSessionConfirmationEmails = async ({
+  studentEmail, studentName, mentorEmail, mentorName,
+  scheduledAt, durationMin, topic, meetLink, amount,
+}) => {
+  if (!resend) {
+    console.warn('⚠️ Email service not configured. Skipping session confirmation emails.');
+    return { success: false, error: 'Email service not configured' };
+  }
+
+  const when = new Date(scheduledAt).toLocaleString('en-IN', {
+    dateStyle: 'full', timeStyle: 'short', timeZone: 'Asia/Kolkata',
+  });
+  const meetBlock = meetLink
+    ? `<div style="text-align:center;margin:28px 0;">
+         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Google Meet</a>
+         <p style="color:#9ca3af;font-size:12px;margin-top:10px;">Link: <a href="${meetLink}" style="color:#4F46E5;">${meetLink}</a></p>
+       </div>`
+    : `<p style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:12px;border-radius:8px;line-height:1.5;">
+         Your Google Meet link will be shared shortly before the session. We'll email it to you.
+       </p>`;
+
+  const card = (heading, intro) => `
+    <div style="font-family: Arial, sans-serif; max-width:600px; margin:0 auto; padding:20px;">
+      <div style="text-align:center; margin-bottom:30px;"><h1 style="color:#4F46E5; margin:0;">Atyant</h1></div>
+      <div style="background:#f0fdf4; padding:30px; border-radius:10px; border-left:4px solid #22c55e;">
+        <h2 style="color:#1f2937; margin-top:0;">${heading}</h2>
+        <p style="color:#6b7280; line-height:1.6;">${intro}</p>
+        <div style="background:#fff; padding:20px; border-radius:8px; margin:20px 0;">
+          <table style="width:100%; border-collapse:collapse;">
+            <tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">Topic:</td><td style="padding:8px 0;color:#1f2937;">${topic || 'Mentorship Session'}</td></tr>
+            <tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">When:</td><td style="padding:8px 0;color:#1f2937;">${when} (IST)</td></tr>
+            <tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">Duration:</td><td style="padding:8px 0;color:#1f2937;">${durationMin || 30} min</td></tr>
+            ${amount ? `<tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">Amount paid:</td><td style="padding:8px 0;color:#22c55e;font-weight:700;">₹${amount}</td></tr>` : ''}
+          </table>
+        </div>
+        ${meetBlock}
+      </div>
+      ${emailFooter}
+    </div>`;
+
+  try {
+    const results = await Promise.allSettled([
+      resend.emails.send({
+        from: 'Atyant <notification@atyant.in>',
+        to: [studentEmail],
+        subject: '✅ Your Atyant session is confirmed',
+        html: card('Your session is confirmed! 🎉',
+          `Hi ${studentName || 'there'}, your session with <strong>${mentorName || 'your mentor'}</strong> is booked. Add it to your calendar and join via the link below.`),
+      }),
+      resend.emails.send({
+        from: 'Atyant <notification@atyant.in>',
+        to: [mentorEmail],
+        subject: `📅 New confirmed session with ${studentName || 'a student'}`,
+        html: card('You have a new confirmed session 🎉',
+          `Hi ${mentorName || 'there'}, <strong>${studentName || 'a student'}</strong> has booked and paid for a session with you. Join via the link below.`),
+      }),
+    ]);
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') console.error(`Session email ${i === 0 ? 'student' : 'mentor'} failed:`, r.reason?.message);
+    });
+    return { success: true };
+  } catch (error) {
+    console.error('Error sending session confirmation emails:', error);
+    return { success: false, error: error.message };
+  }
+};
+
 // Send password reset email
 export const sendPasswordResetEmail = async (email, resetToken) => {
   if (!resend) {
