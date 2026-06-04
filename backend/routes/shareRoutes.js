@@ -10,7 +10,7 @@
 import express from 'express';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
-import { buildShareKit, buildProfileUrl } from '../utils/shareLinks.js';
+import { buildShareKit, buildLandingUrl } from '../utils/shareLinks.js';
 
 const router = express.Router();
 
@@ -105,7 +105,7 @@ router.get('/r/:username', async (req, res) => {
       $inc: { referralClicks: 1, [`referralBySource.${via}`]: 1 },
     }).catch((err) => console.error('referralClicks increment error:', err.message));
 
-    const target = buildProfileUrl(user.username, { via });
+    const target = buildLandingUrl(user.username, { via });
 
     // ── Topmate-style unfurl ──────────────────────────────────────────────────
     // We serve the SAME Open Graph HTML to EVERYONE (not just detected crawlers),

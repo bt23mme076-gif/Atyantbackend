@@ -45,6 +45,21 @@ export function buildProfileUrl(username, { via } = {}) {
 }
 
 /**
+ * Where a clicked share link should actually land the visitor.
+ * The frontend has no per-mentor profile route yet (/profile/:username 404s on
+ * Vercel), so by default we send people to the home page. Once a real profile
+ * page exists, set SHARE_LANDING=profile to deep-link to it instead.
+ */
+export function buildLandingUrl(username, { via } = {}) {
+  const mode = (process.env.SHARE_LANDING || 'home').toLowerCase();
+  if (mode === 'profile') return buildProfileUrl(username, { via });
+
+  const params = new URLSearchParams({ ref: 'share' });
+  if (via) params.set('via', via);
+  return `${frontendBase()}/?${params.toString()}`;
+}
+
+/**
  * Tracked referral URL that mentors post on social media.
  * Hits the backend, increments the click counter, then redirects to the profile.
  * Falls back to the direct frontend URL if no public backend base is configured.
