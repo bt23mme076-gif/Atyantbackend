@@ -62,10 +62,20 @@ export function buildShareText(user) {
     Array.isArray(user.topCompanies) && user.topCompanies.length
       ? user.topCompanies[0]
       : null;
-  const headline = company
-    ? `I'm mentoring on Atyant — ask me how I cracked ${company}.`
-    : `I'm mentoring students on Atyant. Book a session or ask me anything.`;
-  return `${headline} Connect with me here 👇`;
+
+  const edu =
+    Array.isArray(user.education) && user.education.length ? user.education[0] : null;
+  const school = edu ? (edu.institutionName || edu.institution || null) : null;
+  const field = edu ? (edu.field || null) : null;
+  const from = [school, field].filter(Boolean).join(' ').trim();
+
+  if (company && from) {
+    return `I've shared my exact path from ${from} → ${company} on Atyant — verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
+  }
+  if (company) {
+    return `I'm mentoring on Atyant — ask me how I cracked ${company}. Verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
+  }
+  return `I've shared my exact path from ${from} → ${company} on Atyant — verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
 }
 
 /**
@@ -100,7 +110,8 @@ export function buildShareKit(user) {
     // Open Graph metadata the frontend can use for rich previews.
     meta: {
       title: `${user.name || username} on Atyant`,
-      description: user.bio || buildShareText(user),
+      // The share caption is what we want to surface on the unfurled card.
+      description: buildShareText(user),
       image: buildOgImage(user),
     },
     platforms,

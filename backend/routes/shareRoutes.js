@@ -84,10 +84,6 @@ router.post('/me/track', protect, async (req, res) => {
   }
 });
 
-// Social crawlers that fetch the link to build a preview card.
-const isCrawler = (ua = '') =>
-  /facebookexternalhit|Twitterbot|LinkedInBot|Slackbot|WhatsApp|TelegramBot|Discordbot|Pinterest|redditbot|Googlebot|bingbot|embedly|quora link preview|vkShare|W3C_Validator/i.test(ua);
-
 // GET /api/share/r/:username — tracked referral link (the one mentors post)
 router.get('/r/:username', async (req, res) => {
   const { username } = req.params;
@@ -111,23 +107,24 @@ router.get('/r/:username', async (req, res) => {
 
     const target = buildProfileUrl(user.username, { via });
 
-    // Social crawler → serve an HTML page with Open Graph tags so the preview unfurls.
-    if (isCrawler(req.headers['user-agent'])) {
-      const kit = buildShareKit(user);
-      const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) =>
-        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-      const { title, description, image } = kit.meta;
+    // ── Topmate-style unfurl ──────────────────────────────────────────────────
+    // We serve the SAME Open Graph HTML to EVERYONE (not just detected crawlers),
+    // then redirect real browsers with JavaScript. Crawlers don't run JS, so they
+    // read the OG tags reliably — no fragile user-agent sniffing, which was the
+    // thing that left LinkedIn on a plain redirect and showing "Cannot display
+    // preview". Real humans hit the <script> and land on the profile instantly.
+    const kit = buildShareKit(user);
+    const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const { title, description, image } = kit.meta;
 
-      // Let crawlers cache the unfurl card briefly (they ignore the API no-store rule
-      // we set globally, but being explicit avoids stale "cannot display" results).
-      res.set('Cache-Control', 'public, max-age=300');
+    // Let crawlers cache the unfurl card briefly so stale failures don't stick.
+    res.set('Cache-Control', 'public, max-age=300');
 
-      // NOTE: no <meta refresh> here. Pointing crawlers at the SPA profile page (which
-      // has no server-rendered OG tags) is exactly what makes LinkedIn give up and show
-      // "Cannot display preview". Crawlers only need these tags; humans never hit this branch.
-      return res.set('Content-Type', 'text/html; charset=utf-8').send(`<!doctype html>
+    return res.set('Content-Type', 'text/html; charset=utf-8').send(`<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
 <meta property="og:type" content="profile">
 <meta property="og:site_name" content="Atyant">
@@ -142,13 +139,10 @@ ${image ? `<meta property="og:image" content="${esc(image)}">
 <meta name="twitter:description" content="${esc(description)}">
 ${image ? `<meta name="twitter:image" content="${esc(image)}">` : ''}
 <link rel="canonical" href="${esc(target)}">
+<script>window.location.replace(${JSON.stringify(target)});</script>
 </head><body>
 <p>${esc(title)} — <a href="${esc(target)}">view profile on Atyant</a>.</p>
 </body></html>`);
-    }
-
-    // Real visitor → straight redirect to the profile.
-    return res.redirect(302, target);
   } catch (error) {
     console.error('GET /share/r/:username error:', error);
     return res.redirect(302, (process.env.FRONTEND_URL || 'https://atyant.in'));
