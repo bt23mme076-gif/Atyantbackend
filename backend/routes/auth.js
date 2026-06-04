@@ -43,7 +43,7 @@ const signUserToken = (user) => {
 
 router.post('/signup', async (req, res) => {
   try {
-    const { username, email, password, role, phone } = req.body;
+    const { username, email, password, role, phone, ref } = req.body;
     
     // ✅ Add validation
     if (!username || !email || !password || !phone) {
@@ -88,6 +88,15 @@ router.post('/signup', async (req, res) => {
     });
     
     await newUser.save();
+
+    // Attribute the signup to the mentor whose shared profile link referred them
+    // (frontend passes `ref` = referring mentor's username). Non-blocking.
+    if (ref && typeof ref === 'string' && ref.toLowerCase() !== username.toLowerCase()) {
+      User.updateOne(
+        { username: new RegExp(`^${ref.trim()}$`, 'i') },
+        { $inc: { referralSignups: 1 } }
+      ).catch(err => console.error('referralSignups increment error:', err.message));
+    }
 
     // Welcome / mentor-invitation email (non-blocking)
     sendWelcomeEmail(newUser);

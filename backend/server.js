@@ -18,23 +18,24 @@ import passport from 'passport';
 import errorHandler from './middleware/errorHandler.js';
 
 // ─── Routes ────────────────────────────────────────────────────────────────
-import authRoutes        from './routes/auth.js';
-import profileRoutes     from './routes/profileRoutes.js';
-import clarityRoutes     from './routes/clarityRoutes.js';
-import sessionRoutes     from './routes/sessionRoutes.js';
-import paymentRoutes     from './routes/paymentRoutes.js';
+import authRoutes from './routes/auth.js';
+import profileRoutes from './routes/profileRoutes.js';
+import clarityRoutes from './routes/clarityRoutes.js';
+import sessionRoutes from './routes/sessionRoutes.js';
+import paymentRoutes from './routes/paymentRoutes.js';
 import savedAnswerRoutes from './routes/savedAnswerRoutes.js';
-import roadmapRoutes     from './routes/roadmapRoutes.js';
-import aiRoutes          from './routes/aiRoutes.js';
-import chatRoutes        from './routes/chatRoutes.js';
-import mentorRoutes      from './routes/mentorRoutes.js';
+import roadmapRoutes from './routes/roadmapRoutes.js';
+import aiRoutes from './routes/aiRoutes.js';
+import chatRoutes from './routes/chatRoutes.js';
+import mentorRoutes from './routes/mentorRoutes.js';
+import shareRoutes from './routes/shareRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
-import Message      from './models/Message.js';
-import User         from './models/User.js';
+import Message from './models/Message.js';
+import User from './models/User.js';
 import { moderator } from './utils/ContentModerator.js';
 import { globalRateLimit } from './middleware/globalRateLimiter.js';
-import { sendAutoReply }   from './controllers/messageController.js';
+import { sendAutoReply } from './controllers/messageController.js';
 import ReminderCron from './services/ReminderCron.js';
 
 // ─── Passport Configuration ────────────────────────────────────────────────
@@ -43,7 +44,7 @@ import './config/passport.js';
 // ─────────────────────────────────────────────
 //  APP SETUP
 // ─────────────────────────────────────────────
-const app  = express();
+const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', 1);
@@ -54,8 +55,8 @@ app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Gzip
 app.use(compression({
-  filter   : (req, res) => req.headers['x-no-compression'] ? false : compression.filter(req, res),
-  level    : 6,
+  filter: (req, res) => req.headers['x-no-compression'] ? false : compression.filter(req, res),
+  level: 6,
   threshold: 1024
 }));
 
@@ -63,6 +64,7 @@ app.use(compression({
 const allowedOrigins = Array.from(new Set([
   'https://atyant.in',
   'https://atyantfrontend.vercel.app',
+  'https://atyantproduct.vercel.app',
   'https://www.atyant.in',
   'http://localhost:5173',
   process.env.FRONTEND_URL,
@@ -137,9 +139,9 @@ app.use((req, res, next) => {
 
 // Cache-control headers
 app.use((req, res, next) => {
-  if      (req.path.match(/\.(jpg|jpeg|png|gif|webp|svg)$/)) res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  else if (req.path.match(/\.(css|js)$/))                    res.set('Cache-Control', 'public, max-age=604800');
-  else if (req.path.startsWith('/api/'))                     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  if (req.path.match(/\.(jpg|jpeg|png|gif|webp|svg)$/)) res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  else if (req.path.match(/\.(css|js)$/)) res.set('Cache-Control', 'public, max-age=604800');
+  else if (req.path.startsWith('/api/')) res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   next();
 });
 
@@ -154,10 +156,10 @@ if (!MONGO_URI) {
 }
 
 mongoose.connect(MONGO_URI, {
-  maxPoolSize            : 10,
+  maxPoolSize: 10,
   serverSelectionTimeoutMS: 30000,
-  socketTimeoutMS        : 45000,
-  connectTimeoutMS       : 30000,
+  socketTimeoutMS: 45000,
+  connectTimeoutMS: 30000,
 })
   .then(() => {
     console.log('✅ MongoDB connected');
@@ -198,17 +200,18 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ─── Routes ────────────────────────────────────────────────────────────────
-app.use('/api/auth',          authRoutes);
-app.use('/auth',              authRoutes);      // Google OAuth callback
-app.use('/api/profile',       profileRoutes);
-app.use('/api/clarity',       clarityRoutes);
-app.use('/api/sessions',      sessionRoutes);
-app.use('/api/payments',      paymentRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/auth', authRoutes);      // Google OAuth callback
+app.use('/api/profile', profileRoutes);
+app.use('/api/clarity', clarityRoutes);
+app.use('/api/sessions', sessionRoutes);
+app.use('/api/payments', paymentRoutes);
 app.use('/api/saved-answers', savedAnswerRoutes);
-app.use('/api/roadmap',       roadmapRoutes);
-app.use('/api/ai',            aiRoutes);
-app.use('/api/mentor',        mentorRoutes); // mentor onboarding (LinkedIn-PDF flow)
-app.use('/api',               chatRoutes);   // chat: conversations, messages (paginated), users/:id
+app.use('/api/roadmap', roadmapRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/mentor', mentorRoutes); // mentor onboarding (LinkedIn-PDF flow)
+app.use('/api/share', shareRoutes);  // mentor profile sharing + referral tracking
+app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────
 app.post('/api/book-session', async (req, res) => {
@@ -284,10 +287,10 @@ app.get('/api/stats/college', async (req, res) => {
 // ─── Health check ──────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({
-    status     : 'OK',
-    timestamp  : new Date().toISOString(),
-    uptime     : process.uptime(),
-    memory     : process.memoryUsage(),
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
     connections: io?.engine?.clientsCount || 0
   });
 });
@@ -310,9 +313,9 @@ app.post('/api/validate-mentor', async (req, res) => {
   try {
     const { mentorId } = req.body;
     const mentor = await User.findById(mentorId).select('role username chatDisabled').lean();
-    if (!mentor)                 return res.status(404).json({ valid: false, message: 'Mentor not found' });
+    if (!mentor) return res.status(404).json({ valid: false, message: 'Mentor not found' });
     if (mentor.role !== 'mentor') return res.status(400).json({ valid: false, message: 'Not a mentor' });
-    if (mentor.chatDisabled)      return res.status(403).json({ valid: false, message: 'Mentor not accepting messages' });
+    if (mentor.chatDisabled) return res.status(403).json({ valid: false, message: 'Mentor not accepting messages' });
     res.json({ valid: true, mentor });
   } catch (error) {
     res.status(500).json({ valid: false, message: 'Server error' });
@@ -331,10 +334,10 @@ app.post('/api/contact', async (req, res) => {
     }
     if (resend) {
       await resend.emails.send({
-        from   : 'Atyant <notification@atyant.in>',
-        to     : ['support@atyant.in'],
+        from: 'Atyant <notification@atyant.in>',
+        to: ['support@atyant.in'],
         subject: `Contact: ${name}`,
-        text   : `From: ${name} <${email}>\n\n${message}`
+        text: `From: ${name} <${email}>\n\n${message}`
       });
     }
     res.json({ message: 'Message received. We\'ll get back to you soon!' });
@@ -347,7 +350,7 @@ app.post('/api/contact', async (req, res) => {
 // ─── Debug endpoints (dev only) ────────────────────────────────────────────
 if (process.env.NODE_ENV !== 'production') {
   app.get('/api/debug/connections', (req, res) => {
-    const rooms      = io.sockets.adapter.rooms;
+    const rooms = io.sockets.adapter.rooms;
     const activeRooms = {};
     rooms.forEach((sockets, roomName) => {
       if (roomName.length === 24) {
@@ -369,26 +372,26 @@ if (process.env.NODE_ENV !== 'production') {
   });
 
   app.get('/api/debug/routes', (req, res) => {
-  const routes = [];
-  app._router.stack.forEach(middleware => {
-    if (middleware.route) {
-      routes.push({
-        path: middleware.route.path,
-        methods: Object.keys(middleware.route.methods)
-      });
-    } else if (middleware.name === 'router') {
-      middleware.handle.stack.forEach(handler => {
-        if (handler.route) {
-          routes.push({
-            path: handler.route.path,
-            methods: Object.keys(handler.route.methods)
-          });
-        }
-      });
-    }
+    const routes = [];
+    app._router.stack.forEach(middleware => {
+      if (middleware.route) {
+        routes.push({
+          path: middleware.route.path,
+          methods: Object.keys(middleware.route.methods)
+        });
+      } else if (middleware.name === 'router') {
+        middleware.handle.stack.forEach(handler => {
+          if (handler.route) {
+            routes.push({
+              path: handler.route.path,
+              methods: Object.keys(handler.route.methods)
+            });
+          }
+        });
+      }
+    });
+    res.json(routes);
   });
-  res.json(routes);
-});
 }
 
 // ─────────────────────────────────────────────
@@ -398,9 +401,9 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: { origin: allowedOrigins, methods: ['GET', 'POST'], credentials: true },
-  transports      : ['websocket', 'polling'],
-  pingTimeout     : 60000,
-  pingInterval    : 25000,
+  transports: ['websocket', 'polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000,
   maxHttpBufferSize: 1e6,
   perMessageDeflate: { threshold: 1024 }
 });
@@ -432,8 +435,8 @@ io.use((socket, next) => {
 });
 
 // In-memory maps (per process)
-const activeUsers          = new Map();
-const userSockets          = new Map();
+const activeUsers = new Map();
+const userSockets = new Map();
 const pendingNotifications = new Map();
 
 io.on('connection', socket => {
@@ -503,11 +506,11 @@ io.on('connection', socket => {
 
       // Save message
       const newMessage = await Message.create({
-        sender  : data.sender,
+        sender: data.sender,
         receiver: data.receiver,
-        text    : data.text,
-        status  : 'sent',
-        seen    : false
+        text: data.text,
+        status: 'sent',
+        seen: false
       });
 
       // Deduct credit (non-blocking)
@@ -536,18 +539,18 @@ io.on('connection', socket => {
         .lean();
 
       const msgForFrontend = {
-        _id          : populated._id,
-        sender       : populated.sender._id,
-        senderName   : populated.sender.username || populated.sender.name,
-        senderAvatar : populated.sender.profilePicture,
-        receiver     : populated.receiver._id,
-        receiverName : populated.receiver.username || populated.receiver.name,
+        _id: populated._id,
+        sender: populated.sender._id,
+        senderName: populated.sender.username || populated.sender.name,
+        senderAvatar: populated.sender.profilePicture,
+        receiver: populated.receiver._id,
+        receiverName: populated.receiver.username || populated.receiver.name,
         receiverAvatar: populated.receiver.profilePicture,
-        text         : populated.text,
-        createdAt    : populated.createdAt,
-        status       : populated.status || 'sent',
-        seen         : populated.seen || false,
-        isAutoReply  : false
+        text: populated.text,
+        createdAt: populated.createdAt,
+        status: populated.status || 'sent',
+        seen: populated.seen || false,
+        isAutoReply: false
       };
 
       io.to(data.receiver).emit('receive_private_message', msgForFrontend);
@@ -556,10 +559,10 @@ io.on('connection', socket => {
       // Delivery status
       if (userSockets.has(data.receiver)) {
         Message.findByIdAndUpdate(newMessage._id, { status: 'delivered', deliveredAt: new Date() })
-          .catch(() => {});
+          .catch(() => { });
         io.to(data.sender).emit('message_status_update', {
-          messageId  : newMessage._id,
-          status     : 'delivered',
+          messageId: newMessage._id,
+          status: 'delivered',
           deliveredAt: new Date().toISOString()
         });
       }
@@ -568,9 +571,9 @@ io.on('connection', socket => {
       const notifKey = `${data.sender}-${data.receiver}`;
       if (!pendingNotifications.has(notifKey)) {
         io.to(data.receiver).emit('chat_notification', {
-          from     : msgForFrontend.sender,
-          fromName : msgForFrontend.senderName,
-          message  : msgForFrontend.text,
+          from: msgForFrontend.sender,
+          fromName: msgForFrontend.senderName,
+          message: msgForFrontend.text,
           timestamp: msgForFrontend.createdAt
         });
         pendingNotifications.set(notifKey, true);
@@ -584,7 +587,7 @@ io.on('connection', socket => {
         setTimeout(async () => {
           try {
             await sendAutoReply(io, data.sender, data.receiver, {
-              username      : receiver.username,
+              username: receiver.username,
               profilePicture: receiver.profilePicture
             });
           } catch (err) {
@@ -594,16 +597,16 @@ io.on('connection', socket => {
       }
 
       // Email notification (once, only if offline)
-      const emailKey     = `email-${data.sender}-${data.receiver}`;
-      const isActive     = activeUsers.get(data.receiver)?.has(data.sender);
-      const isOnline     = userSockets.has(data.receiver);
+      const emailKey = `email-${data.sender}-${data.receiver}`;
+      const isActive = activeUsers.get(data.receiver)?.has(data.sender);
+      const isOnline = userSockets.has(data.receiver);
 
       if (!isActive && !isOnline && !pendingNotifications.has(emailKey) && resend) {
         resend.emails.send({
-          from   : 'notification@atyant.in',
-          to     : receiver.email,
+          from: 'notification@atyant.in',
+          to: receiver.email,
           subject: `New Message from ${sender.username}`,
-          text   : `${sender.username}: "${data.text}"\n\nReply at ${allowedOrigins[0]}`
+          text: `${sender.username}: "${data.text}"\n\nReply at ${allowedOrigins[0]}`
         })
           .then(() => pendingNotifications.set(emailKey, true))
           .catch(err => console.error('Email notification failed:', err.message));
@@ -633,9 +636,9 @@ io.on('connection', socket => {
       await Message.findByIdAndUpdate(messageId, { status: 'read', seen: true, readAt: new Date() });
       io.to(sender).emit('message_status_update', {
         messageId,
-        status : 'read',
-        seen   : true,
-        readAt : new Date().toISOString()
+        status: 'read',
+        seen: true,
+        readAt: new Date().toISOString()
       });
     } catch (err) {
       console.error('message_read error:', err);
@@ -666,7 +669,7 @@ async function gracefulShutdown(signal) {
 }
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // ─────────────────────────────────────────────
 //  START

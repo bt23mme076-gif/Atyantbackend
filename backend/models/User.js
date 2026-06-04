@@ -150,6 +150,13 @@ const userSchema = new mongoose.Schema({
   // ─── MENTOR STATS ──────────────────────────
   profileViews: { type: Number, default: 0 },
   totalChats: { type: Number, default: 0 },
+
+  // ─── PROFILE SHARING / REFERRAL STATS ──────
+  profileShares: { type: Number, default: 0 },
+  referralClicks: { type: Number, default: 0 },
+  referralBySource: { type: Map, of: Number, default: {} },
+  referralSignups: { type: Number, default: 0 },
+  lastSharedAt: { type: Date, default: null },
   rating: { type: Number, default: 0, min: 0, max: 5 },
   responseRate: { type: Number, default: 0, min: 0, max: 100 },
   activeQuestions: { type: Number, default: 0, min: 0 },
