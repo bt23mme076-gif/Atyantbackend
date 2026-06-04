@@ -1,0 +1,243 @@
+1. Improve Plan Switching Functionality Between Free and Premium
+Plans(maybe if backend would be there it might be working pardon for that
+in case)
+
+Current Observation
+
+On the landing page and other sections of the platform, While users can successfully navigate
+from the Free Plan to the Premium Plan view, but to switch back and re-render the Free Plan,
+the Free plan button doesn't work. Currently if a user clicks on the upgrade button and now
+wants to continue with the free plan, he has to click on a new chat which is unexpected to the
+user.
+
+Impact on User Experience
+
+T his creates a confusing and inconsistent navigation experience. When the Free Plan button
+a ppears clickable but does not perform any action, it may lead users to believe the application is
+u nreliable such inconsistencies can reduce user trust
+
+R ecommended Improvement
+
+Implement proper state management and navigation behavior for plan switching. Selecting the
+"Free Plan" option should immediately re-render the interface and restore the corresponding
+free-plan view,
+
+2 . Improve Browser Back Navigation Behavior Across the Platform
+
+C urrent Observation
+
+W hile navigating between different sections of the platform, such as Ask Atyant, Clarity Results
+e tc, the browser's back button does not return users to their previous in-app location. Instead,
+c licking the back button exits the platform entirely. Same happened with the phone back button.
+
+Impact on User Experience
+
+T his behavior breaks expected navigation patterns and can be frustrating for users. This creates
+u nnecessary friction and negatively impacts the overall browsing experience.
+
+R ecommended Improvement
+
+Implement proper route and history management throughout the application so that each page
+transition is recorded within the browser history stack. When users navigate between sections of
+the platform, pressing the browser back button should return them to the immediately previous
+p age within the application rather than exiting the website.
+
+3 . Enhance Chat Input Field Usability and Responsiveness
+Current Observation
+Several usability issues have been identified within the chat input component that affect the
+o verall interaction experience.
+Firstly, when users type longer queries spanning multiple lines, the text remains constrained to a
+single horizontal line instead of automatically wrapping onto subsequent lines. This makes
+longer messages difficult to review and edit before submission.
+
+Secondly, on mobile devices with smaller screen sizes, the send button can become almost
+h idden or difficult to access due to layout constraints within the chat input area.
+
+T hirdly, the send button remains disabled when users enter short but valid responses consisting
+of a single character or number. For example, when the system asks a question such as "Which
+y ear are you in?" and the user enters "3", the submission button does not become active
+b ecause the current validation logic appears to require a minimum character count.
+
+Impact on User Experience
+These issues introduce unnecessary friction during one of the platform's most frequently used
+interactions.
+Recommended Improvement
+T he chat input component should be enhanced to support dynamic multiline expansion, allowing
+text to automatically wrap and grow vertically as users type longer messages. The mobile layout
+should be optimized to ensure the send button remains fully visible Additionally, input validation
+should be revised to allow any meaningful user response, including single-character entries,
+n umerical inputs.
+
+4 . Improve Subscription Plan Presentation and Comparison Experience(On
+u pgrade button)
+
+Current Observation
+The subscription upgrade section currently uses decorative icons at the top of each plan card
+that resemble generic AI or chatbot-style graphics. these icons do not communicate credibility of
+the plans being offered. In addition, the "Full Comparison" section relies heavily on a basic
+tabular layout with text-based feature listings, making it difficult for users to quickly identify
+differences between plans.
+
+Impact on User Experience
+The upgrade page is one of the most critical conversion points within the platform. Users
+evaluating paid plans are actively looking for trust signals purchase decision. authenticity of the
+offering is important. Similarly, a plain comparison table requires users to spend additional effort
+reading each row individually, increasing cognitive load
+Recommended Improvement
+Replace the existing decorative plan icons with more meaningful and professional visual
+e lements Additionally, redesign the comparison section using a more visual and user-friendly
+a pproach.
+
+5 . Improve Clarity Results Hierarchy, Match Prioritization, and Session
+B ooking Flow
+
+C urrent Observation
+Within the Clarity Results section, multiple senior answer cards are displayed sequentially;
+h owever, the visual separation between individual cards is minimal(seems to be one page
+s luggish pdf). As a result, the content appears to blend together, making it difficult for users to
+distinguish where one senior's response ends and another begins.
+This creates the impression of continuously scrolling through a single block of content rather
+than reviewing multiple independent career journeys.
+Additionally, while match percentages are displayed, the interface does not clearly communicate
+ranking or priority. Users are unable to immediately identify which mentor or journey is the
+strongest match for their profile and goals. All results appear visually similar despite having
+different relevance scores.
+
+Furthermore, after selecting a mentor, users are redirected to an intermediate profile page
+c ontaining a "Talk to Senior". This page is unnecessary and redundant(as user anyway going to
+book so, friction is there, adding extra step having redundant content). Talking of this(suggest to
+completely remove this)
+
+Impact on User Experience
+T he lack of clear visual boundaries reduces content scannability and makes it harder for users
+to compare multiple mentor journeys efficiently. Without a strong visual hierarchy, highly relevant
+m atches do not receive the attention they deserve, potentially reducing engagement with the
+most suitable mentors.
+The extra profile step also increases the number of actions required before reaching the
+booking page.
+Recommended Improvement
+Introduce stronger card separation through improved spacing, bordered containers, subtle
+elevation effects, or visual dividers between mentor responses. Each answer card should feel
+like an independent piece of content rather than part of a continuous scroll as currently we are
+selling the session anyways.
+
+R emove this
+Emphasis more on this
+
+The name of the senior college branch and percentage match need to be more highlighted,
+o verall saying design good cards and hierarchy.
+
+T he highest match should be highlighted with labels such as "Best Match" or "Top
+Recommended," while subsequent mentors can be displayed in descending order of relevance.
+A dditional visual indicators can help users quickly understand why a particular mentor is ranked
+higher than others i.e. why matched section is missing in card right now.(I am ofcourse talking of
+c entral big cards).
+
+A lso,
+
+Change this button to direct Book a session and make sure to show a lucrative pricing kinda
+thing ,Book 1 on 1 session now starting at just xyz Rs kind of button.
+Remove Talk to Senior Button to Book 1 on one session and redirect to Book session page. The
+e xtra step is redundant user anyways going to see profile in payment section.
+
+6 . Simplify the Session Booking Experience to Improve Trust, Clarity, and
+Conversion
+
+Current Observation
+
+The Session Booking page serves as the platform's primary conversion and payment screen.
+However, the current interface contains a significant amount of secondary content that
+competes with the user's primary objective of booking a session.
+
+Issue 1 : At the top of the page, a large "Early Bird Pricing" banner occupies substantial screen
+s pace and immediately draws attention away from the booking process. Similarly, multiple
+s tatus badges such as "Verified Career Mentor," "Online Now," and "Top Mentor 2025" create
+visual clutter despite providing limited decision-making value at this stage.
+                                not expected and early bird to take this much space in
+
+m y phone
+
+T he introductory text below the page heading is also relatively lengthy, requiring users to read
+additional content before reaching the actionable booking section.
+
+                                unnecessary clutter payments need to
+
+be very simple and minimalist.
+
+Issue 2 : The mentor profile card itself lacks several important trust-building elements. Currently,
+u sers are not shown the mentor's company logo, company name prominence, internship or
+p lacement outcome details, or key technical expertise areas. On mobile devices, the profile card
+suffers from layout inefficiencies, including excessive unused space beside the profile image
+and inconsistent alignment of social media icons
+
+Issue 3 : The pricing section contains multiple session types displayed through horizontally
+scrollable cards on mobile devices. This interaction pattern makes comparison difficult and
+increases cognitive load during a critical payment decision.
+
+Impact on User Experience
+
+P ayment and checkout flows are highly sensitive stages of the user journey where simplicity
+a nd trust are critical. Excessive visual elements reduce conversion rates.
+
+A cluttered booking page may cause users to overanalyze their decision,
+On mobile devices, layout inefficiencies and horizontal scrolling further reduce usability
+
+R ecommended Improvement
+The large promotional banner and redundant status badges should be removed
+T he mentor profile section should be enhanced with:
+
+     P rofessional mentor photograph
+     Company logo and company name
+     Internship or placement outcome details
+      Years of experience or achievement highlights
+     Key skills, technologies, and expertise areas
+     Improved mobile responsiveness and icon alignment
+     
+T he session selection experience should be simplified by reducing the number of options and
+p resenting them as clear pricing tiers such as Standard, Pro, and Premium. On mobile devices,
+u sers should be able to switch between plans using simple tab-style selectors rather than
+h orizontally scrolling through multiple cards need to be changed to this kind of design.
+
+In mobile phones it will look like kind of design?
+Once a session tier is selected, the primary focus should shift directly toward scheduling and
+p ayment.
+
+S econdary content such as extensive testimonials, FAQs, process explanations, and long
+informational sections should either be removed from the booking flow or relocated to dedicated
+informational pages that users can access separately if needed.
+
+Remove all of that session brief, What students say, What happened after booking, FAQ from
+this page. USER Will only mostly buy it by seniors answer card and His profile, Payment section
+should not me mixed with this.(We almost telling all things in pricing tab).Put these things
+somewhere else.
+The booking page should function primarily as a checkout experience rather than an
+information-heavy landing page.
+
+7 . Define and Communicate the My Roadmap Generation Workflow More
+C learly
+
+C urrent Observation
+
+T he platform includes a dedicated "My Roadmap" section; however, the process through which
+p ersonalized roadmaps are generated is currently unclear(we can talk on that, I dont know how
+from backend u guys are going to generate that also i have question how you guys are
+s cheduling the sessions say a mentor has 4 bookings in a day how will he take 4 sessions in a
+d ay (how much time generally users wait for actual meeting) if i would know about it i might
+h ave some more insights on the workflow) . It is not evident whether roadmaps are generated
+a utomatically by AI based on user inputs, derived from mentor recommendations after a booked
+session
+
+Impact on User Experience
+
+Career roadmaps are one of the most valuable and outcome-oriented features within the
+platform. When users are uncertain about how a roadmap is created, they may question its
+relevance, and level of personalization.
+
+Recommended Improvement
+
+A clearly defined roadmap-generation workflow should be established and communicated
+throughout the product. Users should be able to understand:
+
+     W hat data is used to generate the roadmap.
+      Whether the roadmap is AI-generated, mentor-generated, or hybrid.
+

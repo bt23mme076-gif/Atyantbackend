@@ -88,9 +88,12 @@ export function buildShareText(user) {
     return `I've shared my exact path from ${from} → ${company} on Atyant — verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
   }
   if (company) {
-    return `I'm mentoring on Atyant — ask me how I cracked ${company}. Verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
+    return `I've shared my exact path from ${company} on Atyant — verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
   }
-  return `I've shared my exact path from ${from} → ${company} on Atyant — verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
+  if (from) {
+    return `I've shared my exact path from ${from} on Atyant — verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
+  }
+  return `I'm mentoring students on Atyant — verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
 }
 
 /**
