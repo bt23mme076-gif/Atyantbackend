@@ -19,6 +19,16 @@ const razorpay = (RZP_KEY_ID && RZP_KEY_SECRET)
 const initials = (name = '') =>
   name.trim().split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase() || '').join('') || 'YM';
 
+// Platform's cut (%). Mentors keep the rest. Override with PLATFORM_FEE_PCT.
+const PLATFORM_FEE_PCT = Math.min(100, Math.max(0, Number(process.env.PLATFORM_FEE_PCT ?? 17)));
+
+// Record what the mentor is owed for a just-paid session, queued for the monthly payout.
+function applyMentorShare(session) {
+  session.platformFeePct = PLATFORM_FEE_PCT;
+  session.mentorShare = Math.round((session.amount || 0) * (100 - PLATFORM_FEE_PCT) / 100);
+  session.payoutStatus = session.mentorShare > 0 ? 'pending' : 'na';
+}
+
 // Verify Razorpay HMAC signature with a timing-safe comparison.
 function verifySignature(orderId, paymentId, signature) {
   const expected = crypto
@@ -192,6 +202,7 @@ router.post('/verify', protect, async (req, res) => {
     session.paymentStatus = 'paid';
     session.status = 'upcoming';
     session.razorpayPaymentId = razorpay_payment_id;
+    applyMentorShare(session);            // queue the mentor's share for the monthly payout
     await session.save();
 
     const [student, mentor] = await Promise.all([
@@ -233,6 +244,7 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
         session.paymentStatus = 'paid';
         session.status = 'upcoming';
         session.razorpayPaymentId = entity.id;
+        applyMentorShare(session);        // queue the mentor's share for the monthly payout
         await session.save();
 
         const [student, mentor] = await Promise.all([
@@ -252,7 +264,8 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
 });
 
 // ─────────────────────────────────────────────────────────────
-//  GET /api/payments/mentor-earnings  — mentor's paid sessions + totals
+//  GET /api/payments/mentor-earnings  — mentor's paid sessions + payout breakdown
+//  Shows NET (the mentor's share), split into what's still pending vs already paid.
 // ─────────────────────────────────────────────────────────────
 router.get('/mentor-earnings', protect, async (req, res) => {
   try {
@@ -261,14 +274,89 @@ router.get('/mentor-earnings', protect, async (req, res) => {
     }
     const sessions = await Session.find({ mentorId: req.user.userId, paymentStatus: 'paid' })
       .populate('userId', 'name username')
-      .select('topic amount scheduledAt status userId createdAt')
+      .select('topic amount mentorShare payoutStatus paidOutAt scheduledAt status userId createdAt')
       .sort({ scheduledAt: -1 })
       .lean();
 
-    const totalEarnings = sessions.reduce((sum, s) => sum + (s.amount || 0), 0);
-    res.json({ ok: true, totalEarnings, totalSessions: sessions.length, sessions });
+    const shareOf = (s) => (s.mentorShare || 0);
+    const pendingPayout = sessions.filter(s => s.payoutStatus === 'pending').reduce((sum, s) => sum + shareOf(s), 0);
+    const paidOut       = sessions.filter(s => s.payoutStatus === 'paid').reduce((sum, s) => sum + shareOf(s), 0);
+
+    res.json({
+      ok: true,
+      totalSessions: sessions.length,
+      grossCollected: sessions.reduce((sum, s) => sum + (s.amount || 0), 0), // what students paid
+      netEarnings: pendingPayout + paidOut,   // mentor's share across all paid sessions
+      pendingPayout,                          // owed, not yet credited
+      paidOut,                                // already credited
+      sessions,
+    });
   } catch (err) {
     console.error('GET /payments/mentor-earnings error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  ADMIN — monthly payout run
+//
+//  GET  /api/payments/payouts/pending   — what we owe each mentor right now
+//  POST /api/payments/payouts/settle    — mark a mentor's pending sessions as paid
+//                                          Body: { mentorId, reference? }
+// ─────────────────────────────────────────────────────────────
+const requireAdmin = (req, res, next) => {
+  if (req.user?.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Admin only' });
+  }
+  next();
+};
+
+router.get('/payouts/pending', protect, requireAdmin, async (req, res) => {
+  try {
+    const rows = await Session.aggregate([
+      { $match: { paymentStatus: 'paid', payoutStatus: 'pending', mentorShare: { $gt: 0 } } },
+      { $group: {
+          _id: '$mentorId',
+          mentorName: { $first: '$mentorName' },
+          sessions: { $sum: 1 },
+          amountOwed: { $sum: '$mentorShare' },
+          grossCollected: { $sum: '$amount' },
+          oldest: { $min: '$scheduledAt' },
+      } },
+      { $sort: { amountOwed: -1 } },
+    ]);
+
+    const totalOwed = rows.reduce((sum, r) => sum + (r.amountOwed || 0), 0);
+    res.json({
+      ok: true,
+      mentors: rows.map(r => ({ mentorId: r._id, mentorName: r.mentorName, sessions: r.sessions, amountOwed: r.amountOwed, grossCollected: r.grossCollected, oldest: r.oldest })),
+      totalOwed,
+      mentorCount: rows.length,
+    });
+  } catch (err) {
+    console.error('GET /payments/payouts/pending error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/payouts/settle', protect, requireAdmin, async (req, res) => {
+  try {
+    const { mentorId, reference } = req.body;
+    if (!mentorId) return res.status(400).json({ ok: false, error: 'mentorId is required' });
+
+    const batchId = reference || `payout_${new Date().toISOString().slice(0, 10)}_${String(mentorId).slice(-6)}`;
+    const result = await Session.updateMany(
+      { mentorId, paymentStatus: 'paid', payoutStatus: 'pending' },
+      { $set: { payoutStatus: 'paid', payoutBatchId: batchId, paidOutAt: new Date() } },
+    );
+
+    // Re-read the just-settled total for confirmation.
+    const settled = await Session.find({ mentorId, payoutBatchId: batchId }).select('mentorShare').lean();
+    const amountPaid = settled.reduce((sum, s) => sum + (s.mentorShare || 0), 0);
+
+    res.json({ ok: true, mentorId, batchId, sessionsSettled: result.modifiedCount, amountPaid });
+  } catch (err) {
+    console.error('POST /payments/payouts/settle error:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

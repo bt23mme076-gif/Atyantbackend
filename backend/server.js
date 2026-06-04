@@ -214,25 +214,15 @@ app.use('/api/share', shareRoutes);  // mentor profile sharing + referral tracki
 app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────
-app.post('/api/book-session', async (req, res) => {
-  try {
-    const { mentor, sessionType, date, time, amount, goals, brief, name, email, coupon } = req.body;
-    if (!date || !time || !name || !email) {
-      return res.status(400).json({ ok: false, error: 'Missing required fields' });
-    }
-    // Store booking in Session collection reusing the existing model
-    const { default: Session } = await import('./models/Session.js');
-    const scheduledAt = new Date(`${date} ${time}`);
-    await Session.create({
-      name, email, mentor, sessionType, scheduledAt,
-      amount, goals: goals || [], brief: brief || '',
-      coupon: coupon || null, status: 'pending',
-    });
-    res.json({ ok: true, message: 'Session booked successfully' });
-  } catch (err) {
-    console.error('book-session error:', err.message);
-    res.status(500).json({ ok: false, error: 'Booking failed' });
-  }
+// DEPRECATED — this endpoint created Sessions with no payment and no userId/mentorId
+// (orphan records, ₹0 collected). All booking now goes through the real Razorpay flow
+// at POST /api/payments/order → /verify. Kept as a 410 so any stale client fails loudly
+// instead of silently faking a "confirmed" booking.
+app.post('/api/book-session', (req, res) => {
+  res.status(410).json({
+    ok: false,
+    error: 'This booking endpoint is retired. Use POST /api/payments/order then /verify.',
+  });
 });
 
 // Centralized error handler (should be last app.use before server start)

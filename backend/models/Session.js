@@ -14,13 +14,25 @@ const sessionSchema = new mongoose.Schema({
   calendarEventId:{ type: String },
   notes:          { type: String, maxlength: 500 },
 
-  // ── Payment (Razorpay) ──
-  amount:         { type: Number, default: 0 },          // INR (rupees)
+  // ── Payment (Razorpay) — all money lands in the company Razorpay account ──
+  amount:         { type: Number, default: 0 },          // INR (rupees) the student paid for the session
   currency:       { type: String, default: 'INR' },
   paymentStatus:  { type: String, enum: ['free', 'created', 'paid', 'failed'], default: 'free', index: true },
   razorpayOrderId:   { type: String, index: true },
   razorpayPaymentId: { type: String },
+
+  // ── Mentor payout ledger ──
+  // Money is collected centrally, then mentors are paid their share in a monthly
+  // batch. These fields make the month-end payout a single query.
+  mentorShare:    { type: Number, default: 0 },          // INR owed to the mentor (net of platform fee)
+  platformFeePct: { type: Number, default: 0 },          // % the platform kept on this session
+  payoutStatus:   { type: String, enum: ['na', 'pending', 'paid'], default: 'na', index: true },
+  payoutBatchId:  { type: String, index: true },         // groups sessions settled together
+  paidOutAt:      { type: Date },                        // when the mentor was actually credited
 }, { timestamps: true });
+
+// Fast lookup for the month-end payout run.
+sessionSchema.index({ payoutStatus: 1, mentorId: 1 });
 
 sessionSchema.index({ userId: 1, status: 1, scheduledAt: -1 });
 
