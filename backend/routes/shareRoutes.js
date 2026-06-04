@@ -118,21 +118,33 @@ router.get('/r/:username', async (req, res) => {
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
       const { title, description, image } = kit.meta;
 
-      return res.set('Content-Type', 'text/html').send(`<!doctype html>
-<html><head>
+      // Let crawlers cache the unfurl card briefly (they ignore the API no-store rule
+      // we set globally, but being explicit avoids stale "cannot display" results).
+      res.set('Cache-Control', 'public, max-age=300');
+
+      // NOTE: no <meta refresh> here. Pointing crawlers at the SPA profile page (which
+      // has no server-rendered OG tags) is exactly what makes LinkedIn give up and show
+      // "Cannot display preview". Crawlers only need these tags; humans never hit this branch.
+      return res.set('Content-Type', 'text/html; charset=utf-8').send(`<!doctype html>
+<html lang="en"><head>
 <meta charset="utf-8">
 <title>${esc(title)}</title>
 <meta property="og:type" content="profile">
+<meta property="og:site_name" content="Atyant">
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(description)}">
-${image ? `<meta property="og:image" content="${esc(image)}">` : ''}
 <meta property="og:url" content="${esc(target)}">
+${image ? `<meta property="og:image" content="${esc(image)}">
+<meta property="og:image:secure_url" content="${esc(image)}">
+<meta property="og:image:alt" content="${esc(title)}">` : ''}
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="${esc(title)}">
 <meta name="twitter:description" content="${esc(description)}">
 ${image ? `<meta name="twitter:image" content="${esc(image)}">` : ''}
-<meta http-equiv="refresh" content="0;url=${esc(target)}">
-</head><body>Redirecting to <a href="${esc(target)}">${esc(title)}</a>…</body></html>`);
+<link rel="canonical" href="${esc(target)}">
+</head><body>
+<p>${esc(title)} — <a href="${esc(target)}">view profile on Atyant</a>.</p>
+</body></html>`);
     }
 
     // Real visitor → straight redirect to the profile.

@@ -18,6 +18,24 @@ const backendBase = () =>
 const profilePath = () =>
   (process.env.PROFILE_PATH || '/profile').replace(/\/+$/, '');
 
+// Default preview image used when a user has no avatar, or when their avatar is
+// hosted somewhere social crawlers can't reliably fetch (e.g. Google avatars,
+// which LinkedIn's bot frequently gets a 403 on). Override with OG_DEFAULT_IMAGE.
+const DEFAULT_OG_IMAGE = () =>
+  process.env.OG_DEFAULT_IMAGE || `${frontendBase()}/og-default.png`;
+
+// Hosts whose images crawlers (esp. LinkedIn) tend to block — fall back instead.
+const UNFETCHABLE_IMAGE = /googleusercontent\.com|fbcdn\.net|lookaside\.|cdn\.discordapp/i;
+
+/** Resolve a user's avatar to an absolute https URL a crawler can fetch, or a safe default. */
+export function buildOgImage(user) {
+  const raw = (user && (user.profilePicture || user.picture)) || '';
+  if (!raw || UNFETCHABLE_IMAGE.test(raw)) return DEFAULT_OG_IMAGE();
+  if (/^https?:\/\//i.test(raw)) return raw;
+  // Relative path → make absolute against the frontend.
+  return `${frontendBase()}/${String(raw).replace(/^\/+/, '')}`;
+}
+
 /** Public profile URL on the frontend. */
 export function buildProfileUrl(username, { via } = {}) {
   const url = `${frontendBase()}${profilePath()}/${encodeURIComponent(username)}`;
@@ -83,7 +101,7 @@ export function buildShareKit(user) {
     meta: {
       title: `${user.name || username} on Atyant`,
       description: user.bio || buildShareText(user),
-      image: user.profilePicture || user.picture || null,
+      image: buildOgImage(user),
     },
     platforms,
   };
