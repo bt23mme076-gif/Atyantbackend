@@ -4,7 +4,7 @@ import Question from '../models/Question.js';
 import AnswerCard from '../models/AnswerCard.js';
 import protect from '../middleware/authMiddleware.js';
 import atyantEngine from '../services/AtyantEngine.js';
-import { getQuestionEmbedding } from '../services/AIService.js';
+import aiService, { getQuestionEmbedding } from '../services/AIService.js';
 import { normalizeCollege } from '../utils/collegeNormalizer.js';
 import { sendMentorWelcomeEmail } from '../utils/emailService.js';
 
@@ -94,16 +94,39 @@ router.post('/onboard', protect, async (req, res) => {
           keywords: [...topCompanies, ...specialTags, branch].filter(Boolean).map(s => String(s).toLowerCase()),
         });
 
-        const answerContent = {
-          mainAnswer: story.slice(0, 2000),
-          situation: story.slice(0, 1200),
-          whatWorked: topCompanies[0] ? `Now at ${topCompanies[0]}` : '',
-        };
+        // 🔥 AI-structure the story into a full answer card (situation / what
+        // worked / steps / mistakes / timeline / if-I-did-it-today) so the mentor
+        // gets a polished card automatically — no 6-box form to fill.
+        let refined = null;
+        try {
+          refined = await aiService.refineExperience({
+            story, bio, college, branch,
+            companies: topCompanies, expertise, achievements: specialTags,
+          });
+        } catch (e) {
+          console.warn('onboard refineExperience failed, using raw story:', e.message);
+        }
+
+        const answerContent = buildAnswerContent({
+          mainAnswer: refined?.mainAnswer,
+          situation: refined?.situation,
+          whatWorked: refined?.whatWorked,
+          timeline: refined?.timeline,
+          differentApproach: refined?.differentApproach,
+          keyMistakes: refined?.keyMistakes,
+          actionableSteps: refined?.actionableSteps,
+        });
+        // Fallbacks so the card is never empty even if AI was unavailable.
+        if (!answerContent.situation)  answerContent.situation = story.slice(0, 1200);
+        if (!answerContent.mainAnswer) answerContent.mainAnswer = story.slice(0, 200);
+        if (!answerContent.whatWorked && topCompanies[0]) answerContent.whatWorked = `Now at ${topCompanies[0]}`;
 
         let embedding = null;
         try {
-          const embText = [bio, story, topCompanies.join(' '), specialTags.join(' '), expertise.join(' ')]
-            .filter(Boolean).join(' ');
+          // Embed the card content + profile signal for the richest match vector.
+          const embText = [
+            embeddingTextFor(answerContent), topCompanies.join(' '), specialTags.join(' '), expertise.join(' '),
+          ].filter(Boolean).join(' ');
           embedding = await getQuestionEmbedding(embText);
         } catch (e) {
           console.warn('onboard embedding failed (card saves without vector):', e.message);
@@ -142,6 +165,237 @@ router.post('/onboard', protect, async (req, res) => {
   } catch (error) {
     console.error('POST /mentor/onboard error:', error);
     res.status(500).json({ message: 'Onboarding failed', error: error.message });
+  }
+});
+
+// Build the embedding text + content from an answer-card request body.
+function buildAnswerContent(b = {}) {
+  const ac = {
+    mainAnswer:        typeof b.mainAnswer === 'string' ? b.mainAnswer.slice(0, 2000) : '',
+    situation:         typeof b.situation === 'string' ? b.situation.slice(0, 2000) : '',
+    whatWorked:        typeof b.whatWorked === 'string' ? b.whatWorked.slice(0, 2000) : '',
+    timeline:          typeof b.timeline === 'string' ? b.timeline.slice(0, 500) : '',
+    differentApproach: typeof b.differentApproach === 'string' ? b.differentApproach.slice(0, 2000) : '',
+    keyMistakes:       Array.isArray(b.keyMistakes)
+      ? b.keyMistakes.map(s => String(s).trim()).filter(Boolean).slice(0, 10) : [],
+    actionableSteps:   Array.isArray(b.actionableSteps)
+      ? b.actionableSteps
+          .map(s => ({ step: String(s?.step || '').trim(), description: String(s?.description || '').trim() }))
+          .filter(s => s.description).slice(0, 10)
+      : [],
+  };
+  return ac;
+}
+
+function embeddingTextFor(ac) {
+  return [
+    ac.mainAnswer, ac.situation, ac.whatWorked, ac.timeline, ac.differentApproach,
+    Array.isArray(ac.keyMistakes) ? ac.keyMistakes.join(' ') : '',
+    Array.isArray(ac.actionableSteps) ? ac.actionableSteps.map(s => s.description).join(' ') : '',
+  ].filter(Boolean).join(' ');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  POST /api/mentor/answer-cards/generate
+//  AI-drafts a full answer card from ONE paragraph the mentor writes (plus their
+//  profile). Does NOT save — returns the structured draft so the mentor can
+//  review/tweak it, then publish. This is the "mentors won't fill 6 boxes" path.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/answer-cards/generate', protect, async (req, res) => {
+  try {
+    const mentorId = req.user.userId;
+    const user = await User.findById(mentorId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const story = clean(req.body?.story) || '';
+    const edu = user.education?.[0] || {};
+
+    // Feed the AI everything we know — the free-text story is the main signal,
+    // profile fields add grounding (companies, skills, achievements).
+    const rawData = {
+      story: story || user.bio || '',
+      bio: user.bio || '',
+      college: edu.institutionName || edu.institution || '',
+      branch: edu.field || '',
+      companies: user.topCompanies || [],
+      expertise: user.expertise || [],
+      achievements: user.specialTags || [],
+    };
+
+    if (!rawData.story && rawData.companies.length === 0) {
+      return res.status(400).json({ message: 'Write a few lines about your journey first.' });
+    }
+
+    let refined;
+    try {
+      refined = await aiService.refineExperience(rawData);
+    } catch (e) {
+      console.warn('refineExperience failed, using raw:', e.message);
+      refined = rawData;
+    }
+
+    const ac = buildAnswerContent({
+      mainAnswer: refined?.mainAnswer,
+      situation: refined?.situation,
+      whatWorked: refined?.whatWorked,
+      timeline: refined?.timeline,
+      differentApproach: refined?.differentApproach,
+      keyMistakes: refined?.keyMistakes,
+      actionableSteps: refined?.actionableSteps,
+    });
+
+    // Safety net: if AI was unavailable (no key), at least seed from the story
+    // so the mentor isn't staring at empty boxes.
+    if (!ac.situation && !ac.mainAnswer && rawData.story) {
+      ac.situation = rawData.story.slice(0, 1200);
+      ac.mainAnswer = rawData.story.slice(0, 200);
+    }
+
+    res.json({ success: true, answerContent: ac });
+  } catch (err) {
+    console.error('POST /mentor/answer-cards/generate error:', err);
+    res.status(500).json({ message: 'Failed to generate answer card', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  POST /api/mentor/answer-cards
+//  Lets a mentor write their answer card from scratch (when one wasn't auto-
+//  created at onboarding). Creates the backing Question + embedded AnswerCard.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/answer-cards', protect, async (req, res) => {
+  try {
+    const mentorId = req.user.userId;
+    const user = await User.findById(mentorId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.role !== 'mentor') return res.status(403).json({ message: 'Only mentors can create answer cards' });
+
+    const ac = buildAnswerContent(req.body);
+    // Need at least the headline or the situation to make a meaningful card.
+    if (!ac.mainAnswer && !ac.situation) {
+      return res.status(400).json({ message: 'Add at least a headline answer or the situation.' });
+    }
+
+    const edu = user.education?.[0] || {};
+    const college = edu.institutionName || edu.institution || 'college';
+    const branch = edu.field || '';
+    const goalLine = user.primaryDomain ? `${user.primaryDomain} success` : 'their goal';
+
+    const q = await Question.create({
+      userId: user._id,
+      questionText: `How did ${user.username || 'this mentor'} achieve ${goalLine}? (${college} ${branch})`.slice(0, 1000),
+      status: 'answered_instantly',
+      selectedMentorId: user._id,
+      keywords: [...(user.topCompanies || []), ...(user.specialTags || []), branch]
+        .filter(Boolean).map(s => String(s).toLowerCase()),
+    });
+
+    let embedding = null;
+    try {
+      embedding = await getQuestionEmbedding(embeddingTextFor(ac));
+    } catch (e) {
+      console.warn('create answer-card embedding failed (saves without vector):', e.message);
+    }
+
+    const card = await AnswerCard.create({
+      mentorId: user._id,
+      questionId: q._id,
+      answerContent: ac,
+      ...(embedding ? { embedding } : {}),
+    });
+
+    try { atyantEngine.flushAllCaches(); } catch { /* noop */ }
+
+    res.json({
+      success: true,
+      message: 'Answer card created',
+      card: { id: String(card._id), questionText: q.questionText, answerContent: ac, updatedAt: card.updatedAt },
+    });
+  } catch (err) {
+    console.error('POST /mentor/answer-cards error:', err);
+    res.status(500).json({ message: 'Failed to create answer card', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  GET /api/mentor/answer-cards
+//  The logged-in mentor's own answer cards — exactly what students see on the
+//  Clarity page, so the mentor can review and edit them.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/answer-cards', protect, async (req, res) => {
+  try {
+    const mentorId = req.user.userId;
+    const cards = await AnswerCard.find({ mentorId })
+      .sort({ createdAt: -1 })
+      .populate('questionId', 'questionText')
+      .lean();
+
+    res.json({
+      success: true,
+      cards: cards.map(c => ({
+        id: String(c._id),
+        questionText: c.questionId?.questionText || '',
+        answerContent: c.answerContent || {},
+        updatedAt: c.updatedAt,
+      })),
+    });
+  } catch (err) {
+    console.error('GET /mentor/answer-cards error:', err);
+    res.status(500).json({ message: 'Failed to load answer cards', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PUT /api/mentor/answer-cards/:id
+//  Edit the content of one of the mentor's own answer cards. Re-generates the
+//  vector embedding from the new content so semantic matching stays accurate.
+// ─────────────────────────────────────────────────────────────────────────────
+router.put('/answer-cards/:id', protect, async (req, res) => {
+  try {
+    const mentorId = req.user.userId;
+    // Scope to the owner — a mentor can only edit their own cards.
+    const card = await AnswerCard.findOne({ _id: req.params.id, mentorId });
+    if (!card) return res.status(404).json({ message: 'Answer card not found' });
+
+    const b = req.body || {};
+    const ac = card.answerContent || {};
+
+    // Update only the fields the editor actually sends (string fields capped).
+    if (typeof b.mainAnswer === 'string')        ac.mainAnswer = b.mainAnswer.slice(0, 2000);
+    if (typeof b.situation === 'string')         ac.situation = b.situation.slice(0, 2000);
+    if (typeof b.whatWorked === 'string')        ac.whatWorked = b.whatWorked.slice(0, 2000);
+    if (typeof b.timeline === 'string')          ac.timeline = b.timeline.slice(0, 500);
+    if (typeof b.differentApproach === 'string') ac.differentApproach = b.differentApproach.slice(0, 2000);
+    if (Array.isArray(b.keyMistakes)) {
+      ac.keyMistakes = b.keyMistakes.map(s => String(s).trim()).filter(Boolean).slice(0, 10);
+    }
+    if (Array.isArray(b.actionableSteps)) {
+      ac.actionableSteps = b.actionableSteps
+        .map(s => ({ step: String(s?.step || '').trim(), description: String(s?.description || '').trim() }))
+        .filter(s => s.description)
+        .slice(0, 10);
+    }
+
+    card.answerContent = ac;
+    card.markModified('answerContent');
+
+    // Re-embed from the updated content so vector search reflects the edit.
+    try {
+      const embedding = await getQuestionEmbedding(embeddingTextFor(ac));
+      if (embedding) card.embedding = embedding;
+    } catch (e) {
+      console.warn('answer-card re-embed failed (saved without new vector):', e.message);
+    }
+
+    await card.save();
+
+    // Drop cached matches so students see the updated card/vector right away.
+    try { atyantEngine.flushAllCaches(); } catch { /* noop */ }
+
+    res.json({ success: true, message: 'Answer card updated', answerContent: ac });
+  } catch (err) {
+    console.error('PUT /mentor/answer-cards/:id error:', err);
+    res.status(500).json({ message: 'Failed to update answer card', error: err.message });
   }
 });
 

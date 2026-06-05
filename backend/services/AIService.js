@@ -36,14 +36,16 @@ export const getQuestionEmbedding = async (text) => {
 class AIService {
   constructor() {
     this.apiKey = process.env.GROQ_API_KEY;
-    this.model  = 'llama3-70b-8192';
+    // Use the model from env — the old hardcoded 'llama3-70b-8192' is decommissioned
+    // by Groq and 400s, which silently fell back to the raw (unstructured) story.
+    this.model  = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
     this.apiUrl = 'https://api.groq.com/openai/v1/chat/completions';
 
     if (!this.apiKey) {
       console.error('❌ GROQ_API_KEY not found in .env!');
       return;
     }
-    console.log('✅ Groq AI initialized successfully');
+    console.log(`✅ Groq AI initialized (model: ${this.model})`);
   }
 
   async _groqRequest(systemPrompt, userPrompt) {
@@ -83,14 +85,30 @@ STRICT RULES:
 4. AVOID robotic words like 'delve', 'unleash', 'comprehensive', or 'empower'.
 5. Return ONLY a valid JSON object, no markdown.`;
 
-      const userPrompt = `Fix this mentor's raw journey and return JSON with keys:
-mainAnswer, situation, firstAttempt, keyMistakes (array), whatWorked, actionableSteps (array), timeline, differentApproach, additionalNotes.
+      const userPrompt = `/no_think
+Rewrite this mentor's raw journey into a clean, structured answer card.
+Expand each section into proper sentences (don't just copy the raw text into every field).
+Return ONLY a JSON object with these keys:
+mainAnswer (a 1-line takeaway), situation, firstAttempt, keyMistakes (array of strings),
+whatWorked, actionableSteps (array of {step, description}), timeline, differentApproach, additionalNotes.
 
 RAW DATA: ${JSON.stringify(rawData)}`;
 
       const aiText = await this._groqRequest(systemPrompt, userPrompt);
-      const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : rawData;
+      // Qwen3 / reasoning models can prepend a <think>…</think> block (and any
+      // prose) before the JSON. Strip thinking, then take the JSON object.
+      const cleaned = String(aiText || '')
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/```json|```/gi, '')
+        .trim();
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      let parsed;
+      try {
+        parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : rawData;
+      } catch (parseErr) {
+        console.warn('refineExperience: JSON parse failed, using raw:', parseErr.message);
+        parsed = rawData;
+      }
     
     // 🔴 FIX: Validate and normalize actionableSteps format
     if (parsed.actionableSteps) {
