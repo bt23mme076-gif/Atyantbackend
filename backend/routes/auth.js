@@ -382,7 +382,7 @@ router.get('/google/callback',
 
       // Redirect to frontend with token
       const frontendUrl = getFrontendUrl();
-      res.redirect(`${frontendUrl}/auth-success?token=${token}`);
+      res.redirect(`${frontendUrl}/?token=${token}`);
     } catch (error) {
       console.error('OAuth callback error:', error);
       const frontendUrl = getFrontendUrl();
