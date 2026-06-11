@@ -54,7 +54,7 @@ async function createIndexes() {
     console.log('   → Collection: answercards');
     console.log('   → Field: embedding');
     console.log('   → Type: vectorSearch');
-    console.log('   → Dimensions: 1536 (OpenAI ada-002)');
+    console.log('   → Dimensions: 384 (sentence-transformer at embed.atyant.in — verified via verifyVectorIndex.js)');
     console.log('   → Similarity: cosine');
     
     console.log('\n🎉 All indexes created successfully!\n');

@@ -134,6 +134,14 @@ const userSchema = new mongoose.Schema({
   // Which platform services this mentor offers (ids from config/serviceCatalog.js).
   // Prices are platform-fixed; mentors only choose what they offer.
   servicesOffered: { type: [String], default: [] },
+  // Weekly recurring availability — each entry is a day-of-week + time slots.
+  // day: 0=Sun 1=Mon … 6=Sat, slots: ["09:00","10:00",...] in IST (HH:MM).
+  availability: {
+    weekly: [{ day: { type: Number, min: 0, max: 6 }, slots: [{ type: String }] }],
+    timezone:           { type: String, default: 'Asia/Kolkata' },
+    advanceNoticeHours: { type: Number, default: 2 },
+    maxWeeksAhead:      { type: Number, default: 3 },
+  },
   acceptsCredits: { type: Boolean, default: false },
   isOnline: { type: Boolean, default: false },
   lastActive: { type: Date, default: Date.now, index: true },
@@ -166,6 +174,16 @@ const userSchema = new mongoose.Schema({
   feedbackScore: { type: Number, default: 0, min: 0, max: 1 },
   totalAnswered: { type: Number, default: 0 },
   helpfulCount: { type: Number, default: 0 },
+  // Answers that actually received a rating — the correct denominator for
+  // feedbackScore. Dividing by totalAnswered punishes mentors for unrated answers.
+  feedbackCount: { type: Number, default: 0 },
+
+  // ─── OUTCOME STATS ─────────────────────────
+  // Verified results: did students who followed this mentor's advice actually
+  // achieve the target (internship/placement/interview)? This is the moat metric.
+  outcomeScore: { type: Number, default: 0, min: 0, max: 1 }, // Laplace-smoothed success rate
+  outcomeCount: { type: Number, default: 0 },                 // outcomes reported
+  outcomeSuccessCount: { type: Number, default: 0 },          // outcomes achieved
 
   // ─── MENTOR STRATEGY ───────────────────────
   strategy: {

@@ -3,7 +3,8 @@ import { optionalAuth } from '../middleware/auth.js';
 import {
   processAtyantMessage,
   getAtyantSession,
-  clearAtyantSession
+  clearAtyantSession,
+  recordAtyantChatFeedback
 } from '../services/AtyantEngineService.js';
 
 const router = express.Router();
@@ -172,6 +173,26 @@ router.get('/atyant-chat/:sessionId', optionalAuth, async (req, res) => {
   } catch (error) {
     console.error('Atyant session fetch error:', error.message);
     res.status(500).json({ ok: false, error: 'Failed to fetch session' });
+  }
+});
+
+// POST /api/ai/atyant-chat/:sessionId/feedback — thumbs up/down on a bot reply
+// Body: { message: <exact reply text>, value: 'up' | 'down' | null }
+router.post('/atyant-chat/:sessionId/feedback', optionalAuth, async (req, res) => {
+  try {
+    const { message, value } = req.body;
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ ok: false, error: 'message is required' });
+    }
+    const result = await recordAtyantChatFeedback(
+      req.params.sessionId,
+      message,
+      value === undefined ? null : value
+    );
+    res.status(result.ok ? 200 : 404).json(result);
+  } catch (error) {
+    console.error('Atyant chat feedback error:', error.message);
+    res.status(500).json({ ok: false, error: 'Failed to record feedback' });
   }
 });
 

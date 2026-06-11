@@ -84,7 +84,7 @@ const questionSchema = new mongoose.Schema({
   isPaid: { type: Boolean, default: false },
   paidMentorshipType: {
     type: String,
-    enum: ['chat', 'video', 'roadmap', null],
+    enum: ['chat', 'video', 'roadmap', 'text-qa', 'audio-call', 'video-call', 'resume-review', null],
     default: null
   },
   paidAt: { type: Date, default: null },
@@ -119,6 +119,17 @@ const questionSchema = new mongoose.Schema({
   },
   feedbackAt: {
     type: Date,
+  },
+
+  // ─── OUTCOME (30/60/90-day follow-up) ──────
+  outcome: {
+    status: {
+      type: String,
+      enum: ['achieved', 'not_achieved', 'in_progress', null],
+      default: null,
+    },
+    note: { type: String, maxlength: 500, default: '' },
+    recordedAt: { type: Date, default: null },
   },
 
 }, {

@@ -7,11 +7,10 @@
  *    (it's stored on mentors and bookings).
  */
 export const SERVICE_CATALOG = [
-  { id: 'quick-chat',     label: '1:1 Chat',          description: 'Async/text guidance on a focused question', durationMin: 20, price: 149 },
-  { id: 'video-call',     label: '1:1 Video Call',    description: '30-min live video mentorship session',      durationMin: 30, price: 399 },
-  { id: 'resume-review',  label: 'Resume / LinkedIn Review', description: 'Detailed written feedback on your profile', durationMin: 30, price: 249 },
-  { id: 'mock-interview', label: 'Mock Interview',    description: '45-min mock interview + feedback',          durationMin: 45, price: 599 },
-  { id: 'roadmap',        label: 'Personalized Roadmap', description: 'A step-by-step plan for your goal',       durationMin: 30, price: 499 },
+  { id: 'text-qa',        label: 'Text Q&A',          description: 'Quick doubt, one specific question',        durationMin: 30, duration: '48hr async', price: 149 },
+  { id: 'audio-call',     label: 'Audio Call',        description: 'Resume talk, strategy, no video needed',   durationMin: 25, duration: '25 min',     price: 299 },
+  { id: 'video-call',     label: 'Video Call',        description: 'Mock interview, screen share, deep dive',   durationMin: 45, duration: '45 min',     price: 499 },
+  { id: 'resume-review',  label: 'Resume Review',     description: 'Written feedback on PDF, no call needed',  durationMin: 30, duration: '48hr async', price: 249 },
 ];
 
 const byId = new Map(SERVICE_CATALOG.map(s => [s.id, s]));

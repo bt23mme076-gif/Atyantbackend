@@ -1,6 +1,7 @@
 import User from '../models/User.js';
 import Question from '../models/Question.js';
 import AnswerCard from '../models/AnswerCard.js';
+import MatchLog from '../models/MatchLog.js';
 import { sendMentorNewQuestionNotification } from '../utils/emailNotifications.js';
 import { getQuestionEmbedding } from './AIService.js';
 import aiServiceInstance from './AIService.js';
@@ -82,6 +83,7 @@ const CONFIG = {
     HIGH_RESPONSE: 0.04,
     RECENT_ACTIVE: 0.03,
     FEEDBACK_BONUS: 0.08,  // ← NEW: good feedback adds up to 8%
+    OUTCOME: 0.08,         // ← verified outcome success rate (the moat signal)
   },
 
   LIVE_WEIGHTS: {
@@ -102,6 +104,7 @@ const CONFIG = {
     RECENT_ACTIVE: 70,
     PROVEN_MENTOR: 150,
     FEEDBACK_BONUS: 200, // ← NEW: good feedback adds points
+    OUTCOME_PROVEN: 500, // ← scaled by outcomeScore: mentors whose advice verifiably WORKED
     COLD_START_BOOST: 100, // ← NEW: new mentors get a boost
     GOAL_MATCH: 700,    // ← NEW: mentor actually did the EXACT thing in the goal (e.g. IIM for an IIM goal)
   },
@@ -210,6 +213,32 @@ const SPECIAL_TAGS = [
 // ─────────────────────────────────────────────
 //  UTILITY FUNCTIONS
 // ─────────────────────────────────────────────
+// Auto-generate lookup variants from a mentor-entered company name so new
+// companies are routable WITHOUT editing the hardcoded alias dict:
+//   "Tata Consultancy Services" → tataconsultancyservices, tcs (acronym),
+//   "Zoho Corporation Pvt Ltd"  → zohocorporationpvtltd, zoho (suffix-stripped)
+const COMPANY_SUFFIX_WORDS = new Set([
+  'technologies', 'technology', 'tech', 'labs', 'lab', 'india', 'pvt', 'ltd',
+  'limited', 'inc', 'llc', 'solutions', 'software', 'systems', 'services',
+  'private', 'corp', 'corporation', 'company', 'co', 'group', 'global',
+]);
+
+function companyAliasVariants(raw) {
+  const variants = new Set();
+  const clean = String(raw).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean) return variants;
+  const words = clean.split(' ');
+  // Core name with generic suffix words stripped
+  const core = words.filter(w => !COMPANY_SUFFIX_WORDS.has(w));
+  if (core.length > 0 && core.length < words.length) variants.add(core.join(''));
+  // Acronym for 3+ word names ("tata consultancy services" → "tcs")
+  if (words.length >= 3) {
+    const acro = words.map(w => w[0]).join('');
+    if (acro.length >= 3) variants.add(acro);
+  }
+  return variants;
+}
+
 function normalizeCompany(company) {
   if (!company || typeof company !== 'string') return '';
   const clean = company.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '');
@@ -293,6 +322,12 @@ function isRecentlyActive(lastActive, days = 14) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Fire-and-forget routing log — every match decision with its full candidate
+// set becomes training data. Must NEVER slow down or fail a match.
+function logMatch(entry) {
+  MatchLog.create(entry).catch(err => dlog('MatchLog write failed:', err.message));
+}
 
 // ─────────────────────────────────────────────
 //  INVERTED INDEX BUILDER  ← NEW
@@ -567,9 +602,10 @@ function scoreMentor(mentor, context) {
   // helpfulCount / totalAnswered = feedbackScore
   const feedbackScore = mentor.feedbackScore || 0;
   const totalAnswered = mentor.totalAnswered || 0;
+  const ratedCount = mentor.feedbackCount || 0;
 
-  if (totalAnswered >= 3) {
-    // Enough data to trust feedback
+  if (ratedCount >= 3) {
+    // Enough RATED answers to trust feedback (totalAnswered counts unrated ones too)
     if (feedbackScore >= 0.8) {
       const p = LW.FEEDBACK_BONUS; points += p; breakdown.push(`Feedback★(+${p})`);
     } else if (feedbackScore < 0.4) {
@@ -580,6 +616,14 @@ function scoreMentor(mentor, context) {
   } else if (totalAnswered === 0) {
     // Brand new mentor — cold start boost so they get a chance
     points += LW.COLD_START_BOOST; breakdown.push(`ColdStart(+${LW.COLD_START_BOOST})`);
+  }
+
+  // ── VERIFIED OUTCOMES ── the moat signal: students who followed this mentor's
+  // advice actually achieved the goal. Scaled by smoothed success rate, gated on
+  // ≥3 reported outcomes so one lucky result can't dominate.
+  if ((mentor.outcomeCount || 0) >= 3) {
+    const p = Math.round(LW.OUTCOME_PROVEN * (mentor.outcomeScore || 0));
+    if (p > 0) { points += p; breakdown.push(`Outcome(+${p})`); }
   }
 
   // Load penalty
@@ -614,11 +658,21 @@ async function getAllTargetCompanies() {
     COMPANY_CACHE_TIME = now;
 
     COMPANY_LOOKUP.clear();
+    // 1. Hand-curated aliases win (set first, never overwritten)
     for (const c of COMPANY_CACHE) {
       const aliases = COMPANY_ALIASES[c] || [c];
       aliases.forEach(a => {
         COMPANY_LOOKUP.set(a.toLowerCase().replace(/[^a-z0-9]/g, ''), c);
       });
+    }
+    // 2. Auto-generated variants from raw mentor-entered names — makes a new
+    //    company routable the moment one mentor lists it, no dict edit needed.
+    for (const raw of new Set(allCompanies)) {
+      const canonical = normalizeCompany(raw);
+      if (!canonical) continue;
+      for (const v of companyAliasVariants(raw)) {
+        if (v.length >= 2 && !COMPANY_LOOKUP.has(v)) COMPANY_LOOKUP.set(v, canonical);
+      }
     }
 
     dlog(`✅ Company cache rebuilt (${COMPANY_CACHE.length} companies)`);
@@ -663,7 +717,7 @@ async function getActiveMentors() {
       .select(
         'username email education primaryDomain topCompanies milestones specialTags ' +
         'expertise bio activeQuestions rating responseRate lastActive successfulMatches ' +
-        'companyDomain feedbackScore totalAnswered'  // ← feedbackScore, totalAnswered added
+        'companyDomain feedbackScore totalAnswered feedbackCount outcomeScore outcomeCount'
       )
       .lean();
 
@@ -682,6 +736,36 @@ async function getActiveMentors() {
 function invalidateMentorCache() {
   MENTOR_CACHE = null;
   MENTOR_CACHE_TIME = 0;
+}
+
+// Patch a mentor's load in the cache instead of nuking it. A full invalidate on
+// every assignment forced a mentor reload + index rebuild on the NEXT question,
+// driving the cache hit rate to zero under load. Other stat drift (rating,
+// feedbackScore) self-heals on the 5-min TTL refresh.
+function adjustCachedMentorLoad(mentorId, delta) {
+  if (!MENTOR_CACHE) return;
+  const id = mentorId.toString();
+  const m = MENTOR_CACHE.find(x => x._id.toString() === id);
+  if (m) m.activeQuestions = Math.max(0, (m.activeQuestions || 0) + delta);
+}
+
+// ─────────────────────────────────────────────
+//  EMBEDDED ANSWER-CARD EXISTENCE CHECK
+//  Was a countDocuments on EVERY question — one extra DB roundtrip per ask.
+//  Once true it stays true (cards are never bulk-deleted), so cache hard.
+// ─────────────────────────────────────────────
+let HAS_EMBEDDED_CARDS = false;
+let HAS_EMBEDDED_CARDS_CHECKED = 0;
+const EMBEDDED_CHECK_TTL = 10 * 60 * 1000;
+
+async function hasEmbeddedAnswerCards() {
+  if (HAS_EMBEDDED_CARDS) return true;
+  const now = Date.now();
+  if (now - HAS_EMBEDDED_CARDS_CHECKED < EMBEDDED_CHECK_TTL) return HAS_EMBEDDED_CARDS;
+  HAS_EMBEDDED_CARDS_CHECKED = now;
+  const one = await AnswerCard.exists({ embedding: { $exists: true, $ne: null, $not: { $size: 0 } } });
+  HAS_EMBEDDED_CARDS = !!one;
+  return HAS_EMBEDDED_CARDS;
 }
 
 // ─────────────────────────────────────────────
@@ -757,16 +841,21 @@ class AtyantEngine {
   /* =============================================
       🔥 PATH A: VECTOR SEMANTIC MATCHING
      ============================================= */
-  async findBestSemanticMatch(studentId, vector, questionText, studentContext = null) {
+  async findBestSemanticMatch(studentId, vector, questionText, studentContext = null, diag = null) {
     try {
-      const cacheKey = crypto.createHash('sha1').update(questionText).digest('hex');
+      const sEdu = await resolveStudentEdu(studentId, studentContext);
+      const studentCollegeType = getCollegeType(sEdu.institutionName);
+
+      // Cache key MUST include the student's college/branch — the cached result
+      // has same-college / same-branch bonuses baked in. Keying on question text
+      // alone served Student A's personalized match to Student B.
+      const cacheKey = crypto.createHash('sha1')
+        .update(`${questionText}|${normalizeCollege(sEdu.institutionName || '').toLowerCase()}|${normalizeBranch(sEdu.field) || ''}`)
+        .digest('hex');
       if (VECTOR_CACHE.has(cacheKey)) {
         dlog(`💾 VECTOR CACHE HIT`);
         return VECTOR_CACHE.get(cacheKey);
       }
-
-      const sEdu = await resolveStudentEdu(studentId, studentContext);
-      const studentCollegeType = getCollegeType(sEdu.institutionName);
 
       const queryDetails = await this.detectQueryDetails(questionText);
       const { intent, confidence, mentionedCompanies, relatedCompanies,
@@ -775,10 +864,7 @@ class AtyantEngine {
       dlog(`\n🔎 ===== VECTOR SEMANTIC SEARCH =====`);
       dlog(`Intent: ${intent} | Companies: [${mentionedCompanies}] | Tags: [${foundTags.slice(0, 5)}]`);
 
-      const answerCardsWithEmbeddings = await AnswerCard.countDocuments({
-        embedding: { $exists: true, $ne: null, $not: { $size: 0 } },
-      });
-      if (answerCardsWithEmbeddings === 0) {
+      if (!(await hasEmbeddedAnswerCards())) {
         dlog(`❌ No AnswerCards with embeddings`);
         return null;
       }
@@ -814,7 +900,7 @@ class AtyantEngine {
       const mentors = await User.find({ _id: { $in: mentorIds }, role: 'mentor' })
         .select('username avatar bio education primaryDomain topCompanies milestones ' +
           'specialTags expertise rating responseRate lastActive successfulMatches ' +
-          'companyDomain feedbackScore totalAnswered')
+          'companyDomain feedbackScore totalAnswered feedbackCount outcomeScore outcomeCount')
         .lean();
       const mentorMap = new Map(mentors.map(m => [m._id.toString(), m]));
 
@@ -870,13 +956,24 @@ class AtyantEngine {
         // Feedback bonus in vector path
         const feedbackScore = mentor.feedbackScore || 0;
         const totalAnswered = mentor.totalAnswered || 0;
-        if (totalAnswered >= 3) {
+        const ratedCount = mentor.feedbackCount || 0;
+        if (ratedCount >= 3) {
           if (feedbackScore >= 0.8) { totalBonus += W.FEEDBACK_BONUS; bonusLogs.push(`Feedback★`); }
           else if (feedbackScore < 0.4) { totalBonus -= W.FEEDBACK_BONUS * 1.5; bonusLogs.push(`FeedbackBad`); }
         } else if (totalAnswered === 0) { totalBonus += 0.03; bonusLogs.push(`ColdStart(+3%)`); }
 
-        const cappedBonus = Math.min(totalBonus, 0.35);
-        const finalScore = Math.min(match.score * (1 + cappedBonus), 1.0);
+        // Verified outcome success rate (gated on ≥3 reported outcomes)
+        if ((mentor.outcomeCount || 0) >= 3) {
+          const b = W.OUTCOME * (mentor.outcomeScore || 0);
+          if (b > 0) { totalBonus += b; bonusLogs.push(`Outcome(+${(b * 100).toFixed(1)}%)`); }
+        }
+
+        // ADDITIVE ranking — the old multiplicative form min(score*(1+bonus), 1.0)
+        // saturated every decent match at 1.0, making ranking impossible and
+        // constantly tripping the ambiguity gate. Relevance (semantic) and mentor
+        // fit (bonus) are separate axes: 70/30 weighted sum, never capped away.
+        const normBonus = Math.min(totalBonus, 0.35) / 0.35; // → [0, 1]
+        const finalScore = 0.7 * match.score + 0.3 * normBonus;
 
         scoredMatches.push({
           ...match, finalScore, baseScore: match.score, bonusScore: totalBonus,
@@ -891,6 +988,14 @@ class AtyantEngine {
 
       scoredMatches.sort((a, b) => b.finalScore - a.finalScore);
 
+      if (diag) {
+        diag.queryDetails = queryDetails;
+        diag.candidates = scoredMatches.slice(0, 10).map(m => ({
+          mentorId: m.mentorProfile._id, score: m.finalScore,
+          baseScore: m.baseScore, breakdown: m.breakdown,
+        }));
+      }
+
       dlog(`\n--- TOP 5 VECTOR MATCHES ---`);
       scoredMatches.slice(0, 5).forEach((m, i) => {
         dlog(`#${i + 1}: ${m.mentorProfile.username} | ${(m.finalScore * 100).toFixed(2)}% | ${m.breakdown}`);
@@ -899,14 +1004,17 @@ class AtyantEngine {
       const best = scoredMatches[0];
       const second = scoredMatches[1];
 
-      if (!best || best.finalScore < CONFIG.INSTANT_THRESHOLD) {
-        dlog(`⚠️ Below threshold (${((best?.finalScore || 0) * 100).toFixed(2)}%)`);
+      // GATE on the raw semantic score (is this answer actually about the question?),
+      // RANK by finalScore (which answer + mentor combo is best). The thresholds were
+      // tuned against the raw cosine score, so they keep their meaning here.
+      if (!best || best.baseScore < CONFIG.INSTANT_THRESHOLD) {
+        dlog(`⚠️ Below semantic threshold (base ${((best?.baseScore || 0) * 100).toFixed(2)}%)`);
         return null;
       }
 
       if (second) {
         const gap = best.finalScore - second.finalScore;
-        if (best.finalScore < CONFIG.TOP_MATCH_CONFIDENCE && gap < CONFIG.AMBIGUITY_THRESHOLD) {
+        if (best.baseScore < CONFIG.TOP_MATCH_CONFIDENCE && gap < CONFIG.AMBIGUITY_THRESHOLD) {
           dlog(`⚠️ AMBIGUOUS — routing live`);
           return null;
         }
@@ -925,7 +1033,7 @@ class AtyantEngine {
   /* =============================================
       🔥 PATH B: LIVE MENTOR ROUTING
      ============================================= */
-  async findBestMentor(studentId, keywords, questionCategory = null, studentContext = null) {
+  async findBestMentor(studentId, keywords, questionCategory = null, studentContext = null, diag = null) {
     try {
       const questionText = keywords.join(' ');
       const sEdu = await resolveStudentEdu(studentId, studentContext);
@@ -949,6 +1057,13 @@ class AtyantEngine {
       // ← DRY: use shared scoreMentor function
       const scored = candidates.map(mentor => scoreMentor(mentor, context));
       scored.sort((a, b) => b.points - a.points);
+
+      if (diag) {
+        diag.queryDetails = queryDetails;
+        diag.candidates = scored.slice(0, 10).map(s => ({
+          mentorId: s.mentor._id, score: s.points, breakdown: s.logs,
+        }));
+      }
 
       console.log('\n--- TOP 5 LIVE CANDIDATES ---');
       scored.slice(0, 5).forEach((item, i) => {
@@ -987,7 +1102,7 @@ class AtyantEngine {
   /* =============================================
       🔥 FIND TOP N MENTORS (carousel)
      ============================================= */
-  async findTopMentors(studentId, keywords, questionCategory = null, limit = 3, studentContext = null) {
+  async findTopMentors(studentId, keywords, questionCategory = null, limit = 3, studentContext = null, diag = null) {
     try {
       const questionText = keywords.join(' ');
       const sEdu = await resolveStudentEdu(studentId, studentContext);
@@ -1016,6 +1131,13 @@ class AtyantEngine {
       // ← DRY: same scoreMentor function
       const scored = candidates.map(mentor => scoreMentor(mentor, context));
       scored.sort((a, b) => b.points - a.points);
+
+      if (diag) {
+        diag.queryDetails = queryDetails;
+        diag.candidates = scored.slice(0, 10).map(s => ({
+          mentorId: s.mentor._id, score: s.points, breakdown: s.logs,
+        }));
+      }
 
       const qualifiedMentors = scored
         .filter(s => s.points >= CONFIG.LIVE_MATCH_THRESHOLD)
@@ -1097,7 +1219,8 @@ class AtyantEngine {
       // ──────────────────────────────────────────
       if (vector && !options.isFollowUp) {
         dlog(`\n🎯 Path A: Vector search...`);
-        const match = await this.findBestSemanticMatch(userId, vector, questionText);
+        const diagA = {};
+        const match = await this.findBestSemanticMatch(userId, vector, questionText, options.studentContext || null, diagA);
 
         if (match) {
           const q = new Question({
@@ -1110,6 +1233,14 @@ class AtyantEngine {
             matchMethod: 'vector_semantic',
           });
           await q.save();
+
+          logMatch({
+            questionId: q._id, studentId: userId, path: 'vector', questionText,
+            queryDetails: diagA.queryDetails || queryDetails,
+            studentContext: options.studentContext || null,
+            candidates: diagA.candidates || [],
+            selectedMentorId: match.mentorProfile._id, instant: true,
+          });
 
           return {
             success: true,
@@ -1130,7 +1261,8 @@ class AtyantEngine {
       //  FIX: inferredCategory is now properly defined above
       // ──────────────────────────────────────────
       dlog(`\n🎯 Path B: Live routing (inferred: ${inferredCategory})...`);
-      const bestMentor = await this.findBestMentor(userId, keywords, options.category || inferredCategory || null);
+      const diagB = {};
+      const bestMentor = await this.findBestMentor(userId, keywords, options.category || inferredCategory || null, options.studentContext || null, diagB);
 
       const question = new Question({
         userId, questionText, keywords,
@@ -1164,7 +1296,15 @@ class AtyantEngine {
           return this.processQuestion(userId, questionText, { ...options, _retryCount: retryCount + 1 });
         }
 
-        invalidateMentorCache();
+        adjustCachedMentorLoad(bestMentor._id, +1);
+
+        logMatch({
+          questionId: question._id, studentId: userId, path: 'live', questionText,
+          queryDetails: diagB.queryDetails || queryDetails,
+          studentContext: options.studentContext || null,
+          candidates: diagB.candidates || [],
+          selectedMentorId: bestMentor._id, instant: false,
+        });
 
         sendMentorNewQuestionNotification(bestMentor.email, bestMentor.username, questionText)
           .then(() => dlog(`📧 Email → ${bestMentor.username}`))
@@ -1177,6 +1317,16 @@ class AtyantEngine {
           matchMethod: 'live_routing',
         };
       }
+
+      // No qualifying mentor — log the miss too: failed matches show exactly
+      // where mentor supply doesn't cover demand.
+      logMatch({
+        questionId: question._id, studentId: userId, path: 'live', questionText,
+        queryDetails: diagB.queryDetails || queryDetails,
+        studentContext: options.studentContext || null,
+        candidates: diagB.candidates || [],
+        selectedMentorId: null, instant: false,
+      });
 
       // Fallback: Atyant Engine user
       const engineUser = await User.findOne({ username: 'Atyant Engine', email: 'atyant.in@gmail.com' }).lean();
@@ -1221,6 +1371,7 @@ class AtyantEngine {
       }
 
       // ── Run BOTH paths simultaneously ──
+      const diagC = {};
       const [answerMatch, mentors] = await Promise.all([
         vector
           ? this.findBestSemanticMatch(userId, vector, questionText, studentContext).catch(e => {
@@ -1228,11 +1379,19 @@ class AtyantEngine {
               return null;
             })
           : Promise.resolve(null),
-        this.findTopMentors(userId, keywords, inferredCategory, limit, studentContext).catch(e => {
+        this.findTopMentors(userId, keywords, inferredCategory, limit, studentContext, diagC).catch(e => {
           console.error('Clarity mentor path error:', e.message);
           return null;
         }),
       ]);
+
+      logMatch({
+        questionId: null, studentId: userId, path: 'clarity', questionText,
+        queryDetails: diagC.queryDetails || queryDetails,
+        studentContext,
+        candidates: diagC.candidates || [],
+        selectedMentorId: null, instant: !!answerMatch,
+      });
 
       const answerCard = answerMatch
         ? {
@@ -1382,7 +1541,7 @@ class AtyantEngine {
       await User.findByIdAndUpdate(mentorId, {
         $inc: { activeQuestions: -1, successfulMatches: 1, totalAnswered: 1 }, // ← totalAnswered tracked
       });
-      invalidateMentorCache();
+      adjustCachedMentorLoad(mentorId, -1);
 
       return newCard;
     } catch (error) {
@@ -1397,35 +1556,53 @@ class AtyantEngine {
      ============================================= */
   async recordFeedback(questionId, studentId, isHelpful) {
     try {
-      const question = await Question.findById(questionId).lean();
-      if (!question || !question.selectedMentorId) {
-        return { success: false, message: 'Question or mentor not found' };
+      // CLAIM the question first, atomically — only succeeds if no feedback was
+      // recorded yet (and, when studentId is known, only for the question owner).
+      // This makes feedback idempotent: double-taps can't double-count votes.
+      const question = await Question.findOneAndUpdate(
+        {
+          _id: questionId,
+          studentFeedback: null,
+          ...(studentId ? { userId: studentId } : {}),
+        },
+        { $set: { studentFeedback: isHelpful ? 'helpful' : 'not_helpful', feedbackAt: new Date() } },
+        { new: true }
+      ).lean();
+
+      if (!question) {
+        return { success: false, message: 'Question not found, not yours, or feedback already recorded' };
+      }
+      if (!question.selectedMentorId) {
+        return { success: false, message: 'No mentor on this question' };
       }
 
       const mentorId = question.selectedMentorId;
 
-      // Fetch current mentor stats
-      const mentor = await User.findById(mentorId).select('feedbackScore totalAnswered helpfulCount').lean();
+      // Atomic increment FIRST, then recompute score from the returned doc —
+      // the old read-then-write pattern lost votes under concurrent feedback.
+      const mentor = await User.findByIdAndUpdate(
+        mentorId,
+        { $inc: { feedbackCount: 1, helpfulCount: isHelpful ? 1 : 0 } },
+        { new: true, select: 'helpfulCount feedbackCount' }
+      ).lean();
       if (!mentor) return { success: false, message: 'Mentor not found' };
 
-      const currentHelpful = mentor.helpfulCount || 0;
-      const currentTotal = mentor.totalAnswered || 0;
-
-      const newHelpful = isHelpful ? currentHelpful + 1 : currentHelpful;
-      const newTotal = currentTotal; // totalAnswered already incremented on transformToAnswerCard
-
-      // feedbackScore = helpfulCount / totalAnswered (0.0 to 1.0)
-      const newFeedbackScore = newTotal > 0 ? newHelpful / newTotal : 0;
+      // Denominator = RATED answers only (feedbackCount), not totalAnswered —
+      // unrated answers are silence, not a downvote. Laplace smoothing (+1/+2)
+      // keeps a single rating from swinging the score to 0.0 or 1.0.
+      const helpful = mentor.helpfulCount || 0;
+      const rated = mentor.feedbackCount || 1;
+      const newFeedbackScore = (helpful + 1) / (rated + 2);
 
       await User.findByIdAndUpdate(mentorId, {
         $set: { feedbackScore: newFeedbackScore },
-        $inc: { helpfulCount: isHelpful ? 1 : 0 },
       });
 
-      // Save feedback on the question too
-      await Question.findByIdAndUpdate(questionId, {
-        $set: { studentFeedback: isHelpful ? 'helpful' : 'not_helpful', feedbackAt: new Date() },
-      });
+      // Label the routing log — this is what turns logs into training data.
+      MatchLog.updateMany(
+        { questionId: question._id },
+        { $set: { feedback: isHelpful ? 'helpful' : 'not_helpful' } }
+      ).catch(err => dlog('MatchLog feedback label failed:', err.message));
 
       // Invalidate mentor cache so next question uses fresh feedbackScore
       invalidateMentorCache();
@@ -1437,6 +1614,65 @@ class AtyantEngine {
     } catch (error) {
       console.error('🔥 recordFeedback error:', error);
       return { success: false, message: 'Failed to record feedback' };
+    }
+  }
+
+  /* =============================================
+      🏆 OUTCOME HANDLER — the moat loop
+      Called when a student reports (via 30/60/90-day follow-up) whether they
+      actually achieved the goal after following the mentor's advice.
+     ============================================= */
+  async recordOutcome(questionId, studentId, achieved, note = '') {
+    try {
+      // Atomic claim — one outcome per question, owner only (when known).
+      const question = await Question.findOneAndUpdate(
+        {
+          _id: questionId,
+          'outcome.recordedAt': null,
+          ...(studentId ? { userId: studentId } : {}),
+        },
+        {
+          $set: {
+            'outcome.status': achieved ? 'achieved' : 'not_achieved',
+            'outcome.note': String(note || '').slice(0, 500),
+            'outcome.recordedAt': new Date(),
+          },
+        },
+        { new: true }
+      ).lean();
+
+      if (!question) {
+        return { success: false, message: 'Question not found, not yours, or outcome already recorded' };
+      }
+      if (!question.selectedMentorId) {
+        return { success: false, message: 'No mentor on this question' };
+      }
+
+      const mentorId = question.selectedMentorId;
+
+      const mentor = await User.findByIdAndUpdate(
+        mentorId,
+        { $inc: { outcomeCount: 1, outcomeSuccessCount: achieved ? 1 : 0 } },
+        { new: true, select: 'outcomeCount outcomeSuccessCount' }
+      ).lean();
+      if (!mentor) return { success: false, message: 'Mentor not found' };
+
+      // Laplace-smoothed success rate, same scheme as feedbackScore.
+      const newOutcomeScore = ((mentor.outcomeSuccessCount || 0) + 1) / ((mentor.outcomeCount || 1) + 2);
+      await User.findByIdAndUpdate(mentorId, { $set: { outcomeScore: newOutcomeScore } });
+
+      MatchLog.updateMany(
+        { questionId: question._id },
+        { $set: { outcome: achieved ? 'achieved' : 'not_achieved' } }
+      ).catch(err => dlog('MatchLog outcome label failed:', err.message));
+
+      invalidateMentorCache();
+
+      dlog(`🏆 Outcome recorded — Mentor: ${mentorId} | Achieved: ${achieved} | Score: ${newOutcomeScore.toFixed(2)}`);
+      return { success: true, outcomeScore: newOutcomeScore };
+    } catch (error) {
+      console.error('🔥 recordOutcome error:', error);
+      return { success: false, message: 'Failed to record outcome' };
     }
   }
 

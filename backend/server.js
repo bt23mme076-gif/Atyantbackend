@@ -29,6 +29,7 @@ import aiRoutes from './routes/aiRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import mentorRoutes from './routes/mentorRoutes.js';
 import shareRoutes from './routes/shareRoutes.js';
+import feedbackRoutes from './routes/feedbackRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message from './models/Message.js';
@@ -211,6 +212,7 @@ app.use('/api/roadmap', roadmapRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/mentor', mentorRoutes); // mentor onboarding (LinkedIn-PDF flow)
 app.use('/api/share', shareRoutes);  // mentor profile sharing + referral tracking
+app.use('/api/feedback', feedbackRoutes); // answer feedback + 30/60/90-day outcome reporting
 app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────
@@ -664,6 +666,19 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // ─────────────────────────────────────────────
 //  START
 // ─────────────────────────────────────────────
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n❌ Error: Port ${PORT} is already in use!`);
+    console.error(`💡 To free up port ${PORT}:`);
+    console.error(`   PowerShell: Stop-Process -Id (Get-NetTCPConnection -LocalPort ${PORT}).OwningProcess -Force`);
+    console.error(`   macOS/Linux: kill -9 $(lsof -t -i:${PORT})\n`);
+    process.exit(1);
+  } else {
+    console.error('Server error:', err);
+    process.exit(1);
+  }
+});
+
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 CORS: ${allowedOrigins.join(', ')}`);
@@ -671,3 +686,4 @@ server.listen(PORT, () => {
 });
 
 export default server;
+// Trigger restart

@@ -123,13 +123,11 @@ export function generateProblemStatement(extracted = {}, profile = null) {
 
 /**
  * Is the context rich enough to send to the matching engine?
- * Engine needs identity + target at minimum (2 layers), 3+ preferred.
+ * Strictly requires all 5 layers to be extracted.
  */
 export function isEngineReady(extracted = {}, profile = null) {
-  const { layersFilled, structured } = generateProblemStatement(extracted, profile);
-  const hasIdentity = !!(structured.identity.college || structured.identity.branch || structured.identity.year);
-  const hasTarget = !!structured.target;
-  return hasIdentity && hasTarget && layersFilled >= 2;
+  const { layersFilled } = generateProblemStatement(extracted, profile);
+  return layersFilled >= 5;
 }
 
 export default generateProblemStatement;

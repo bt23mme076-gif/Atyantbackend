@@ -66,9 +66,10 @@ async function callGroqJSON(messages, { maxTokens = 400 } = {}) {
 const EXTRACTION_PROMPT = `You extract structured profile data for an Indian engineering student career platform.
 
 CRITICAL RULES — follow exactly:
-- Use ONLY facts the STUDENT explicitly typed in their own messages.
+- The input contains ONLY the student's own messages. Use ONLY facts explicitly written there.
 - If a field was not explicitly stated by the student, its value MUST be null (or [] for arrays).
 - NEVER guess, infer, assume, or copy any example. NEVER invent a college name. NEVER invent a CGPA or any number.
+- If the messages contain no factual profile info at all, return every field as null/[].
 - The comments below describe the TYPE of each field. They are NOT defaults and must never be used as values.
 
 Return ONLY a JSON object with these keys:
@@ -118,14 +119,20 @@ function extractionToContext(parsed = {}) {
 
 async function extractStudentContext(messages) {
   try {
+    // STUDENT MESSAGES ONLY. Assistant turns mention college names constantly
+    // (the greeting example, "At VNIT, Metallurgy folks usually…") and the small
+    // extractor model was lifting those as the student's real profile —
+    // fabricated college/branch/CGPA that then drove completely wrong matching.
     const convoText = messages
-      .slice(-12)
-      .map(m => `${m.role === 'assistant' ? 'atyant' : 'student'}: ${m.content}`)
+      .filter(m => m.role === 'user')
+      .slice(-8)
+      .map(m => `student: ${m.content}`)
       .join('\n');
+    if (!convoText.trim()) return null;
 
     const raw = await callGroqJSON([
       { role: 'system', content: EXTRACTION_PROMPT },
-      { role: 'user', content: `Conversation:\n${convoText}\n\nExtract the JSON now.` },
+      { role: 'user', content: `Student's messages (nothing else exists):\n${convoText}\n\nExtract the JSON now.` },
     ]);
 
     return extractionToContext(JSON.parse(raw));
@@ -154,17 +161,16 @@ Banned words: "Great question", "Certainly", "As an AI", "leverage", "empower", 
 Format: short sentences, max 3 per paragraph, no bullet dumps.
 Rule: every reply ends with ONE next step OR one question. Never both. Never neither.`;
 
-// Collection phase — ~120 tokens
+// Collection phase — story-form intake. We require all 5 layers to be extracted:
+// 1) Identity (college, branch, year), 2) Target goal, 3) Blockers/Gaps, 4) Timeline, and 5) Constraints.
+// We bundle missing essentials into natural questions and aim to route when all 5 layers are present.
 const COLLECTION_SYSTEM = `${MASTER_SYSTEM_PROMPT}
 
-INTAKE MODE:
-- Ask about exactly ONE field per reply. NEVER combine two — e.g. never "What's your branch and year?". Branch and year are SEPARATE turns.
-- The last sentence is always the single question.
-- Max 60 words per reply.
+INTAKE MODE — get the full picture.
+- We strictly require all 5 layers to be extracted: Identity (college, branch, year), Target goal, Blockers/Gaps, Timeline, and Constraints.
+- Ask questions to collect any missing layers. Bundle missing details into ONE natural question where possible so the student doesn't feel interrogated.
+- Max 50 words per reply. The last sentence is the single (bundled) question.
 - Never open with filler. Start with the substance.
-- College/institute is the MOST important signal — if it's missing, ask for it by name first.
-- Priority order (one at a time): college → branch → year → target → FIELD/DOMAIN of the target → biggest blocker → timeline → constraints (time/money/resource limits)
-- Keep going until ALL of these are known. Do not wrap up early.
 - Never ask CGPA unless directly relevant.
 - Never ask for something the "Context extracted so far" block already contains.
 - Output ONLY your reply to the student. No JSON, no tags, no system notes.
@@ -364,10 +370,17 @@ function isGreeting(message) {
   return GREETING_PATTERNS.test(message.trim());
 }
 
-// Problem-first opener. Signals immediately that Atyant is about career confusion
-// (internships / placements / path / higher studies), not a generic chat assistant.
+// Story-form opener: invites the WHOLE situation in one message instead of
+// kicking off a field-by-field interrogation. The extractor parses all 5 layers
+// from free text, so one good story message can skip intake entirely.
+// ⚠️ NO example profile in this text — a quoted example ("3rd year Mech at GEC
+// Raipur…") was extracted as the STUDENT's real profile and poisoned matching.
+// ⚠️ Keep this string in sync with GREETING_OPENER in the frontend
+// (AskAtyantPage.jsx) — chips are re-attached after refresh by exact match.
 function buildGreeting() {
-  return `What's confusing you right now?`;
+  return `What's confusing you right now?
+
+Tell me your full situation in one go — your college, branch, year, and what you're trying to crack.`;
 }
 
 // Quick-reply chips shown under the opener. `value` is what gets sent to the
@@ -452,16 +465,8 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
   // clarity button at the same time. Once we have 3+ layers, we stop asking.
   conv.problemStatement = generateProblemStatement(conv.context);
 
-  // Do NOT show the mentor / clarity option until the FULL 5-layer profile is
-  // collected: identity + target + gap + timeline + constraint. We also require
-  // the core identity fields (college + branch + year) to be individually known,
-  // since the identity layer counts as filled with any one of them. Safety cap:
-  // after many turns, proceed anyway so we never loop forever on a missing layer.
-  const cid = conv.context?.identity || {};
-  const hasCoreIdentity = !!conv.context?.target && !!cid.college && !!cid.branch && !!cid.year;
-  const allFiveLayers = conv.contextLayers >= 5;
-  const userTurns = conv.messages.filter(m => m.role === 'user').length;
-  if ((hasCoreIdentity && allFiveLayers) || userTurns >= 10) {
+  // STRICT GATE: transition to 'engine' phase ONLY when all 5 layers are fully extracted.
+  if (conv.contextLayers >= 5) {
     conv.phase = 'engine';
   }
 
@@ -568,4 +573,24 @@ export async function getAtyantSession(sessionId) {
 
 export async function clearAtyantSession(sessionId) {
   await AtyantConversation.deleteOne({ sessionId });
+}
+
+// Thumbs up/down on a bot reply. Matched by content (last assistant message
+// with that exact text) — message indexes shift when history is capped at 30,
+// so content match is the stable identifier.
+export async function recordAtyantChatFeedback(sessionId, messageContent, value) {
+  if (!['up', 'down', null].includes(value)) return { ok: false, error: 'Invalid value' };
+  const conv = await AtyantConversation.findOne({ sessionId });
+  if (!conv) return { ok: false, error: 'Session not found' };
+
+  for (let i = conv.messages.length - 1; i >= 0; i--) {
+    const m = conv.messages[i];
+    if (m.role === 'assistant' && m.content === messageContent) {
+      m.feedback = value;
+      conv.markModified('messages');
+      await conv.save();
+      return { ok: true };
+    }
+  }
+  return { ok: false, error: 'Message not found' };
 }

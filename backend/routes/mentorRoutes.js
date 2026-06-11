@@ -2,6 +2,7 @@ import express from 'express';
 import User from '../models/User.js';
 import Question from '../models/Question.js';
 import AnswerCard from '../models/AnswerCard.js';
+import Session from '../models/Session.js';
 import protect from '../middleware/authMiddleware.js';
 import atyantEngine from '../services/AtyantEngine.js';
 import aiService, { getQuestionEmbedding } from '../services/AIService.js';
@@ -24,6 +25,7 @@ router.post('/onboard', protect, async (req, res) => {
     const userId = req.user.userId;
     const b = req.body || {};
 
+    const username = clean(b.username);
     const college = clean(b.college);
     const branch = clean(b.branch);
     const year = clean(b.year);
@@ -59,6 +61,11 @@ router.post('/onboard', protect, async (req, res) => {
 
     // ── Write the mentor profile ──
     user.role = 'mentor';
+    if (username && username !== user.username) {
+      // Only update if the name was actually changed in the wizard (e.g. after LinkedIn import)
+      const taken = await User.findOne({ username, _id: { $ne: user._id } }).lean();
+      if (!taken) user.username = username;
+    }
     user.education = [{
       institutionName: college || user.education?.[0]?.institutionName || '',
       institution: college || user.education?.[0]?.institution || '',
@@ -396,6 +403,99 @@ router.put('/answer-cards/:id', protect, async (req, res) => {
   } catch (err) {
     console.error('PUT /mentor/answer-cards/:id error:', err);
     res.status(500).json({ message: 'Failed to update answer card', error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PUT /api/mentor/availability  — mentor saves their weekly recurring schedule
+// ─────────────────────────────────────────────────────────────────────────────
+router.put('/availability', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'mentor') {
+      return res.status(403).json({ ok: false, error: 'Only mentors can set availability' });
+    }
+    const { weekly, timezone, advanceNoticeHours, maxWeeksAhead } = req.body || {};
+    const user = await User.findById(req.user.userId);
+    if (!user) return res.status(404).json({ ok: false, error: 'User not found' });
+
+    user.availability = {
+      weekly: (Array.isArray(weekly) ? weekly : [])
+        .map(d => ({ day: Number(d.day), slots: (Array.isArray(d.slots) ? d.slots : []).filter(s => /^\d{2}:\d{2}$/.test(s)) }))
+        .filter(d => d.day >= 0 && d.day <= 6),
+      timezone:           typeof timezone === 'string' ? timezone : 'Asia/Kolkata',
+      advanceNoticeHours: Math.max(0, Number(advanceNoticeHours) || 2),
+      maxWeeksAhead:      Math.min(8, Math.max(1, Number(maxWeeksAhead) || 3)),
+    };
+    user.markModified('availability');
+    await user.save();
+    res.json({ ok: true, availability: user.availability });
+  } catch (err) {
+    console.error('PUT /mentor/availability error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  GET /api/mentor/:id/availability  — public: weekly schedule template
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:id/availability', async (req, res) => {
+  try {
+    const mentor = await User.findById(req.params.id)
+      .select('availability role').lean();
+    if (!mentor || mentor.role !== 'mentor') {
+      return res.status(404).json({ ok: false, error: 'Mentor not found' });
+    }
+    res.json({ ok: true, availability: mentor.availability || { weekly: [], timezone: 'Asia/Kolkata', advanceNoticeHours: 2, maxWeeksAhead: 3 } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  GET /api/mentor/:id/slots?date=YYYY-MM-DD  — available slots on a date
+//  Returns slots not already booked and still far enough in the future.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:id/slots', async (req, res) => {
+  try {
+    const { date } = req.query;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ ok: false, error: 'date query param required (YYYY-MM-DD)' });
+    }
+    const mentor = await User.findById(req.params.id).select('availability role').lean();
+    if (!mentor || mentor.role !== 'mentor') {
+      return res.status(404).json({ ok: false, error: 'Mentor not found' });
+    }
+    const [y, mo, d] = date.split('-').map(Number);
+    const dayOfWeek = new Date(y, mo - 1, d).getDay();
+    const weekDay = (mentor.availability?.weekly || []).find(w => w.day === dayOfWeek);
+    if (!weekDay?.slots?.length) return res.json({ ok: true, slots: [], date });
+
+    // Booked sessions for this mentor on this local date (IST UTC+5:30)
+    const startIST = new Date(`${date}T00:00:00+05:30`);
+    const endIST   = new Date(`${date}T23:59:59+05:30`);
+    const booked = await Session.find({
+      mentorId: req.params.id,
+      scheduledAt: { $gte: startIST, $lte: endIST },
+      status: { $nin: ['cancelled'] },
+    }).select('scheduledAt').lean();
+
+    const bookedSet = new Set(booked.map(s => {
+      const t = new Date(new Date(s.scheduledAt).toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      return `${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`;
+    }));
+
+    const advanceMs  = (mentor.availability?.advanceNoticeHours || 2) * 3600_000;
+    const cutoffMs   = Date.now() + advanceMs;
+    const available  = weekDay.slots.filter(slot => {
+      if (bookedSet.has(slot)) return false;
+      const slotMs = new Date(`${date}T${slot}:00+05:30`).getTime();
+      return slotMs > cutoffMs;
+    });
+
+    res.json({ ok: true, slots: available, date });
+  } catch (err) {
+    console.error('GET /mentor/:id/slots error:', err);
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 

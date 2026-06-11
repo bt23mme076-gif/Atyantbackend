@@ -3,7 +3,9 @@ import mongoose from 'mongoose';
 const messageSchema = new mongoose.Schema({
   role: { type: String, enum: ['user', 'assistant'], required: true },
   content: { type: String, required: true },
-  timestamp: { type: Date, default: Date.now }
+  timestamp: { type: Date, default: Date.now },
+  // Thumbs up/down on assistant replies — surfaced in the UI and used to tune prompts
+  feedback: { type: String, enum: ['up', 'down', null], default: null }
 }, { _id: false });
 
 const identitySchema = new mongoose.Schema({
