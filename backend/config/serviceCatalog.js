@@ -7,10 +7,10 @@
  *    (it's stored on mentors and bookings).
  */
 export const SERVICE_CATALOG = [
-  { id: 'text-qa',        label: 'Text Q&A',          description: 'Quick doubt, one specific question',        durationMin: 30, duration: '48hr async', price: 149 },
-  { id: 'audio-call',     label: 'Audio Call',        description: 'Resume talk, strategy, no video needed',   durationMin: 25, duration: '25 min',     price: 299 },
-  { id: 'video-call',     label: 'Video Call',        description: 'Mock interview, screen share, deep dive',   durationMin: 45, duration: '45 min',     price: 499 },
-  { id: 'resume-review',  label: 'Resume Review',     description: 'Written feedback on PDF, no call needed',  durationMin: 30, duration: '48hr async', price: 249 },
+  { id: 'text-qa',        label: 'Text Q&A',          description: 'Quick doubt, one specific question',        durationMin: 30, duration: '48hr async', price: 49 },
+  { id: 'audio-call',     label: 'Audio Call',        description: 'Resume talk, strategy, no video needed',   durationMin: 25, duration: '25 min',     price: 99 },
+  { id: 'video-call',     label: 'Video Call',        description: 'Mock interview, screen share, deep dive',   durationMin: 45, duration: '45 min',     price: 299 },
+  { id: 'resume-review',  label: 'Resume Review',     description: 'Written feedback on PDF, no call needed',  durationMin: 30, duration: '48hr async', price: 199 },
 ];
 
 const byId = new Map(SERVICE_CATALOG.map(s => [s.id, s]));

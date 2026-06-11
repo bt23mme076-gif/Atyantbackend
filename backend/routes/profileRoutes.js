@@ -259,6 +259,33 @@ Output ONLY the JSON object.`;
 });
 
 // ─────────────────────────────────────────────
+//  POST /:id/view  — track a profile view from answer cards / match results
+//  Only counts when viewer ≠ mentor. Fire-and-forget from the frontend.
+// ─────────────────────────────────────────────
+router.post('/:id/view', async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    // Decode the token if present, but don't block on missing/invalid token
+    let viewerId = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET);
+        viewerId = decoded._id || decoded.id || decoded.userId;
+      } catch { /* ignore */ }
+    }
+    // Don't count self-views
+    if (viewerId && viewerId.toString() === targetId) {
+      return res.json({ ok: true, counted: false });
+    }
+    await User.findByIdAndUpdate(targetId, { $inc: { profileViews: 1 } });
+    res.json({ ok: true, counted: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
 //  GET /:username  — public profile
 // ─────────────────────────────────────────────
 router.get('/:username', async (req, res) => {
