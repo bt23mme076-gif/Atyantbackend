@@ -81,9 +81,25 @@ async function finalizeSession(session, student, mentor) {
 //  Body: { mentorId, date, time, topic?, durationMin? }
 //  Free mentor (price 0) → confirms immediately. Paid → returns Razorpay order.
 // ─────────────────────────────────────────────────────────────
+// Server-side coupon catalog — must match frontend VALID_COUPONS
+const COUPONS = {
+  FIRST50:   { type: 'fixed',   value: 50,  desc: '₹50 off for first-time students' },
+  CAREER20:  { type: 'percent', value: 20,  desc: '20% off on any session' },
+  SUMMER15:  { type: 'percent', value: 15,  desc: 'Summer special discount' },
+};
+
+function applyCoupon(price, code) {
+  const c = COUPONS[String(code || '').toUpperCase()];
+  if (!c) return { discount: 0, valid: false };
+  const discount = c.type === 'fixed'
+    ? Math.min(c.value, price)                        // cap fixed discount at price
+    : Math.round(price * c.value / 100);
+  return { discount, valid: true, desc: c.desc };
+}
+
 router.post('/order', protect, async (req, res) => {
   try {
-    const { mentorId, date, time, topic, durationMin, serviceId } = req.body;
+    const { mentorId, date, time, topic, durationMin, serviceId, couponCode } = req.body;
     if (!mentorId || !date || !time) {
       return res.status(400).json({ ok: false, error: 'mentorId, date and time are required' });
     }
@@ -106,16 +122,21 @@ router.post('/order', protect, async (req, res) => {
     }
 
     const mentorName = mentor.name || mentor.username || 'Your Mentor';
-    const amount = service ? Math.max(0, service.price) : Math.max(0, Number(mentor.price) || 0); // rupees
-    const dur = service ? service.durationMin : (Number(durationMin) || 30);
-    const sessTopic = topic || service?.label || 'Career Guidance Session';
+    const baseAmount = service ? Math.max(0, service.price) : Math.max(0, Number(mentor.price) || 0); // rupees
+    const dur        = service ? service.durationMin : (Number(durationMin) || 30);
+    const sessTopic  = topic || service?.label || 'Career Guidance Session';
 
-    // ── Free service → confirm right away (no Razorpay) ──
+    // Apply coupon server-side
+    const coupon   = applyCoupon(baseAmount, couponCode);
+    const amount   = Math.max(0, baseAmount - coupon.discount);
+
+    // ── Free (or fully discounted) → confirm right away ──
     if (amount === 0) {
       const session = await Session.create({
         userId: req.user.userId, mentorId, mentorName, mentorInitials: initials(mentorName),
         topic: sessTopic, serviceId: serviceId || undefined, scheduledAt, durationMin: dur,
         status: 'upcoming', amount: 0, paymentStatus: 'free',
+        ...(coupon.valid ? { couponCode: couponCode.toUpperCase(), couponDiscount: coupon.discount } : {}),
       });
       const [student, mentorFull] = await Promise.all([
         User.findById(req.user.userId).select('name username email refreshToken accessToken').lean(),
@@ -125,14 +146,18 @@ router.post('/order', protect, async (req, res) => {
       return res.json({ ok: true, free: true, session });
     }
 
-    // ── Paid service → create Razorpay order + pending session ──
+    // ── Paid → create Razorpay order at the discounted amount ──
     if (!razorpay) return res.status(500).json({ ok: false, error: 'Payments not configured' });
 
     const order = await razorpay.orders.create({
-      amount: amount * 100,        // paise
+      amount: amount * 100,        // paise — already after coupon deduction
       currency: 'INR',
       receipt: `sess_${Date.now()}`,
-      notes: { mentorId: String(mentorId), userId: String(req.user.userId), serviceId: serviceId || '' },
+      notes: {
+        mentorId: String(mentorId), userId: String(req.user.userId),
+        serviceId: serviceId || '',
+        couponCode: coupon.valid ? couponCode.toUpperCase() : '',
+      },
     });
 
     const session = await Session.create({
@@ -140,6 +165,7 @@ router.post('/order', protect, async (req, res) => {
       topic: sessTopic, serviceId: serviceId || undefined, scheduledAt, durationMin: dur,
       status: 'pending', amount, currency: 'INR',
       paymentStatus: 'created', razorpayOrderId: order.id,
+      ...(coupon.valid ? { couponCode: couponCode.toUpperCase(), couponDiscount: coupon.discount } : {}),
     });
 
     return res.json({
@@ -152,6 +178,8 @@ router.post('/order', protect, async (req, res) => {
       sessionId: session._id,
       mentorName,
       topic: session.topic,
+      couponApplied: coupon.valid,
+      couponDiscount: coupon.discount,
     });
   } catch (err) {
     console.error('POST /payments/order error:', err);

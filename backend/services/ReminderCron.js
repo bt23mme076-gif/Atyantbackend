@@ -1,10 +1,11 @@
 import cron from 'node-cron';
-import Booking from '../models/Booking.js';
-import BookingService from './BookingService.js';
+import Session from '../models/Session.js';
+import User from '../models/User.js';
+import { sendSessionReminderEmails } from '../utils/emailService.js';
 
 class ReminderCron {
   start() {
-    // Run every hour to check for reminders
+    // Run every hour, on the hour, to check for sessions needing a reminder.
     cron.schedule('0 * * * *', async () => {
       console.log('🔔 Running reminder check...');
       await this.checkAndSendReminders();
@@ -16,42 +17,60 @@ class ReminderCron {
   async checkAndSendReminders() {
     try {
       const now = new Date();
-      const in24Hours = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      const in1Hour = new Date(now.getTime() + 60 * 60 * 1000);
+      const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      const in1h  = new Date(now.getTime() +      60 * 60 * 1000);
+      const hour  = 60 * 60 * 1000;
 
-      // Find bookings that need 24h reminder
-      const bookingsFor24h = await Booking.find({
-        status: 'confirmed',
-        scheduledAt: {
-          $gte: in24Hours,
-          $lte: new Date(in24Hours.getTime() + 60 * 60 * 1000) // Within next hour
-        },
-        'remindersSent.email24h': false
-      });
+      // Sessions whose start falls in the next [24h, 25h) window — send 24h reminder.
+      const for24h = await Session.find({
+        status: 'upcoming',
+        scheduledAt: { $gte: in24h, $lt: new Date(in24h.getTime() + hour) },
+        'remindersSent.email24h': { $ne: true },
+      }).lean();
 
-      // Find bookings that need 1h reminder
-      const bookingsFor1h = await Booking.find({
-        status: 'confirmed',
-        scheduledAt: {
-          $gte: in1Hour,
-          $lte: new Date(in1Hour.getTime() + 60 * 60 * 1000) // Within next hour
-        },
-        'remindersSent.email1h': false
-      });
+      // Sessions whose start falls in the next [1h, 2h) window — send 1h reminder.
+      const for1h = await Session.find({
+        status: 'upcoming',
+        scheduledAt: { $gte: in1h, $lt: new Date(in1h.getTime() + hour) },
+        'remindersSent.email1h': { $ne: true },
+      }).lean();
 
-      // Send 24h reminders
-      for (const booking of bookingsFor24h) {
-        await BookingService.sendReminder(booking, '24h');
-      }
+      for (const s of for24h) await this.sendOne(s, '24h');
+      for (const s of for1h)  await this.sendOne(s, '1h');
 
-      // Send 1h reminders
-      for (const booking of bookingsFor1h) {
-        await BookingService.sendReminder(booking, '1h');
-      }
-
-      console.log(`✅ Sent ${bookingsFor24h.length} 24h reminders and ${bookingsFor1h.length} 1h reminders`);
+      console.log(`✅ Sent ${for24h.length} 24h reminders and ${for1h.length} 1h reminders`);
     } catch (error) {
       console.error('Reminder cron error:', error);
+    }
+  }
+
+  // Email both parties for one session, then flag it so it never re-sends.
+  async sendOne(session, type) {
+    try {
+      const [student, mentor] = await Promise.all([
+        User.findById(session.userId).select('email name username').lean(),
+        session.mentorId ? User.findById(session.mentorId).select('email name username').lean() : null,
+      ]);
+      if (!student?.email) return; // nobody to remind
+
+      const label = type === '24h' ? '24 hours' : '1 hour';
+      await sendSessionReminderEmails({
+        studentEmail: student.email,
+        studentName:  student.name || student.username,
+        mentorEmail:  mentor?.email,
+        mentorName:   mentor?.name || mentor?.username || session.mentorName,
+        scheduledAt:  session.scheduledAt,
+        durationMin:  session.durationMin,
+        topic:        session.topic,
+        meetLink:     session.meetingLink,
+        label,
+      });
+
+      const field = type === '24h' ? 'remindersSent.email24h' : 'remindersSent.email1h';
+      await Session.findByIdAndUpdate(session._id, { $set: { [field]: true } });
+      console.log(`📧 Sent ${label} reminder for session ${session._id} to ${student.email}${mentor?.email ? ' + ' + mentor.email : ''}`);
+    } catch (err) {
+      console.error(`Reminder send error (${type}) for session ${session?._id}:`, err.message);
     }
   }
 }

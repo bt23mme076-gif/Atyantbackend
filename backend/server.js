@@ -1,5 +1,12 @@
-import dotenv from 'dotenv';
-dotenv.config();
+// Load .env FIRST — must run before any import that reads process.env at
+// module load time (e.g. emailService.js reads RESEND_API_KEY immediately).
+// ES module imports are hoisted, so a later `dotenv.config()` call runs too
+// late; `import 'dotenv/config'` loads it as a side-effect before the imports below.
+import 'dotenv/config';
+
+// ─── Boot diagnostic: which Google Meet account is loaded? ───
+console.log('🔑 GOOGLE_MEET_EMAIL loaded as:', process.env.GOOGLE_MEET_EMAIL);
+console.log('🔑 GOOGLE_MEET_CLIENT_ID:', (process.env.GOOGLE_MEET_CLIENT_ID || '').slice(0, 20) + '…');
 
 import express from 'express';
 import http from 'http';

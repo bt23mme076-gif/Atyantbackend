@@ -115,7 +115,7 @@ export async function createMeetEvent({ mentor, student, topic, startTime, durat
         return { ...result, via: s.via };
       }
     } catch (err) {
-      console.warn(`Meet generation via ${s.via} failed:`, err.message);
+      console.warn(`Meet generation via ${s.via} failed:`, err.message, err?.response?.data || '');
       // try next tier
     }
   }

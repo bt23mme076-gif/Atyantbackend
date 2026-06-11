@@ -14,12 +14,20 @@ const sessionSchema = new mongoose.Schema({
   calendarEventId:{ type: String },
   notes:          { type: String, maxlength: 500 },
 
+  // ── Reminder emails (sent by ReminderCron) — flags prevent duplicate sends ──
+  remindersSent:  {
+    email24h: { type: Boolean, default: false },
+    email1h:  { type: Boolean, default: false },
+  },
+
   // ── Payment (Razorpay) — all money lands in the company Razorpay account ──
   amount:         { type: Number, default: 0 },          // INR (rupees) the student paid for the session
   currency:       { type: String, default: 'INR' },
   paymentStatus:  { type: String, enum: ['free', 'created', 'paid', 'failed'], default: 'free', index: true },
   razorpayOrderId:   { type: String, index: true },
   razorpayPaymentId: { type: String },
+  couponCode:        { type: String },
+  couponDiscount:    { type: Number, default: 0 },
 
   // ── Mentor payout ledger ──
   // Money is collected centrally, then mentors are paid their share in a monthly

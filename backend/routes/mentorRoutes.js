@@ -486,13 +486,13 @@ router.get('/:id/slots', async (req, res) => {
 
     const advanceMs  = (mentor.availability?.advanceNoticeHours || 2) * 3600_000;
     const cutoffMs   = Date.now() + advanceMs;
-    const available  = weekDay.slots.filter(slot => {
-      if (bookedSet.has(slot)) return false;
+    const allFutureSlots = weekDay.slots.filter(slot => {
       const slotMs = new Date(`${date}T${slot}:00+05:30`).getTime();
       return slotMs > cutoffMs;
     });
+    const bookedSlots = allFutureSlots.filter(slot => bookedSet.has(slot));
 
-    res.json({ ok: true, slots: available, date });
+    res.json({ ok: true, slots: allFutureSlots, bookedSlots, date });
   } catch (err) {
     console.error('GET /mentor/:id/slots error:', err);
     res.status(500).json({ ok: false, error: err.message });

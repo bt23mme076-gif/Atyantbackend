@@ -46,6 +46,23 @@ router.get('/services-catalog', (req, res) => {
 });
 
 // ─────────────────────────────────────────────
+//  GET /by-id/:id — public profile by MongoDB _id
+//  Used by BookingPage to get the full profile (incl. servicesOffered)
+//  when the mentor object in state only has partial data.
+// ─────────────────────────────────────────────
+router.get('/by-id/:id', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id)
+      .select('-password -verificationToken -passwordResetToken -passwordResetExpires -messageCredits -credits')
+      .lean();
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────
 //  🔴 NEW: GET /me/credits — lightweight credit check
 //  Frontend calls this after payment to refresh credits
 //  without fetching entire profile
