@@ -54,7 +54,10 @@ async function finalizeSession(session, student, mentor) {
     if (liveKitService.isConfigured()) {
       const roomName = await liveKitService.createRoom(session._id);
       session.livekitRoomName = roomName;
-      session.meetingLink = `${process.env.FRONTEND_URL}/session/meet/${session._id}`;
+      const frontendBase = process.env.NODE_ENV === 'development'
+        ? (process.env.LOCAL_FRONTEND_URL || process.env.FRONTEND_URL)
+        : process.env.FRONTEND_URL;
+      session.meetingLink = `${frontendBase}/session/meet/${session._id}`;
       await session.save();
       console.log(`✅ LiveKit room created: ${roomName}`);
     }
