@@ -23,6 +23,7 @@
     "helmet": "^8.1.0",
     "json2csv": "^6.0.0-alpha.2",
     "jsonwebtoken": "^9.0.2",
+    "livekit-server-sdk": "^2.15.4",
     "lru-cache": "^11.2.5",
     "mongodb": "^6.19.0",
     "mongoose": "^8.23.0",

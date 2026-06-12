@@ -14,6 +14,11 @@ const sessionSchema = new mongoose.Schema({
   calendarEventId:{ type: String },
   notes:          { type: String, maxlength: 500 },
 
+  // ── LiveKit in-house meet ──
+  livekitRoomName: { type: String },               // LiveKit room name e.g. session_<id>
+  egressId:        { type: String },               // LiveKit egress job id for audio recording
+  pipelineStatus:  { type: String, enum: ['none', 'processing', 'completed', 'failed'], default: 'none' },
+
   // ── Reminder emails (sent by ReminderCron) — flags prevent duplicate sends ──
   remindersSent:  {
     email24h: { type: Boolean, default: false },

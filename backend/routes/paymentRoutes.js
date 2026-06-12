@@ -4,7 +4,7 @@ import Razorpay from 'razorpay';
 import Session from '../models/Session.js';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
-import { createMeetEvent } from '../utils/googleMeet.js';
+import liveKitService from '../services/LiveKitService.js';
 import { sendSessionConfirmationEmails } from '../utils/emailService.js';
 import { getService } from '../config/serviceCatalog.js';
 
@@ -48,23 +48,18 @@ const parseSchedule = (date, time) => {
   return isNaN(d.getTime()) ? null : d;
 };
 
-// Generate the Meet link + email both parties. Used by free and paid paths.
+// Create LiveKit room + email both parties. Used by free and paid paths.
 async function finalizeSession(session, student, mentor) {
   try {
-    const meet = await createMeetEvent({
-      mentor:  { email: mentor?.email,  name: mentor?.name  || mentor?.username,  refreshToken: mentor?.refreshToken,  accessToken: mentor?.accessToken },
-      student: { email: student?.email, name: student?.name || student?.username, refreshToken: student?.refreshToken, accessToken: student?.accessToken },
-      topic: session.topic,
-      startTime: session.scheduledAt,
-      durationMin: session.durationMin,
-    });
-    if (meet?.meetLink) {
-      session.meetingLink = meet.meetLink;
-      session.calendarEventId = meet.eventId;
+    if (liveKitService.isConfigured()) {
+      const roomName = await liveKitService.createRoom(session._id);
+      session.livekitRoomName = roomName;
+      session.meetingLink = `${process.env.FRONTEND_URL}/session/meet/${session._id}`;
       await session.save();
+      console.log(`✅ LiveKit room created: ${roomName}`);
     }
   } catch (err) {
-    console.error('Meet generation failed (non-fatal):', err.message);
+    console.error('LiveKit room creation failed (non-fatal):', err.message);
   }
 
   // Confirmation emails to both (non-blocking)

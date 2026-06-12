@@ -37,6 +37,7 @@ import chatRoutes from './routes/chatRoutes.js';
 import mentorRoutes from './routes/mentorRoutes.js';
 import shareRoutes from './routes/shareRoutes.js';
 import feedbackRoutes from './routes/feedbackRoutes.js';
+import livekitRoutes from './routes/livekitRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message from './models/Message.js';
@@ -138,10 +139,10 @@ app.use(helmet({
 // Parse cookies so we can read HttpOnly tokens
 app.use(cookieParser());
 
-// Parse JSON for everything EXCEPT the Razorpay webhook, which needs the raw
-// body to verify its signature (handled by express.raw inside paymentRoutes).
+// Parse JSON for everything EXCEPT raw-body webhook endpoints
 app.use((req, res, next) => {
   if (req.originalUrl === '/api/payments/webhook') return next();
+  if (req.originalUrl === '/api/livekit/webhook') return next();
   return express.json({ limit: '10mb' })(req, res, next);
 });
 
@@ -220,6 +221,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/mentor', mentorRoutes); // mentor onboarding (LinkedIn-PDF flow)
 app.use('/api/share', shareRoutes);  // mentor profile sharing + referral tracking
 app.use('/api/feedback', feedbackRoutes); // answer feedback + 30/60/90-day outcome reporting
+app.use('/api/livekit', livekitRoutes);   // in-house meet: join token + webhook
 app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────
