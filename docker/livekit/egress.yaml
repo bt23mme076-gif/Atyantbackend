@@ -1,0 +1,8 @@
+api_key: YOUR_LIVEKIT_API_KEY
+api_secret: YOUR_LIVEKIT_API_SECRET
+ws_url: ws://livekit:7880
+
+# Health check port
+health_port: 9090
+
+log_level: warn
