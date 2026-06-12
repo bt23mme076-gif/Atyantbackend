@@ -1,31 +1,36 @@
 import { AccessToken, RoomServiceClient, EgressClient, WebhookReceiver } from 'livekit-server-sdk';
 
-const LIVEKIT_HOST = process.env.LIVEKIT_HOST || 'http://localhost:7880';
-const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
-const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
-const RECORDINGS_PATH = process.env.RECORDINGS_PATH || '/tmp/recordings';
-
 class LiveKitService {
-  constructor() {
-    if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+  _init() {
+    if (this._ready) return;
+    const host   = process.env.LIVEKIT_HOST       || 'http://localhost:7880';
+    const key    = process.env.LIVEKIT_API_KEY;
+    const secret = process.env.LIVEKIT_API_SECRET;
+    if (!key || !secret) {
       console.warn('⚠️ LiveKit credentials not configured — meet features disabled');
       return;
     }
-    this.roomService = new RoomServiceClient(LIVEKIT_HOST, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
-    this.egressClient = new EgressClient(LIVEKIT_HOST, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
-    this.receiver = new WebhookReceiver(LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
-    console.log('✅ LiveKit initialized');
+    this.roomService  = new RoomServiceClient(host, key, secret);
+    this.egressClient = new EgressClient(host, key, secret);
+    this.receiver     = new WebhookReceiver(key, secret);
+    this._key    = key;
+    this._secret = secret;
+    this._host   = host;
+    this._ready  = true;
+    console.log('✅ LiveKit initialized:', host);
   }
 
   isConfigured() {
-    return !!(LIVEKIT_API_KEY && LIVEKIT_API_SECRET);
+    this._init();
+    return !!this._ready;
   }
 
   async createRoom(sessionId) {
+    this._init();
     const roomName = `session_${sessionId}`;
     await this.roomService.createRoom({
       name: roomName,
-      emptyTimeout: 300,   // auto-close after 5 min empty
+      emptyTimeout: 300,
       maxParticipants: 2,
     });
     return roomName;
@@ -33,10 +38,11 @@ class LiveKitService {
 
   // role: 'participant' | 'admin'
   async generateToken(roomName, userId, participantName, role = 'participant') {
-    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+    this._init();
+    const at = new AccessToken(this._key, this._secret, {
       identity: String(userId),
       name: participantName,
-      ttl: 4 * 60 * 60, // 4-hour validity
+      ttl: 4 * 60 * 60,
     });
     at.addGrant({
       roomJoin: true,
@@ -49,26 +55,27 @@ class LiveKitService {
   }
 
   async startAudioEgress(roomName, sessionId) {
-    const filePath = `${RECORDINGS_PATH}/${sessionId}.ogg`;
+    this._init();
+    const filePath = `${process.env.RECORDINGS_PATH || '/tmp/recordings'}/${sessionId}.ogg`;
     const egress = await this.egressClient.startRoomCompositeEgress(
       roomName,
-      { filepath: filePath, fileType: 4 }, // 4 = OGG in proto enum
+      { filepath: filePath, fileType: 4 },
       { audioOnly: true }
     );
     return { egressId: egress.egressId, filePath };
   }
 
   async stopEgress(egressId) {
+    this._init();
     try {
       await this.egressClient.stopEgress(egressId);
     } catch (err) {
-      // Egress may have already stopped if room ended naturally
       console.warn('stopEgress warning (non-fatal):', err.message);
     }
   }
 
-  // Returns parsed WebhookEvent or throws on invalid signature
   receiveWebhook(rawBody, authHeader) {
+    this._init();
     return this.receiver.receive(rawBody, authHeader);
   }
 }
