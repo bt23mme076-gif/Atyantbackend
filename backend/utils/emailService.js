@@ -1,13 +1,17 @@
 import { Resend } from 'resend';
 
-// Initialize Resend only if API key is available
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
-
-if (!RESEND_API_KEY) {
-  console.warn('⚠️ RESEND_API_KEY not found in environment variables. Email notifications will be disabled.');
-} else {
-  console.log('✅ Resend email service initialized successfully (emailService.js)');
+// Lazy-initialized so env is always read at call time, not module load time
+let _resend = null;
+function getResend() {
+  if (_resend) return _resend;
+  const key = process.env.RESEND_API_KEY;
+  if (!key) {
+    console.warn('⚠️ RESEND_API_KEY not set — emails disabled');
+    return null;
+  }
+  _resend = new Resend(key);
+  console.log('✅ Resend email service initialized');
+  return _resend;
 }
 
 // Shared footer for branded emails
@@ -21,7 +25,7 @@ const emailFooter = `
 //  Welcome email — new STUDENT/USER signup
 // ─────────────────────────────────────────────────────────────
 export const sendUserWelcomeEmail = async (email, username) => {
-  if (!resend) {
+  if (!getResend()) {
     console.warn('⚠️ Email service not configured. Skipping user welcome email.');
     return { success: false, error: 'Email service not configured' };
   }
@@ -30,7 +34,7 @@ export const sendUserWelcomeEmail = async (email, username) => {
   const name = username || 'there';
 
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResend().emails.send({
       from: 'Atyant <notification@atyant.in>',
       to: [email],
       subject: 'Welcome to Atyant 🎉 — find someone exactly like you',
@@ -87,7 +91,7 @@ export const sendUserWelcomeEmail = async (email, username) => {
 //  Welcome / invitation email — new MENTOR signup
 // ─────────────────────────────────────────────────────────────
 export const sendMentorWelcomeEmail = async (email, mentorName) => {
-  if (!resend) {
+  if (!getResend()) {
     console.warn('⚠️ Email service not configured. Skipping mentor welcome email.');
     return { success: false, error: 'Email service not configured' };
   }
@@ -96,7 +100,7 @@ export const sendMentorWelcomeEmail = async (email, mentorName) => {
   const name = mentorName || 'there';
 
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResend().emails.send({
       from: 'Atyant <notification@atyant.in>',
       to: [email],
       subject: 'Welcome to Atyant, mentor 🙌 — your journey can change a junior\'s life',
@@ -163,7 +167,7 @@ export const sendSessionConfirmationEmails = async ({
   studentEmail, studentName, mentorEmail, mentorName,
   scheduledAt, durationMin, topic, meetLink, amount,
 }) => {
-  if (!resend) {
+  if (!getResend()) {
     console.warn('⚠️ Email service not configured. Skipping session confirmation emails.');
     return { success: false, error: 'Email service not configured' };
   }
@@ -201,14 +205,14 @@ export const sendSessionConfirmationEmails = async ({
 
   try {
     const results = await Promise.allSettled([
-      resend.emails.send({
+      getResend().emails.send({
         from: 'Atyant <notification@atyant.in>',
         to: [studentEmail],
         subject: '✅ Your Atyant session is confirmed',
         html: card('Your session is confirmed! 🎉',
           `Hi ${studentName || 'there'}, your session with <strong>${mentorName || 'your mentor'}</strong> is booked. Add it to your calendar and join via the link below.`),
       }),
-      resend.emails.send({
+      getResend().emails.send({
         from: 'Atyant <notification@atyant.in>',
         to: [mentorEmail],
         subject: `📅 New confirmed session with ${studentName || 'a student'}`,
@@ -234,7 +238,7 @@ export const sendSessionReminderEmails = async ({
   studentEmail, studentName, mentorEmail, mentorName,
   scheduledAt, durationMin, topic, meetLink, label = '1 hour',
 }) => {
-  if (!resend) {
+  if (!getResend()) {
     console.warn('⚠️ Email service not configured. Skipping session reminder emails.');
     return { success: false, error: 'Email service not configured' };
   }
@@ -272,14 +276,14 @@ export const sendSessionReminderEmails = async ({
 
   try {
     const results = await Promise.allSettled([
-      resend.emails.send({
+      getResend().emails.send({
         from: 'Atyant <notification@atyant.in>',
         to: [studentEmail],
         subject: `⏰ Reminder: your Atyant session starts in ${label}`,
         html: card(`Your session starts in ${label} ⏰`,
           `Hi ${studentName || 'there'}, this is a reminder that your session with <strong>${mentorName || 'your mentor'}</strong> starts in ${label}. Join via the link below.`),
       }),
-      resend.emails.send({
+      getResend().emails.send({
         from: 'Atyant <notification@atyant.in>',
         to: [mentorEmail],
         subject: `⏰ Reminder: your Atyant session with ${studentName || 'a student'} starts in ${label}`,
@@ -299,7 +303,7 @@ export const sendSessionReminderEmails = async ({
 
 // Send password reset email
 export const sendPasswordResetEmail = async (email, resetToken) => {
-  if (!resend) {
+  if (!getResend()) {
     console.warn('⚠️ Email service not configured. Skipping password reset email.');
     return { success: false, error: 'Email service not configured' };
   }
@@ -307,7 +311,7 @@ export const sendPasswordResetEmail = async (email, resetToken) => {
   const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
   
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResend().emails.send({
       from: 'Atyant <notification@atyant.in>', // Use your verified domain when available
       to: [email],
       subject: 'Password Reset Request - Atyant',
@@ -365,13 +369,13 @@ export const sendPasswordResetEmail = async (email, resetToken) => {
 
 // Send password reset confirmation email
 export const sendPasswordResetConfirmation = async (email, username) => {
-  if (!resend) {
+  if (!getResend()) {
     console.warn('⚠️ Email service not configured. Skipping password reset confirmation email.');
     return { success: false, error: 'Email service not configured' };
   }
   
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResend().emails.send({
       from: 'Atyant <notification@atyant.in>',
       to: [email],
       subject: 'Password Reset Successful - Atyant',
@@ -427,7 +431,7 @@ export const sendPasswordResetConfirmation = async (email, username) => {
 
 // Send payment notification to mentor
 export const sendMentorPaymentNotification = async (mentorEmail, mentorName, studentName, mentorshipType, amount, questionText) => {
-  if (!resend) {
+  if (!getResend()) {
     console.warn('⚠️ Email service not configured. Skipping mentor payment notification email.');
     return { success: false, error: 'Email service not configured' };
   }
@@ -439,7 +443,7 @@ export const sendMentorPaymentNotification = async (mentorEmail, mentorName, stu
       'roadmap': 'Complete Roadmap'
     };
 
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResend().emails.send({
       from: 'Atyant <notification@atyant.in>',
       to: [mentorEmail],
       subject: `💰 New Payment Received - ${mentorshipTypeLabel[mentorshipType]}`,
@@ -525,13 +529,13 @@ export const sendMentorBookingNotification = async ({
   bookingId,
   bookingAmount
 }) => {
-  if (!resend) {
+  if (!getResend()) {
     console.warn('⚠️ Email service not configured. Skipping mentor booking notification email.');
     return { success: false, error: 'Email service not configured' };
   }
   
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResend().emails.send({
       from: 'Atyant <notification@atyant.in>',
       to: [mentorEmail],
       subject: `📅 New Booking Received - ${userName}`,
@@ -621,13 +625,13 @@ export const sendStudentBookingConfirmation = async ({
   meetLink,
   manualSetup
 }) => {
-  if (!resend) {
+  if (!getResend()) {
     console.warn('⚠️ Email service not configured. Skipping student booking confirmation email.');
     return { success: false, error: 'Email service not configured' };
   }
   
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResend().emails.send({
       from: 'Atyant <notification@atyant.in>',
       to: [userEmail],
       subject: 'Booking Confirmation - Atyant',
