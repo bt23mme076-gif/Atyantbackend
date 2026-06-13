@@ -201,6 +201,30 @@ const userSchema = new mongoose.Schema({
   messageCredits: { type: Number, default: 5 },
   credits: { type: Number, default: 3, min: 0 },
 
+  // ─── SUBSCRIPTION ───────────────────────────
+  subscriptionPlan: {
+    type: String,
+    enum: ['free', 'clarity', 'pro'],
+    default: 'free'
+  },
+  subscriptionStatus: {
+    type: String,
+    enum: ['active', 'cancelled', 'expired', 'pending'],
+    default: 'active'
+  },
+  subscriptionExpiry: {
+    type: Date,
+    default: null
+  },
+  razorpaySubscriptionId: {
+    type: String,
+    default: null
+  },
+  subscriptionCredits: {
+    type: Number,
+    default: 0
+  },
+
   // ─── PURCHASED TEMPLATES ───────────────────
   purchasedTemplates: [{
     templateId: { type: Number, required: true },

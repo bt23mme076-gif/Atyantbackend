@@ -1,3 +1,6 @@
+import dns from 'dns';
+
+dns.setServers(['8.8.8.8', '8.8.4.4']);
 // Load .env FIRST — must run before any import that reads process.env at
 // module load time (e.g. emailService.js reads RESEND_API_KEY immediately).
 // ES module imports are hoisted, so a later `dotenv.config()` call runs too
@@ -30,6 +33,7 @@ import profileRoutes from './routes/profileRoutes.js';
 import clarityRoutes from './routes/clarityRoutes.js';
 import sessionRoutes from './routes/sessionRoutes.js';
 import paymentRoutes from './routes/paymentRoutes.js';
+import subscriptionRoutes from './routes/subscriptionRoutes.js';
 import savedAnswerRoutes from './routes/savedAnswerRoutes.js';
 import roadmapRoutes from './routes/roadmapRoutes.js';
 import aiRoutes from './routes/aiRoutes.js';
@@ -215,6 +219,7 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/clarity', clarityRoutes);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/saved-answers', savedAnswerRoutes);
 app.use('/api/roadmap', roadmapRoutes);
 app.use('/api/ai', aiRoutes);
