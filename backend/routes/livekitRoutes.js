@@ -26,8 +26,14 @@ router.post('/join/:sessionId', protect, async (req, res) => {
       return res.status(403).json({ ok: false, error: 'Not a participant of this session' });
     }
 
-    if (!session.livekitRoomName) {
-      return res.status(400).json({ ok: false, error: 'Room not created for this session yet' });
+    // Re-ensure the room exists on the LiveKit server. Rooms are reclaimed after
+    // emptyTimeout, so a session booked earlier may no longer have a live room —
+    // that's why egress was failing with "requested room does not exist".
+    // createRoom is idempotent, so this is safe whether or not the room survives.
+    const roomName = await liveKitService.createRoom(session._id);
+    if (session.livekitRoomName !== roomName) {
+      session.livekitRoomName = roomName;
+      await session.save();
     }
 
     const user = await User.findById(userId).select('name username').lean();
@@ -98,10 +104,16 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
     }
 
     if (eventName === 'egress_ended') {
-      const roomName = event.egressInfo?.roomName;
+      const info = event.egressInfo;
+      const roomName = info?.roomName;
       if (roomName?.startsWith('session_')) {
         const sessionId = roomName.replace('session_', '');
-        const audioPath = `/tmp/recordings/${sessionId}.ogg`;
+        // Prefer the actual filename egress reported; fall back to the path we
+        // asked for. Must match LiveKitService (RECORDINGS_PATH) so the file is
+        // found — egress and backend share this directory via a Docker volume.
+        const reported = info?.fileResults?.[0]?.filename || info?.file?.filename;
+        const audioPath = reported
+          || `${process.env.RECORDINGS_PATH || '/tmp/recordings'}/${sessionId}.ogg`;
         // Run pipeline async — do not block webhook response
         sessionPipelineService.processSession(sessionId, audioPath).catch(err =>
           console.error('Pipeline async error:', err.message)
