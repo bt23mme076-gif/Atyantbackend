@@ -3,6 +3,7 @@ import Session from '../models/Session.js';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
+import { localizeMeetLink } from '../utils/frontendUrl.js';
 
 const router = express.Router();
 
@@ -17,6 +18,15 @@ router.get('/my', optionalAuth, async (req, res) => {
     const sessions = await Session.find({ userId })
       .sort({ scheduledAt: -1 })
       .lean();
+
+    // The DB is shared across environments, so a session created on production
+    // stores an atyant.in meet link. In dev, re-point it at the local frontend
+    // so "Join Session" opens on localhost. (No-op in production.)
+    if (process.env.NODE_ENV !== 'production') {
+      for (const s of sessions) {
+        if (s.meetingLink) s.meetingLink = localizeMeetLink(s.meetingLink);
+      }
+    }
 
     const upcoming = sessions.filter(
       s => new Date(s.scheduledAt) > now && s.status !== 'cancelled'
