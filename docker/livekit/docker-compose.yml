@@ -5,9 +5,9 @@ services:
     image: livekit/livekit-server:latest
     restart: unless-stopped
     ports:
-      - "7880:7880"        # HTTP API
-      - "7881:7881"        # TCP RTC
-      - "50000-60000:50000-60000/udp"  # UDP RTC (reduce range if needed)
+      - "7880:7880"        # HTTP API / signaling
+      - "7881:7881"        # TCP RTC (fallback)
+      - "7882:7882/udp"    # UDP RTC — MUST match rtc.udp_port in livekit.yaml
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml
     command: --config /etc/livekit.yaml

@@ -380,7 +380,7 @@ router.get('/google/callback',
         { expiresIn: '7d' }
       );
 
-      // Redirect to frontend with token
+      // Redirect to frontend with token (frontend lands the user on their profile)
       const frontendUrl = getFrontendUrl();
       res.redirect(`${frontendUrl}/?token=${token}`);
     } catch (error) {
