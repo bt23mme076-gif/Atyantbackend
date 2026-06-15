@@ -4,6 +4,8 @@ import FormData from 'form-data';
 import Session from '../models/Session.js';
 import SessionTranscript from '../models/SessionTranscript.js';
 import SessionInsight from '../models/SessionInsight.js';
+import SavedAnswer from '../models/SavedAnswer.js';
+import Roadmap from '../models/Roadmap.js';
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const WHISPER_MODEL   = process.env.GROQ_WHISPER_MODEL  || 'whisper-large-v3';
@@ -38,6 +40,8 @@ class SessionPipelineService {
         ),
         Session.findByIdAndUpdate(sessionId, { pipelineStatus: 'completed' }),
       ]);
+
+      await this._saveToUserDashboard(sessionDoc, insights);
 
       this._cleanup(audioPath);
       console.log(`✅ Pipeline completed for session ${sessionId}`);
@@ -141,6 +145,71 @@ ${transcriptText.slice(0, 6000)}`,
     } catch {
       console.warn('Insight JSON parse failed, using empty');
       return {};
+    }
+  }
+
+  async _saveToUserDashboard(sessionDoc, insights) {
+    const studentId = sessionDoc.userId;
+    const mentorId  = sessionDoc.mentorId;
+    const topic     = sessionDoc.topic || 'Career Guidance';
+    const mentorName = sessionDoc.mentorName || 'Your Mentor';
+
+    const ops = [];
+
+    // Session summary → SavedAnswer (shown in "Saved Answers")
+    if (insights.summary) {
+      ops.push(
+        SavedAnswer.create({
+          userId:     studentId,
+          question:   insights.summary,
+          tags:       [...(insights.topics?.slice(0, 3) || []), 'Session Summary'],
+          sourceType: 'mentor',
+          mentorId,
+        })
+      );
+    }
+
+    // Each student action item → individual SavedAnswer
+    const actionItems = insights.actionItems?.student || [];
+    for (const item of actionItems.slice(0, 5)) {
+      ops.push(
+        SavedAnswer.create({
+          userId:     studentId,
+          question:   item,
+          tags:       [topic, 'Action Item'].filter(Boolean),
+          sourceType: 'mentor',
+          mentorId,
+        })
+      );
+    }
+
+    // Action items → new phase in student's roadmap
+    if (actionItems.length) {
+      const sessionDate = new Date(sessionDoc.scheduledAt || Date.now())
+        .toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+
+      const newStep = {
+        phase:    `Session – ${sessionDate}`,
+        title:    `${mentorName} — ${topic}`,
+        duration: '2–4 weeks',
+        status:   'active',
+        tasks:    actionItems.slice(0, 6),
+      };
+
+      ops.push(
+        Roadmap.findOneAndUpdate(
+          { userId: studentId },
+          { $push: { steps: newStep } },
+          { upsert: false }
+        )
+      );
+    }
+
+    try {
+      await Promise.all(ops);
+      console.log(`✅ Dashboard updated for student ${studentId} (${ops.length} items)`);
+    } catch (err) {
+      console.error('Dashboard save error (non-fatal):', err.message);
     }
   }
 
