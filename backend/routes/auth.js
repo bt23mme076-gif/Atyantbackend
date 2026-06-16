@@ -7,7 +7,8 @@ import nodemailer from 'nodemailer';
 import User from '../models/User.js';
 import passport from 'passport';
 import { protect } from '../middleware/authMiddleware.js';
-import { sendUserWelcomeEmail, sendMentorWelcomeEmail } from '../utils/emailService.js';
+import { sendUserWelcomeEmail, sendMentorWelcomeEmail, sendPasswordOTPEmail } from '../utils/emailService.js';
+
 
 // Fire-and-forget welcome email — never blocks or breaks signup if email fails.
 const sendWelcomeEmail = (user) => {
@@ -267,90 +268,123 @@ router.post('/google-login', async (req, res) => {
 });
 
 router.post('/forgot-password', async (req, res) => {
-  console.time('forgot-password-operation');
   try {
     const { email } = req.body;
+    if (
+      !email ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    ) {
+      return res.status(400).json({
+        message: 'Please enter a valid email address'
+      });
+    }
+    const user = await User.findOne({ email })
+      .select('+resetOTP +resetOTPExpires');
 
-    const user = await User.findOne({ email });
+    // Prevent user enumeration
     if (!user) {
-      console.timeEnd('forgot-password-operation');
-      return res.status(404).json({ message: 'User with this email does not exist.' });
+      return res.json({
+        message: 'If the account exists, an OTP has been sent.'
+      });
     }
 
-    const resetToken = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET || 'your_jwt_secret',
-      { expiresIn: '1h' }
-    );
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    user.passwordResetToken = resetToken;
-    user.passwordResetExpires = Date.now() + 3600000;
+    user.resetOTP = otp;
+    user.resetOTPExpires = Date.now() + 10 * 60 * 1000;
+
     await user.save();
+    await sendPasswordOTPEmail(email, otp);
 
-    const resetLink = `${getFrontendUrl()}/reset-password?token=${resetToken}`;
-
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-    });
-
-    const mailOptions = {
-      from: '"Atyant" <notification@atyant.in>',
-      to: user.email,
-      subject: 'Password Reset Request',
-      text: `Please click on the following link to reset your password: ${resetLink}`,
-      html: `<p>Please click on the following link to reset your password: <a href="${resetLink}">${resetLink}</a></p>`,
-    };
-
-    transporter.sendMail(mailOptions, (error, info) => {
-      console.timeEnd('forgot-password-operation');
-      if (error) {
-        console.error('Error sending email:', error);
-        return res.status(500).json({ message: 'Failed to send password reset email.' });
-      } else {
-        console.log('Email sent:', info.response);
-        return res.json({ message: 'Password reset link sent to your email address.' });
-      }
+    res.json({
+      message: 'If the account exists, an OTP has been sent.'
     });
   } catch (error) {
-    console.timeEnd('forgot-password-operation');
-    console.error('Forgot password error:', error);
-    res.status(500).json({ message: 'Server error during password reset request.' });
+    console.error(error);
+    res.status(500).json({
+      message: 'Server error'
+    });
   }
 });
 
-router.post('/reset-password/:token', async (req, res) => {
-  console.time('reset-password-operation');
+router.post('/verify-reset-code', async (req, res) => {
   try {
-    const { token } = req.params;
-    const { password } = req.body;
+    const { email, code } = req.body;
+    if (
+      !email ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    ) {
+      return res.status(400).json({
+        message: 'Please enter a valid email address'
+      });
+    }
+    const user = await User.findOne({ email })
+      .select('+resetOTP +resetOTPExpires');
 
-    const user = await User.findOne({
-      passwordResetToken: token,
-      passwordResetExpires: { $gt: Date.now() },
-    });
-
-    if (!user) {
-      console.timeEnd('reset-password-operation');
-      return res.status(400).json({ message: 'Invalid or expired password reset token.' });
+    if (!user || user.resetOTP !== code || user.resetOTPExpires < Date.now()) {
+      return res.status(400).json({
+        message: 'Invalid or expired code'
+      });
     }
 
-    // ✅ OPTIMIZED: Reduced bcrypt cost from 10 to 8
-    const hashedPassword = await bcrypt.hash(password, 8);
+    res.json({
+      message: 'Code verified'
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      message: 'Server error'
+    });
+  }
+});
+
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body;
+    if (
+      !email ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    ) {
+      return res.status(400).json({
+        message: 'Please enter a valid email address'
+      });
+    }
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({
+        message: 'Password must be at least 8 characters long'
+      });
+    }
+
+    const user = await User.findOne({ email })
+      .select('+resetOTP +resetOTPExpires +password');
+
+    if (!user || user.resetOTP !== code || user.resetOTPExpires < Date.now()) {
+      return res.status(400).json({
+        message: 'Invalid or expired OTP'
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 8);
 
     user.password = hashedPassword;
-    user.passwordResetToken = null;
-    user.passwordResetExpires = null;
+
+    // Invalidate OTP after successful use
+    user.resetOTP = null;
+    user.resetOTPExpires = null;
+
     await user.save();
 
-    console.timeEnd('reset-password-operation');
-    res.json({ message: 'Password reset successfully.' });
+    res.json({
+      message: 'Password reset successful'
+    });
   } catch (error) {
-    console.timeEnd('reset-password-operation');
-    console.error('Reset password error:', error);
-    res.status(500).json({ message: 'Server error during password reset.' });
+    console.error(error);
+    res.status(500).json({
+      message: 'Server error'
+    });
   }
 });
+
 
 router.get('/google',
   passport.authenticate('google', { 

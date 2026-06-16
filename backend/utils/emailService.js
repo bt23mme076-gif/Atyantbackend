@@ -710,3 +710,59 @@ export const sendStudentBookingConfirmation = async ({
     throw error;
   }
 };
+// Send password reset OTP email
+export const sendPasswordOTPEmail = async (email, otp) => {
+  if (!getResend()) {
+    console.warn('⚠️ Email service not configured.');
+    return {
+      success: false,
+      error: 'Email service not configured'
+    };
+  }
+
+  try {
+    const { data, error } = await getResend().emails.send({
+      from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
+      to: [email],
+      subject: 'Your Atyant Password Reset Code',
+      
+      // FIX #1: Clears the List-Unsubscribe header warning
+      headers: {
+        'List-Unsubscribe': '<mailto:support@atyant.in?subject=unsubscribe>'
+      },
+
+      // FIX #2: Expanded plain-text body to balance out the 45% text-to-HTML ratio penalty
+      text: `Atyant Password Reset\n\nWe received a request to reset your password for your Atyant account. Use the following verification code to complete your request:\n\n${otp}\n\nThis verification code expires in exactly 10 minutes. For security reasons, please do not share this code with anyone.\n\nIf you did not request this password change, you can safely ignore this email. Your account remains secure.\n\nRegards,\nTeam Atyant\nsupport@atyant.in`,
+      
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; color: #333333; line-height: 1.6;">
+          <h1 style="color:#4F46E5; margin-bottom: 20px;">Atyant</h1>
+          <h2>Password Reset</h2>
+          <p>We received a request to reset your password.</p>
+          <p>Use the following verification code to complete your request:</p>
+          <div style="font-size:32px; font-weight:bold; color:#4F46E5; letter-spacing:6px; margin:30px 0; background-color: #f9fafb; padding: 15px; text-align: center; border-radius: 6px;">
+            ${otp}
+          </div>
+          <p>This code expires in <strong>10 minutes</strong>.</p>
+          <p style="color: #666666; font-size: 14px;">If you didn't request this password reset, you can safely ignore this email.</p>
+          <hr style="margin-top:30px; border:none; border-top:1px solid #eeeeee;">
+          <p style="font-size:12px; color:#999999; text-align: center;">
+            This email was sent by Atyant.<br>
+            If you have issues, contact support@atyant.in
+          </p>
+        </div>
+      `
+    });
+
+    if (error) {
+      console.error('Resend error:', error);
+      throw new Error('Failed to send OTP email');
+    }
+
+    return data;
+  } catch (error) {
+    console.error('OTP email error:', error);
+    throw error;
+  }
+};

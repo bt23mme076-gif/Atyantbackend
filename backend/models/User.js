@@ -107,6 +107,15 @@ const userSchema = new mongoose.Schema({
   // ─── PASSWORD RESET ────────────────────────
   passwordResetToken: { type: String, select: false },
   passwordResetExpires: { type: Date, select: false },
+  resetOTP: {
+    type: String,
+    select: false
+  },
+
+  resetOTPExpires: {
+    type: Date,
+    select: false
+  },
 
   // ─── LOCATION ──────────────────────────────
   location: {
