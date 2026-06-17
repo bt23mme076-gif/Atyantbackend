@@ -87,7 +87,7 @@ const allowedOrigins = Array.from(new Set([
 
 console.log('🔒 CORS Allowed Origins:', allowedOrigins);
 
-app.use(cors({
+const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
@@ -109,10 +109,16 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   exposedHeaders: ['Content-Range', 'X-Content-Range'],
   maxAge: 600 // Cache preflight for 10 minutes
-}));
+};
 
-// Handle preflight requests explicitly
-app.options('*', cors());
+app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly — MUST use the same credentialed options.
+// A bare cors() here replies `Access-Control-Allow-Origin: *` with no
+// Allow-Credentials header, which the browser rejects for credentialed
+// (credentials:'include') requests — surfacing as "No 'Access-Control-Allow-Origin'
+// header is present" on preflighted calls like POST /api/livekit/join.
+app.options('*', cors(corsOptions));
 
 // Build a strict Content Security Policy (CSP)
 let dynamicOrigins = [];
