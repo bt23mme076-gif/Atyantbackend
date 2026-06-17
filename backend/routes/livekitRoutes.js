@@ -76,14 +76,19 @@ router.post('/join/:sessionId', protect, async (req, res) => {
 
 // POST /api/livekit/webhook
 // LiveKit server → this endpoint on room_finished / egress_ended events
-// Raw body required for signature verification
-router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+// Raw body required for signature verification. LiveKit sends these with
+// Content-Type `application/webhook+json`, so we must accept ANY type here —
+// `type: 'application/json'` would skip the body and break the sha256 check.
+router.post('/webhook', express.raw({ type: () => true }), async (req, res) => {
   try {
     if (!liveKitService.isConfigured()) return res.sendStatus(200);
 
     let event;
     try {
-      event = liveKitService.receiveWebhook(
+      // receive() is async — it MUST be awaited. Without await the rejection
+      // escapes this try/catch and crashes the process as an unhandled rejection
+      // ("sha256 checksum of body does not match"), and `event` would be a Promise.
+      event = await liveKitService.receiveWebhook(
         req.body.toString(),
         req.headers.authorization
       );

@@ -696,6 +696,14 @@ async function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+// ─── Last-resort safety net ──────────────────────────────────────────────────
+// A stray rejected promise (e.g. an un-awaited async SDK call) must never take
+// the whole server down for every user. Log it loudly and keep serving; real
+// bugs still show up in logs and should be fixed at the source.
+process.on('unhandledRejection', (reason) => {
+  console.error('🛑 Unhandled promise rejection (kept alive):', reason);
+});
+
 // ─────────────────────────────────────────────
 //  START
 // ─────────────────────────────────────────────
