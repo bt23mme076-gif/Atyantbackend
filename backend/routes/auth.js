@@ -36,7 +36,7 @@ const signUserToken = (user) => {
       role: user.role,
       // ✅ Removed username and profilePicture for 50% smaller token
     },
-    process.env.JWT_SECRET || 'your_jwt_secret',
+    process.env.JWT_SECRET,
     { expiresIn: '7d' } // ✅ Changed to 7 days for fewer logins
   );
   return token;

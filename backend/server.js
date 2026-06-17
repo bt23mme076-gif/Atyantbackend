@@ -11,6 +11,19 @@ import 'dotenv/config';
 console.log('🔑 GOOGLE_MEET_EMAIL loaded as:', process.env.GOOGLE_MEET_EMAIL);
 console.log('🔑 GOOGLE_MEET_CLIENT_ID:', (process.env.GOOGLE_MEET_CLIENT_ID || '').slice(0, 20) + '…');
 
+// ─── Fail fast on a missing/insecure JWT secret ──────────────────────────────
+// Tokens are SIGNED and VERIFIED with process.env.JWT_SECRET. If it's unset (or
+// left as the old placeholder), every authenticated request 401s even though
+// login appears to succeed — exactly the "works locally, fails in prod" trap.
+// Refuse to boot so the misconfiguration is caught at deploy time, not by users.
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'your_jwt_secret') {
+  console.error('❌ FATAL: JWT_SECRET is missing or set to the insecure default. ' +
+    'Set a strong, unique JWT_SECRET in this environment (it must match across all ' +
+    'services that issue or verify auth tokens). Refusing to start.');
+  process.exit(1);
+}
+console.log('🔐 JWT_SECRET loaded:', `${process.env.JWT_SECRET.length} chars`);
+
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
