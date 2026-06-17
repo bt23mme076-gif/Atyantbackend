@@ -14,17 +14,36 @@ router.get('/my', optionalAuth, async (req, res) => {
     if (!userId) {
       return res.json({ ok: true, upcoming: [], past: [] });
     }
+    const uidStr = String(userId);
     const now = new Date();
-    const sessions = await Session.find({ userId })
+    // Return sessions where the viewer is EITHER the student (userId) or the
+    // mentor (mentorId) — so mentors see their booked sessions + meet links too.
+    const sessions = await Session.find({ $or: [{ userId }, { mentorId: userId }] })
       .sort({ scheduledAt: -1 })
+      .populate('userId', 'name username profilePicture')
       .lean();
 
-    // The DB is shared across environments, so a session created on production
-    // stores an atyant.in meet link. In dev, re-point it at the local frontend
-    // so "Join Session" opens on localhost. (No-op in production.)
-    if (process.env.NODE_ENV !== 'production') {
-      for (const s of sessions) {
-        if (s.meetingLink) s.meetingLink = localizeMeetLink(s.meetingLink);
+    for (const s of sessions) {
+      // Who is the OTHER party from the viewer's perspective?
+      const isMentorView = s.mentorId && String(s.mentorId) === uidStr;
+      s.viewerRole = isMentorView ? 'mentor' : 'student';
+      if (isMentorView) {
+        const student = s.userId || {};
+        s.counterpartName    = student.name || student.username || 'Student';
+        s.counterpartPicture = student.profilePicture || '';
+      } else {
+        s.counterpartName    = s.mentorName || 'Your Mentor';
+        s.counterpartPicture = s.mentorProfilePicture || '';
+      }
+      // userId was populated to an object for the lookup above; collapse it back
+      // to a plain id so existing consumers that expect a string keep working.
+      s.userId = s.userId?._id ? String(s.userId._id) : s.userId;
+
+      // The DB is shared across environments, so a session created on production
+      // stores an atyant.in meet link. In dev, re-point it at the local frontend
+      // so "Join Session" opens on localhost. (No-op in production.)
+      if (process.env.NODE_ENV !== 'production' && s.meetingLink) {
+        s.meetingLink = localizeMeetLink(s.meetingLink);
       }
     }
 

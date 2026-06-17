@@ -35,7 +35,8 @@ export const sendUserWelcomeEmail = async (email, username) => {
 
   try {
     const { data, error } = await getResend().emails.send({
-      from: 'Atyant <onboarding@resend.dev>',
+      from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
       to: [email],
       subject: 'Welcome to Atyant 🎉 — find someone exactly like you',
       html: `
@@ -101,7 +102,8 @@ export const sendMentorWelcomeEmail = async (email, mentorName) => {
 
   try {
     const { data, error } = await getResend().emails.send({
-      from: 'Atyant <onboarding@resend.dev>',
+      from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
       to: [email],
       subject: 'Welcome to Atyant, mentor 🙌 — your journey can change a junior\'s life',
       html: `
@@ -206,14 +208,16 @@ export const sendSessionConfirmationEmails = async ({
   try {
     const results = await Promise.allSettled([
       getResend().emails.send({
-        from: 'Atyant <onboarding@resend.dev>',
+        from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
         to: [studentEmail],
         subject: '✅ Your Atyant session is confirmed',
         html: card('Your session is confirmed! 🎉',
           `Hi ${studentName || 'there'}, your session with <strong>${mentorName || 'your mentor'}</strong> is booked. Add it to your calendar and join via the link below.`),
       }),
       getResend().emails.send({
-        from: 'Atyant <onboarding@resend.dev>',
+        from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
         to: [mentorEmail],
         subject: `📅 New confirmed session with ${studentName || 'a student'}`,
         html: card('You have a new confirmed session 🎉',
@@ -277,14 +281,16 @@ export const sendSessionReminderEmails = async ({
   try {
     const results = await Promise.allSettled([
       getResend().emails.send({
-        from: 'Atyant <onboarding@resend.dev>',
+        from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
         to: [studentEmail],
         subject: `⏰ Reminder: your Atyant session starts in ${label}`,
         html: card(`Your session starts in ${label} ⏰`,
           `Hi ${studentName || 'there'}, this is a reminder that your session with <strong>${mentorName || 'your mentor'}</strong> starts in ${label}. Join via the link below.`),
       }),
       getResend().emails.send({
-        from: 'Atyant <onboarding@resend.dev>',
+        from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
         to: [mentorEmail],
         subject: `⏰ Reminder: your Atyant session with ${studentName || 'a student'} starts in ${label}`,
         html: card(`Your session starts in ${label} ⏰`,
@@ -312,7 +318,8 @@ export const sendPasswordResetEmail = async (email, resetToken) => {
   
   try {
     const { data, error } = await getResend().emails.send({
-      from: 'Atyant <onboarding@resend.dev>', // Use your verified domain when available
+      from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in', // Use your verified domain when available
       to: [email],
       subject: 'Password Reset Request - Atyant',
       html: `
@@ -376,7 +383,8 @@ export const sendPasswordResetConfirmation = async (email, username) => {
   
   try {
     const { data, error } = await getResend().emails.send({
-      from: 'Atyant <onboarding@resend.dev>',
+      from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
       to: [email],
       subject: 'Password Reset Successful - Atyant',
       html: `
@@ -444,7 +452,8 @@ export const sendMentorPaymentNotification = async (mentorEmail, mentorName, stu
     };
 
     const { data, error } = await getResend().emails.send({
-      from: 'Atyant <onboarding@resend.dev>',
+      from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
       to: [mentorEmail],
       subject: `💰 New Payment Received - ${mentorshipTypeLabel[mentorshipType]}`,
       html: `
@@ -536,7 +545,8 @@ export const sendMentorBookingNotification = async ({
   
   try {
     const { data, error } = await getResend().emails.send({
-      from: 'Atyant <onboarding@resend.dev>',
+      from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
       to: [mentorEmail],
       subject: `📅 New Booking Received - ${userName}`,
       html: `
@@ -633,7 +643,8 @@ export const sendStudentBookingConfirmation = async ({
   
   try {
     const { data, error } = await getResend().emails.send({
-      from: 'Atyant <onboarding@resend.dev>',
+      from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
       to: [userEmail],
       subject: 'Booking Confirmation - Atyant',
       html: `
