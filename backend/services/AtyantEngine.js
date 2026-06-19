@@ -78,7 +78,7 @@ const CONFIG = {
     BIO_DENSITY: 0.03,
     SAME_COLLEGE: 0.10,   // ← exact same college (alias-aware) — "exactly like you"
     COLLEGE_TYPE: 0.05,   // same tier (both NIT, both IIT, …)
-    SAME_BRANCH: 0.03,
+    SAME_BRANCH: 0.08,    // ← branch drives field relevance (CSE≠EEE) — must rival college
     HIGH_RATING: 0.05,
     HIGH_RESPONSE: 0.04,
     RECENT_ACTIVE: 0.03,
@@ -98,7 +98,7 @@ const CONFIG = {
     BIO_KEYWORD: 60,
     SAME_COLLEGE: 400,    // ← exact same college (alias-aware) — strong "exactly like you" signal
     COLLEGE_TYPE: 120,    // same tier (both NIT, both IIT, …)
-    SAME_BRANCH: 80,
+    SAME_BRANCH: 250,     // ← branch drives field relevance (CSE≠EEE) — must rival college
     HIGH_RATING: 120,
     HIGH_RESPONSE: 100,
     RECENT_ACTIVE: 70,
@@ -1406,7 +1406,7 @@ class AtyantEngine {
       // Scrollable feed: top N answer cards (one per senior who solved a similar problem)
       let answerCards = [];
       if (vector) {
-        try { answerCards = await this.getTopAnswerCards(vector, options.answerLimit || 4); }
+        try { answerCards = await this.getTopAnswerCards(vector, options.answerLimit || 4, studentContext); }
         catch (e) { console.error('getTopAnswerCards error:', e.message); }
       }
 
@@ -1429,7 +1429,7 @@ class AtyantEngine {
       Returns up to `n` distinct seniors' answer cards,
       ranked by semantic similarity to the question.
      ============================================= */
-  async getTopAnswerCards(vector, n = 4) {
+  async getTopAnswerCards(vector, n = 4, studentContext = null) {
     const candidates = await AnswerCard.aggregate([
       {
         $vectorSearch: {
@@ -1450,38 +1450,82 @@ class AtyantEngine {
     const passing = candidates.filter(c => (c.score || 0) >= FEED_FLOOR);
     if (passing.length === 0) return [];
 
+    // #4 — exclude the "Atyant Engine" fallback/seed account so it never shows as
+    // a real senior in the student-facing feed.
     const mentorIds = [...new Set(passing.map(c => String(c.mentorId)))];
-    const mentors = await User.find({ _id: { $in: mentorIds }, role: 'mentor' })
+    const mentors = await User.find({
+      _id: { $in: mentorIds },
+      role: 'mentor',
+      username: { $ne: 'Atyant Engine' },
+      email: { $ne: 'atyant.in@gmail.com' },
+    })
       .select('name username profilePicture education topCompanies expertise specialTags rating successfulMatches')
       .lean();
     const mmap = new Map(mentors.map(m => [String(m._id), m]));
 
+    // #1 — re-rank by BOTH axes, not just semantics: relevance (vector score) +
+    // who-they-are fit (same branch / college / tier). Branch matters because a
+    // CSE student needs CSE journeys, not the semantically-closest EEE one.
+    const W = CONFIG.WEIGHTS;
+    const sCollege = studentContext?.college || null;
+    const sBranch  = studentContext?.branch || null;
+    const sType = getCollegeType(sCollege);
+
     const seen = new Set();
-    const cards = [];
+    const scored = [];
     for (const c of passing) {
       const m = mmap.get(String(c.mentorId));
-      if (!m || seen.has(String(m._id))) continue;   // one card per mentor
+      if (!m || seen.has(String(m._id))) continue;   // one card per mentor (best semantic kept)
       seen.add(String(m._id));
-      cards.push({
-        id: c._id,
-        content: c.answerContent,
-        matchScore: Math.round((c.score || 0) * 100),
-        mentor: {
-          _id: m._id,
-          username: m.username,
-          name: m.name,
-          profilePicture: m.profilePicture || null,
-          education: m.education?.[0] || {},
-          topCompanies: m.topCompanies || [],
-          expertise: m.expertise || [],
-          specialTags: m.specialTags || [],
-          rating: m.rating || null,
-          successfulMatches: m.successfulMatches || 0,
+
+      const mEdu = m.education?.[0] || {};
+      const mCollege = mEdu.institutionName || mEdu.institution;
+      let bonus = 0, sameCollege = false, sameBranch = false;
+      if (isSameCollege(sCollege, mCollege)) { bonus += W.SAME_COLLEGE; sameCollege = true; }
+      if (sType !== 'unknown' && sType === getCollegeType(mCollege)) bonus += W.COLLEGE_TYPE;
+      if (isSameBranch(sBranch, mEdu.field)) { bonus += W.SAME_BRANCH; sameBranch = true; }
+
+      // ADDITIVE boost (not a weighted average): identity fit stacks ON TOP of the
+      // raw relevance, so a same-branch senior reads as a HIGH match instead of a
+      // deflated one. Branch (W.SAME_BRANCH) alone outweighs a few points of raw
+      // semantic edge — exactly what lifts a CSE journey above a closer EEE one.
+      const finalScore = Math.min(0.99, (c.score || 0) + Math.min(bonus, 0.25));
+
+      // #4 — honest label so the UI can say "Same branch" vs just "closest match".
+      const matchLabel = sameCollege && sameBranch ? 'Same college & branch'
+        : sameBranch ? 'Same branch'
+        : sameCollege ? 'Same college'
+        : 'Closest match';
+
+      scored.push({
+        finalScore, sameBranch, sameCollege, matchLabel,
+        card: {
+          id: c._id,
+          content: c.answerContent,
+          matchScore: Math.round(finalScore * 100),
+          matchLabel,
+          sameBranch,
+          sameCollege,
+          mentor: {
+            _id: m._id,
+            username: m.username,
+            name: m.name,
+            profilePicture: m.profilePicture || null,
+            education: mEdu,
+            topCompanies: m.topCompanies || [],
+            expertise: m.expertise || [],
+            specialTags: m.specialTags || [],
+            rating: m.rating || null,
+            successfulMatches: m.successfulMatches || 0,
+          },
         },
       });
-      if (cards.length >= n) break;
     }
-    return cards;
+
+    // Highest blended score first → same-branch seniors rise above a closer-but-
+    // unrelated EEE/Civil card.
+    scored.sort((a, b) => b.finalScore - a.finalScore);
+    return scored.slice(0, n).map(s => s.card);
   }
 
   /* =============================================
