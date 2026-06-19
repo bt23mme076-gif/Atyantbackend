@@ -164,14 +164,24 @@ function countLayers(context = {}) {
   return count;
 }
 
-// What we ACTUALLY need to connect a student to a mentor: their BRANCH (that's
-// the field matchMentors keys on) + what they want (a goal). College is great
-// for personalization but isn't enough alone for a good match. Blockers/timeline/
-// constraints are bonus context, never gates — requiring all five was the bug
-// that trapped students in endless questions and never routed.
+// A goal is only matchable once we know the FIELD/DOMAIN, not just "internship".
+// "internship" alone matches no mentor expertise; "SDE internship" / "ML
+// internship" does. This is the difference between a real match and a random one.
+const GOAL_FIELD_RE = /\b(sde|swe|software|backend|front[- ]?end|full[- ]?stack|web\s?dev|app\s?dev|\bdev\b|data(\s?science|\s?engineer|\s?analyst)?|\bds\b|\bml\b|\bai\b|machine\s?learning|deep\s?learning|\bnlp\b|computer\s?vision|analyt\w*|\bcore\b|non[- ]?core|mechanical|civil|electrical|electronics|vlsi|embedded|hardware|consult\w*|finance|fintech|quant|trading|product(\s?management|\s?manager)?|\bpm\b|design|\bux\b|\bui\b|marketing|sales|research|\bms\b|\bmba\b|\bgate\b|\bgre\b|higher\s?stud\w*|phd|startup|founder|cyber\s?sec\w*|devops|cloud|blockchain|robotics)\b/i;
+
+function goalHasField(context = {}) {
+  const text = [context.target, ...(context.gap || []), ...(context.constraint || [])]
+    .filter(Boolean).join(' ');
+  return GOAL_FIELD_RE.test(text);
+}
+
+// What we ACTUALLY need to connect a student to a mentor: their BRANCH (the field
+// matchMentors keys on) + a goal that names a FIELD/DOMAIN (so the match is real,
+// not random). College is bonus personalization; blockers/timeline/constraints
+// are never gates — requiring all five was the bug that trapped students forever.
 function readyToRoute(context = {}) {
   const id = context.identity || {};
-  return !!id.branch && !!context.target;
+  return !!id.branch && goalHasField(context);
 }
 
 // Detect an explicit ask to be connected to a mentor/senior ("connect me with a
@@ -539,7 +549,13 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
         ? `their branch/department at ${id.college} (and year if it comes up naturally) — branch is how we match a senior`
         : "their college AND branch — that's how we match a senior from a similar background");
     }
-    if (!ctx.target) need.push("what they're actually chasing — the goal or role");
+    if (!ctx.target) {
+      need.push("what they're actually chasing — the goal or role");
+    } else if (!goalHasField(ctx)) {
+      // Goal is vague ("internship"/"placement"). Pin the FIELD so we match the
+      // right mentor, framed by what their branch's seniors usually go for.
+      need.push("WHICH field the goal is in — e.g. software/SDE, data/ML, core, product, or consulting — framed by what their branch's seniors usually target");
+    }
 
     const systemWithContext = `${COLLECTION_SYSTEM}
 
