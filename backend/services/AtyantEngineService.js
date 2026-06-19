@@ -170,6 +170,7 @@ INTAKE MODE — get the full picture.
 - We strictly require all 5 layers to be extracted: Identity (college, branch, year), Target goal, Blockers/Gaps, Timeline, and Constraints.
 - Ask questions to collect any missing layers. Bundle missing details into ONE natural question where possible so the student doesn't feel interrogated.
 - Max 50 words per reply. The last sentence is the single (bundled) question.
+- If the student's latest message is unclear, off-topic, or doesn't actually answer what you asked, do NOT pretend to understand and do NOT claim progress. Say plainly you didn't follow, then re-ask simply. Never fabricate a profile detail the student didn't give.
 - Never open with filler. Start with the substance.
 - Never ask CGPA unless directly relevant.
 - Never ask for something the "Context extracted so far" block already contains.
@@ -370,6 +371,51 @@ function isGreeting(message) {
   return GREETING_PATTERNS.test(message.trim());
 }
 
+// ─── Gibberish / unintelligible input detection ──────────────────────────────
+// Without this, key-mash ("Hsbsbsvsvz") keeps the engine in intake mode and the
+// LLM dutifully re-asks the same scripted question forever, pretending the noise
+// was a real answer. We detect clear nonsense and ask the student to rephrase
+// instead. Conservative by design: never flags real words, numbers, or the
+// short domain answers students actually type (SDE, ML, core, MBA…).
+const DOMAIN_SHORT_ANSWERS = /\b(sde|swe|ml|ai|cs|cse|ece|eee|it|me|mba|ms|gate|gre|cat|tech|core|dev|data|ux|ui|pm|hr|qa|iit|nit|bits)\b/i;
+
+function isGibberishWord(w) {
+  const word = w.toLowerCase().replace(/[^a-z]/g, '');
+  if (word.length < 4) return false;                 // too short to judge ("sde", "3")
+  // 'y' counts as a vowel so real words like "myth"/"crypt" aren't flagged.
+  const vowels = (word.match(/[aeiouy]/g) || []).length;
+  // Real English words have at least one vowel and no 6+ consonant run. Consonant
+  // key-mash ("hdhshsvsvsvs", "hdhdjsosoevdvs") fails one of these. We deliberately
+  // do NOT use a vowel RATIO — that wrongly flagged real low-vowel words like
+  // "strengths". A single vowel is enough to be treated as a real word.
+  const longConsonantRun = /[bcdfghjklmnpqrstvwxz]{6,}/.test(word);
+  return vowels === 0 || longConsonantRun;
+}
+
+function looksLikeNoise(message) {
+  const text = String(message || '').trim();
+  if (text.length < 4) return false;                 // short valid answers ("3", "ML")
+  if (/\d/.test(text)) return false;                 // has a number → likely real info
+  if (DOMAIN_SHORT_ANSWERS.test(text)) return false; // a real domain answer
+  const words = text.split(/\s+/).filter(Boolean);
+  if (!words.length) return false;
+  const gib = words.filter(isGibberishWord).length;
+  return gib / words.length >= 0.6;                  // mostly gibberish tokens
+}
+
+// Friendly re-prompt when we can't read the message. Re-surface the last real
+// question so the student knows exactly what to answer.
+function buildNoiseReply(conv) {
+  const lastQ = [...conv.messages].reverse()
+    .find(m => m.role === 'assistant' && /\?/.test(m.content));
+  const base = "That didn't come through as something I can read.";
+  if (lastQ) {
+    const q = lastQ.content.split('\n').map(s => s.trim()).filter(Boolean).pop();
+    return `${base} Mind typing it again in plain words?\n\n${q}`;
+  }
+  return `${base} Tell me in plain words — your college, branch, year, and what you're trying to crack.`;
+}
+
 // Story-form opener: invites the WHOLE situation in one message instead of
 // kicking off a field-by-field interrogation. The extractor parses all 5 layers
 // from free text, so one good story message can skip intake entirely.
@@ -443,6 +489,27 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
       outputMode: null,
       matchedMentors: [],
       quickReplies: GREETING_QUICK_REPLIES,
+      sessionId
+    };
+  }
+
+  // ── Unintelligible input — don't force the intake script forward or extract
+  //    a fake profile from key-mash. Ask the student to rephrase. ──
+  if (looksLikeNoise(userMessage)) {
+    const reply = buildNoiseReply(conv);
+    conv.messages.push({ role: 'user', content: userMessage });
+    conv.messages.push({ role: 'assistant', content: reply });
+    if (conv.messages.length > 30) conv.messages = conv.messages.slice(-30);
+    await conv.save();
+    return {
+      reply,
+      phase: conv.phase,
+      contextLayers: conv.contextLayers,
+      context: conv.context,
+      problemStatement: conv.problemStatement,
+      outputMode: null,
+      matchedMentors: [],
+      quickReplies: [],
       sessionId
     };
   }
