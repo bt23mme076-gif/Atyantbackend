@@ -6,8 +6,9 @@ import User from '../models/User.js';
 // / _3 from SEPARATE Groq accounts in .env to multiply throughput.
 import { groqChat, groqJSON } from '../utils/groqClient.js';
 
-// Chat reply. Slightly higher temperature for a natural, human voice (not robotic).
-const callGroq = (messages, opts = {}) => groqChat(messages, { temperature: 0.85, ...opts });
+// Chat reply. A touch of warmth without rambling — too high and it produces
+// run-on, broken sentences instead of one clean question.
+const callGroq = (messages, opts = {}) => groqChat(messages, { temperature: 0.75, ...opts });
 
 // ─── Dedicated context extractor ──────────────────────────────────────────────
 // A small, fast, deterministic model with JSON mode. This is the SOURCE OF TRUTH
@@ -136,7 +137,7 @@ How to gather it like a human, not an intake form:
 - Skip anything the "Context extracted so far" block already has. Don't ask CGPA unless it actually matters here.
 - Once you know their college + branch, talk like an insider — weave in what students from there actually do, in your OWN words, phrased DIFFERENTLY every time (never reuse the same core/tech/non-core line). Never invent a name, company, or number.
 - If their goal is vague ("internship"/"placement"), the next thing to pin down is the DIRECTION — tech, core, or something else — using their college's real paths, before you ask about blockers.
-- Keep replies under ~45 words and end on one natural question. Output only your message — no JSON, no tags.`;
+- Keep replies under ~35 words. Your LAST line must be ONE clear, direct question that ends in a question mark — not a vague statement. Output only your message — no JSON, no tags.`;
 
 // Engine phase — final handoff. NO more questions; wrap up and route to clarity.
 const ENGINE_SYSTEM = `${MASTER_SYSTEM_PROMPT}
@@ -163,15 +164,14 @@ function countLayers(context = {}) {
   return count;
 }
 
-// What we ACTUALLY need to connect a student to a mentor: who they are
-// (college or branch) + what they want (a goal). Blockers, timeline and
-// constraints are bonus context — NOT gates. Requiring all five just traps the
-// student in endless questions and never routes, which is the bug we're fixing.
+// What we ACTUALLY need to connect a student to a mentor: their BRANCH (that's
+// the field matchMentors keys on) + what they want (a goal). College is great
+// for personalization but isn't enough alone for a good match. Blockers/timeline/
+// constraints are bonus context, never gates — requiring all five was the bug
+// that trapped students in endless questions and never routed.
 function readyToRoute(context = {}) {
   const id = context.identity || {};
-  const hasWho  = !!(id.college || id.branch);
-  const hasGoal = !!context.target;
-  return hasWho && hasGoal;
+  return !!id.branch && !!context.target;
 }
 
 // Detect an explicit ask to be connected to a mentor/senior ("connect me with a
@@ -529,11 +529,16 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
     const ctx = conv.context || {};
     const id = ctx.identity || {};
 
-    // Only the essentials that actually gate a good mentor match: who they are
-    // and what they want. We do NOT interrogate for blockers/timeline/constraints
-    // — if the student mentions them, extraction still captures them silently.
+    // Only the essentials that actually gate a good mentor match: their BRANCH
+    // (what matchMentors keys on) and their goal. We do NOT interrogate for
+    // blockers/timeline/constraints — if the student mentions them, extraction
+    // still captures them silently.
     const need = [];
-    if (!id.college && !id.branch) need.push("their college or branch — so we match a senior from a similar background");
+    if (!id.branch) {
+      need.push(id.college
+        ? `their branch/department at ${id.college} (and year if it comes up naturally) — branch is how we match a senior`
+        : "their college AND branch — that's how we match a senior from a similar background");
+    }
     if (!ctx.target) need.push("what they're actually chasing — the goal or role");
 
     const systemWithContext = `${COLLECTION_SYSTEM}
