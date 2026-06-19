@@ -6,8 +6,8 @@ import SessionTranscript from '../models/SessionTranscript.js';
 import SessionInsight from '../models/SessionInsight.js';
 import SavedAnswer from '../models/SavedAnswer.js';
 import Roadmap from '../models/Roadmap.js';
+import { groqJSON, groqRotate, GROQ_API_KEYS } from '../utils/groqClient.js';
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const WHISPER_MODEL   = process.env.GROQ_WHISPER_MODEL  || 'whisper-large-v3';
 const PIPELINE_MODEL  = process.env.GROQ_PIPELINE_MODEL || 'llama-3.1-8b-instant';
 
@@ -53,29 +53,33 @@ class SessionPipelineService {
   }
 
   async _transcribe(audioPath) {
-    if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not configured');
+    if (!GROQ_API_KEYS.length) throw new Error('GROQ_API_KEY not configured');
     if (!fs.existsSync(audioPath)) throw new Error(`Audio file not found: ${audioPath}`);
 
-    const form = new FormData();
-    form.append('file', fs.createReadStream(audioPath), {
-      filename: 'audio.ogg',
-      contentType: 'audio/ogg',
-    });
-    form.append('model', WHISPER_MODEL);
-    form.append('response_format', 'verbose_json');
-    form.append('language', 'en');
+    // Rotate keys / fail over on rate limits. A fresh FormData stream is built per
+    // attempt because a read stream can only be consumed once.
+    const response = await groqRotate(async (apiKey) => {
+      const form = new FormData();
+      form.append('file', fs.createReadStream(audioPath), {
+        filename: 'audio.ogg',
+        contentType: 'audio/ogg',
+      });
+      form.append('model', WHISPER_MODEL);
+      form.append('response_format', 'verbose_json');
+      form.append('language', 'en');
 
-    const response = await axios.post(
-      'https://api.groq.com/openai/v1/audio/transcriptions',
-      form,
-      {
-        headers: {
-          ...form.getHeaders(),
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-        },
-        maxBodyLength: Infinity,
-      }
-    );
+      return axios.post(
+        'https://api.groq.com/openai/v1/audio/transcriptions',
+        form,
+        {
+          headers: {
+            ...form.getHeaders(),
+            Authorization: `Bearer ${apiKey}`,
+          },
+          maxBodyLength: Infinity,
+        }
+      );
+    });
 
     return {
       text: response.data.text || '',
@@ -90,23 +94,18 @@ class SessionPipelineService {
   }
 
   async _extractInsights(transcriptText, sessionDoc) {
-    if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not configured');
+    if (!GROQ_API_KEYS.length) throw new Error('GROQ_API_KEY not configured');
 
-    const response = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
-      {
-        model: PIPELINE_MODEL,
-        temperature: 0.3,
-        max_tokens: 1024,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a session analysis AI. Return ONLY valid JSON, no markdown, no extra text.',
-          },
-          {
-            role: 'user',
-            content: `/no_think
-Analyze this mentor-student career guidance session transcript.
+    // Shared rotating client in JSON mode → valid JSON back, key failover for free.
+    return groqJSON(
+      [
+        {
+          role: 'system',
+          content: 'You are a session analysis AI. Return ONLY valid JSON, no markdown, no extra text.',
+        },
+        {
+          role: 'user',
+          content: `Analyze this mentor-student career guidance session transcript.
 Topic: ${sessionDoc?.topic || 'Career Guidance'}
 
 Return ONLY this JSON structure:
@@ -126,26 +125,10 @@ Valid values — careerContext: placement|higher_studies|skill_gap|other
 
 Transcript:
 ${transcriptText.slice(0, 6000)}`,
-          },
-        ],
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-          'Content-Type': 'application/json',
         },
-      }
+      ],
+      { model: PIPELINE_MODEL, maxTokens: 1024 },
     );
-
-    const raw = response.data.choices?.[0]?.message?.content || '{}';
-    try {
-      const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      return jsonMatch ? JSON.parse(jsonMatch[0]) : {};
-    } catch {
-      console.warn('Insight JSON parse failed, using empty');
-      return {};
-    }
   }
 
   async _saveToUserDashboard(sessionDoc, insights) {

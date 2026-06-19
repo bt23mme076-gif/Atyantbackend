@@ -1,5 +1,6 @@
 import express from 'express';
 import { optionalAuth } from '../middleware/auth.js';
+import { groqChat as sharedGroqChat } from '../utils/groqClient.js';
 import {
   processAtyantMessage,
   getAtyantSession,
@@ -9,46 +10,12 @@ import {
 
 const router = express.Router();
 
-const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-// Honour the env model (qwen3-32b etc.); fall back to a current Groq model.
-const GROQ_MODEL   = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-// Reasoning models inline a <think> trace; disable it so replies stay clean.
-const IS_REASONING_MODEL = /qwen|deepseek|r1/i.test(GROQ_MODEL);
+// All Groq calls go through the shared rotating client (multi-key round-robin +
+// failover). It already strips reasoning traces and honours the env model.
+const groqChat = (messages) => sharedGroqChat(messages, { temperature: 0.7, maxTokens: 800 });
 
 // Simple in-memory conversation store (per session, not persisted)
 const conversations = new Map();
-
-async function groqChat(messages) {
-  const body = {
-    model: GROQ_MODEL,
-    messages,
-    temperature: 0.7,
-    max_tokens: 800
-  };
-  if (IS_REASONING_MODEL) {
-    body.reasoning_effort = 'none';
-    body.reasoning_format = 'hidden';
-  }
-  const response = await fetch(GROQ_API_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Groq API error ${response.status}: ${err}`);
-  }
-  const data = await response.json();
-  // Backstop: strip any reasoning trace that slips through (closed or truncated).
-  return (data.choices?.[0]?.message?.content || '')
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<think>[\s\S]*$/gi, '')
-    .replace(/<\/?\s*think\s*>/gi, '')
-    .trim();
-}
 
 const SYSTEM_PROMPT = `You are Atyant — India's career execution intelligence. You are not a chatbot. You are not a generic AI assistant. You are the voice of a platform built by VNIT students, for Indian engineering students who are trying to figure out exactly what to do next in their career.
 

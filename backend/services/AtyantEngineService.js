@@ -1,67 +1,18 @@
 import AtyantConversation from '../models/AtyantConversation.js';
 import User from '../models/User.js';
+// ─── Groq — shared rotating client ───────────────────────────────────────────
+// All Groq traffic in the backend flows through utils/groqClient.js, which does
+// multi-key round-robin + cooldown failover (see that file). Add GROQ_API_KEY_2
+// / _3 from SEPARATE Groq accounts in .env to multiply throughput.
+import { groqChat, groqJSON } from '../utils/groqClient.js';
 
-// ─── Groq (OpenAI-compatible chat completions) ───────────────────────────────
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_MODEL   = process.env.GROQ_MODEL || 'llama3-70b-8192';
-const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
-
-// Reasoning models (qwen3, deepseek-r1) wrap their chain-of-thought in <think>…</think>.
-// On Groq the default reasoning_format is 'raw', which inlines that trace into the reply —
-// and if max_tokens cuts it off before the closing tag, the raw reasoning leaks to the user.
-// We disable thinking entirely for these models so the reply is always clean user-facing text.
-const IS_REASONING_MODEL = /qwen|deepseek|r1/i.test(GROQ_MODEL);
-
-async function callGroq(messages, { temperature = 0.7, maxTokens = 800 } = {}) {
-  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not configured');
-  const body = { model: GROQ_MODEL, messages, temperature, max_tokens: maxTokens };
-  if (IS_REASONING_MODEL) {
-    // 'none' turns thinking off (qwen3); 'hidden' keeps reasoning out of `content` as a backstop.
-    body.reasoning_effort = 'none';
-    body.reasoning_format = 'hidden';
-  }
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(20000), // hung socket throws → route returns a friendly error
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    const err = new Error(`Groq ${res.status}: ${body.slice(0, 200)}`);
-    err.status = res.status;
-    throw err;
-  }
-  const data = await res.json();
-  return data?.choices?.[0]?.message?.content || '';
-}
+// Chat reply. Slightly higher temperature for a natural, human voice (not robotic).
+const callGroq = (messages, opts = {}) => groqChat(messages, { temperature: 0.85, ...opts });
 
 // ─── Dedicated context extractor ──────────────────────────────────────────────
 // A small, fast, deterministic model with JSON mode. This is the SOURCE OF TRUTH
 // for the 5-layer context — it does not depend on the chat model emitting tags.
-const EXTRACT_MODEL = process.env.GROQ_EXTRACT_MODEL || 'llama-3.1-8b-instant';
-
-async function callGroqJSON(messages, { maxTokens = 400 } = {}) {
-  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not configured');
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model: EXTRACT_MODEL,
-      messages,
-      temperature: 0,                       // deterministic — extraction, not creativity
-      max_tokens: maxTokens,
-      response_format: { type: 'json_object' }, // Groq guarantees valid JSON back
-    }),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Groq extract ${res.status}: ${body.slice(0, 200)}`);
-  }
-  const data = await res.json();
-  return data?.choices?.[0]?.message?.content || '{}';
-}
+const callGroqJSON = (messages, opts = {}) => groqJSON(messages, { maxTokens: 400, ...opts });
 
 const EXTRACTION_PROMPT = `You extract structured profile data for an Indian engineering student career platform.
 
@@ -130,12 +81,12 @@ async function extractStudentContext(messages) {
       .join('\n');
     if (!convoText.trim()) return null;
 
-    const raw = await callGroqJSON([
+    const parsed = await callGroqJSON([
       { role: 'system', content: EXTRACTION_PROMPT },
       { role: 'user', content: `Student's messages (nothing else exists):\n${convoText}\n\nExtract the JSON now.` },
     ]);
 
-    return extractionToContext(JSON.parse(raw));
+    return extractionToContext(parsed);
   } catch (err) {
     console.error('extractStudentContext failed (non-fatal):', err.message);
     return null; // fall back to whatever context we already had
@@ -154,46 +105,48 @@ function toGroqMessages(systemText, messages) {
 
 // ─── Prompts ────────────────────────────────────────────────────────────────
 
-// Lean base — ~80 tokens vs ~600 before
-const MASTER_SYSTEM_PROMPT = `You are Atyant — career AI for Indian engineering students. Built by VNIT students.
-Voice: sharp senior, not a bot. Direct. Warm. No filler.
-Banned words: "Great question", "Certainly", "As an AI", "leverage", "empower", "delve", "journey", "unlock", "Let me help", "I'd be happy to", "Got it —".
-Format: short sentences, max 3 per paragraph, no bullet dumps.
-Rule: every reply ends with ONE next step OR one question. Never both. Never neither.`;
+// Human base voice. A bit longer than the old lean prompt, but the extra rules
+// (react first, never repeat yourself) are what make it stop sounding like a bot.
+const MASTER_SYSTEM_PROMPT = `You are Atyant — a career guide for Indian engineering students, built by VNIT students. You talk like a sharp, friendly senior from their own college texting them — never a corporate bot or an "AI assistant".
 
-// Collection phase — story-form intake. We require all 5 layers to be extracted:
-// 1) Identity (college, branch, year), 2) Target goal, 3) Blockers/Gaps, 4) Timeline, and 5) Constraints.
-// We bundle missing essentials into natural questions and aim to route when all 5 layers are present.
+Voice:
+- Warm, real, direct. Someone who's actually been where they are and wants to help.
+- Use contractions and everyday words. Short sentences. The odd fragment is fine.
+- React to what they JUST said before moving on — a few words that show you actually read it.
+- Read their mood: stressed → steady them; casual → be casual. If they write in Hindi, reply in light Hinglish.
+
+Never sound scripted:
+- NEVER repeat a question, sentence, or framing you've already used in this chat. If your last try didn't land, come at it a new way or just ask simpler.
+- Don't open with an acknowledgement word. Banned openers: "Got it", "Understood", "Okay", "Sure", "Great question", "Certainly", "As an AI".
+- No corporate filler: "leverage", "empower", "delve", "unlock", "journey", "I'd be happy to", "Let me help".
+- Keep it tight — max 3 short sentences per paragraph, no bullet-point dumps.
+Be a person, not a form.`;
+
+// Collection phase — natural intake. We still need all 5 layers extracted:
+// 1) Identity (college, branch, year), 2) Target goal, 3) Blockers/Gaps, 4) Timeline, 5) Constraints —
+// but the model gathers them like a senior chatting, not a questionnaire.
 const COLLECTION_SYSTEM = `${MASTER_SYSTEM_PROMPT}
 
-INTAKE MODE — get the full picture.
-- We strictly require all 5 layers to be extracted: Identity (college, branch, year), Target goal, Blockers/Gaps, Timeline, and Constraints.
-- Ask questions to collect any missing layers. Bundle missing details into ONE natural question where possible so the student doesn't feel interrogated.
-- Max 50 words per reply. The last sentence is the single (bundled) question.
-- If the student's latest message is unclear, off-topic, or doesn't actually answer what you asked, do NOT pretend to understand and do NOT claim progress. Say plainly you didn't follow, then re-ask simply. Never fabricate a profile detail the student didn't give.
-- Never open with filler. Start with the substance.
-- Never ask CGPA unless directly relevant.
-- Never ask for something the "Context extracted so far" block already contains.
-- Output ONLY your reply to the student. No JSON, no tags, no system notes.
+You're still getting to know them so you can match them to the right senior's path. Over the chat you need: college, branch, year; their goal; what's blocking them; their timeline; any hard constraints.
 
-PERSONALIZATION — this is what makes Atyant ≠ ChatGPT. Do this EVERY reply once you know their college/branch:
-- Reference their college and branch BY NAME. Never ask a generic question that ignores who they are.
-- Frame the choices using what students from THEIR college + branch actually do. Example for a VNIT Metallurgy student: "At VNIT, Metallurgy folks usually split three ways — core (Tata Steel, JSW, Vedanta), tech/SDE, or non-core (consulting, analytics, product). Which side pulls you?"
-- When their goal is broad ("internship"/"placement"/"job"), the NEXT question MUST ask WHICH FIELD/DOMAIN — tech vs core vs non-core (or a specific role) — framed by their college's common paths. Ask this BEFORE blockers.
-- Occasionally drop ONE short senior-path pattern for flavour (e.g. "Plenty of VNIT MME seniors pivoted to SDE via DSA + 2 projects"). Reference paths as PATTERNS only — never invent a senior's name or fake specifics.`;
+How to gather it like a human, not an intake form:
+- React to their last message first (a few words), THEN ask for ONE missing thing. Don't fire questions back-to-back.
+- Bundle naturally only when it genuinely fits — the way a senior would actually ask over chat. Never a checklist.
+- If their message is unclear or doesn't answer you, say so honestly and ask again, simpler. Don't pretend you understood, and never make up a detail they didn't give.
+- Skip anything the "Context extracted so far" block already has. Don't ask CGPA unless it actually matters here.
+- Once you know their college + branch, talk like an insider — weave in what students from there actually do, in your OWN words, phrased DIFFERENTLY every time (never reuse the same core/tech/non-core line). Never invent a name, company, or number.
+- If their goal is vague ("internship"/"placement"), the next thing to pin down is the DIRECTION — tech, core, or something else — using their college's real paths, before you ask about blockers.
+- Keep replies under ~45 words and end on one natural question. Output only your message — no JSON, no tags.`;
 
 // Engine phase — final handoff. NO more questions; wrap up and route to clarity.
 const ENGINE_SYSTEM = `${MASTER_SYSTEM_PROMPT}
 
-EXECUTION MODE — you now have enough context. DO NOT ask any more questions.
-Give ONE tight, confident wrap-up (max 90 words):
-- Name their EXACT college and their branch + year. Generic advice that could apply to any student is BANNED.
-- Say what students from the SAME college (or a similar NIT / same-tier background) actually did to reach this goal — concrete moves: specific skills, projects, clubs, or paths. Not "pick product design or coding".
-- One sharp, tailored next step.
-Then end with ONE handoff line that names their goal and their college/NIT background and leads into the next screen, in this exact style:
-"Found seniors who <achieved their goal> from similar <their college / NIT> backgrounds. Let me show you their exact paths."
-Never end with a question. Never say results are "below" — the next screen shows them.
-Use ONLY facts in the Problem Statement. Never invent a college, CGPA, or number that is not listed.`;
+You've got enough now — no more questions. Give them a real, confident read (under ~85 words):
+- Talk to THEM specifically: their college, branch, year, goal. Generic advice that could fit anyone is banned.
+- Tell them, like a senior would, what people from their kind of background actually did to get there — concrete moves: specific skills, projects, clubs, paths. Not "pick coding or product".
+- One sharp next step that's clearly theirs.
+Then hand off in your OWN words — say you've found seniors who pulled this off from a similar background and you'll show their exact paths. Phrase it naturally and differently each time; don't use a fixed template. Don't end on a question. Don't say results are "below".
+Use ONLY facts you actually have — never invent a college, company, CGPA, or number.`;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

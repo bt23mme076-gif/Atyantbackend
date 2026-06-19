@@ -1,8 +1,8 @@
-import fetch from 'node-fetch';
-import axios from 'axios'; 
+import axios from 'axios';
 import User from '../models/User.js';
 import AIConversation from '../models/AIConversation.js';
 import { ATYANT_KNOWLEDGE, findRelevantInfo } from './AtyantKnowledge.js';
+import { groqChat } from '../utils/groqClient.js';
 
 /**
  * 🚀 FEATURE: Question Text ko Vector mein badalna
@@ -49,28 +49,15 @@ class AIService {
   }
 
   async _groqRequest(systemPrompt, userPrompt) {
-    const response = await fetch(this.apiUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user',   content: userPrompt }
-        ],
-        temperature: 0.7,
-        max_tokens: 1024
-      })
-    });
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`Groq API error ${response.status}: ${err}`);
-    }
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || '';
+    // Routed through the shared rotating client so this shares the key pool with
+    // the chat engine and fails over on rate limits instead of erroring out.
+    return groqChat(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: userPrompt },
+      ],
+      { model: this.model, temperature: 0.7, maxTokens: 1024 },
+    );
   }
   // AIService class ke andar refineExperience function mein prompt ko aise change karein:
   async refineExperience(rawData) {
