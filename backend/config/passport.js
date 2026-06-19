@@ -36,8 +36,7 @@ if (process.env.GOOGLE_CALENDAR_CLIENT_ID &&
           callbackURL: process.env.GOOGLE_CALLBACK_URL,
           scope: [
             'https://www.googleapis.com/auth/userinfo.profile',
-            'https://www.googleapis.com/auth/userinfo.email',
-            'https://www.googleapis.com/auth/calendar.events'
+            'https://www.googleapis.com/auth/userinfo.email'
           ]
         },
         async (accessToken, refreshToken, profile, done) => {
@@ -49,8 +48,8 @@ if (process.env.GOOGLE_CALENDAR_CLIENT_ID &&
               user.accessToken = accessToken;
               if (refreshToken) user.refreshToken = refreshToken;
               user.lastLogin = new Date();
-              user.calendarConnected = true;
-              user.calendarProvider = 'google';
+              user.calendarConnected = false;
+              user.calendarProvider = null;
               await user.save();
               console.log('✅ Existing OAuth user logged in:', user.email);
             } else {
@@ -66,8 +65,8 @@ if (process.env.GOOGLE_CALENDAR_CLIENT_ID &&
                 if (!user.profilePicture && profile.photos?.[0]?.value) {
                   user.profilePicture = profile.photos[0].value;
                 }
-                user.calendarConnected = true;
-                user.calendarProvider = 'google';
+                user.calendarConnected = false;
+                user.calendarProvider = null;
                 await user.save();
                 console.log('✅ Linked Google account to existing user:', user.email);
               } else {
@@ -93,8 +92,8 @@ if (process.env.GOOGLE_CALENDAR_CLIENT_ID &&
                   refreshToken: refreshToken,
                   lastLogin: new Date(),
                   role: 'user',
-                  calendarConnected: true,
-                  calendarProvider: 'google'
+                  calendarConnected: false,
+                  calendarProvider: null
                 });
                 console.log('✅ Created new OAuth user:', user.email);
               }

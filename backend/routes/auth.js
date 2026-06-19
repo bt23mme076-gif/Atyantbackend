@@ -56,15 +56,16 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ message: 'Password must be at least 8 characters' });
     }
 
+    const cleanPhone = String(phone || '').replace(/\D/g, '').slice(-10);
     const phoneRegex = /^[6-9]\d{9}$/;
-    if (!phoneRegex.test(phone)) {
+    if (!phoneRegex.test(cleanPhone)) {
       return res.status(400).json({ message: 'Enter a valid 10-digit Indian mobile number' });
     }
     
     // Check existing user
-    const existingUser = await User.findOne({ $or: [{ email }, { username }, { phone }] });
+    const existingUser = await User.findOne({ $or: [{ email }, { username }, { phone: cleanPhone }] });
     if (existingUser) {
-      if (existingUser.phone === phone) {
+      if (existingUser.phone === cleanPhone) {
         return res.status(409).json({ message: 'Mobile number already registered' });
       }
       if (existingUser.email === email) {
@@ -84,7 +85,7 @@ router.post('/signup', async (req, res) => {
       username,
       email,
       password: hashedPassword,
-      phone,
+      phone: cleanPhone,
       role: role || 'user' // Default to 'user' not 'student'
     });
     
@@ -143,8 +144,20 @@ router.post('/signup', async (req, res) => {
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    
-    const user = await User.findOne({ email }).select('+password');
+    let user;
+    const cleanPhone = String(email || '').replace(/\D/g, '').slice(-10);
+    const isPhone = /^[6-9]\d{9}$/.test(cleanPhone);
+
+    if (isPhone) {
+      user = await User.findOne({
+        $or: [
+          { email: email.toLowerCase() },
+          { phone: cleanPhone }
+        ]
+      }).select('+password');
+    } else {
+      user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+    }
     if (!user) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
@@ -387,10 +400,7 @@ router.post('/reset-password', async (req, res) => {
 
 
 router.get('/google',
-  passport.authenticate('google', { 
-    accessType: 'offline',
-    prompt: 'consent'
-  })
+  passport.authenticate('google')
 );
 
 // OAuth callback

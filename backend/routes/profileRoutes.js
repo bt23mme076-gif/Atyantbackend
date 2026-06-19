@@ -46,6 +46,32 @@ router.get('/services-catalog', (req, res) => {
 });
 
 // ─────────────────────────────────────────────
+//  PUT /phone — set the logged-in user's mobile number.
+//  Used by the mandatory phone step after Google sign-up (Google's token has
+//  no phone). Validates the 10-digit Indian format and enforces uniqueness.
+// ─────────────────────────────────────────────
+router.put('/phone', protect, async (req, res) => {
+  try {
+    const phone = String(req.body.phone || '').replace(/\D/g, '').slice(-10);
+    if (!/^[6-9]\d{9}$/.test(phone)) {
+      return res.status(400).json({ message: 'Enter a valid 10-digit Indian mobile number' });
+    }
+    // No one else can already own this number.
+    const clash = await User.findOne({ phone, _id: { $ne: req.user.userId } }).select('_id').lean();
+    if (clash) return res.status(409).json({ message: 'This mobile number is already registered' });
+
+    const user = await User.findByIdAndUpdate(req.user.userId, { phone }, { new: true })
+      .select('-password -verificationToken -passwordResetToken -passwordResetExpires');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    res.json({ message: 'Mobile number saved', user });
+  } catch (err) {
+    console.error('PUT /profile/phone error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
 //  GET /by-id/:id — public profile by MongoDB _id
 //  Used by BookingPage to get the full profile (incl. servicesOffered)
 //  when the mentor object in state only has partial data.
@@ -104,10 +130,27 @@ router.put('/me', protect, async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // Basic scalar fields
+    // Validate and sanitize phone if provided
+    if (updateData.phone !== undefined) {
+      const cleanPhone = String(updateData.phone || '').replace(/\D/g, '').slice(-10);
+      if (cleanPhone) {
+        if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
+          return res.status(400).json({ message: 'Enter a valid 10-digit Indian mobile number' });
+        }
+        const clash = await User.findOne({ phone: cleanPhone, _id: { $ne: userId } }).select('_id').lean();
+        if (clash) {
+          return res.status(409).json({ message: 'This mobile number is already registered' });
+        }
+        user.phone = cleanPhone;
+      } else {
+        user.phone = undefined;
+      }
+    }
+
+    // Basic scalar fields (phone is handled separately above)
     const basicFields = [
       'username', 'name', 'bio', 'city', 'linkedinProfile',
-      'phone', 'yearsOfExperience', 'price', 'acceptsCredits',
+      'yearsOfExperience', 'price', 'acceptsCredits',
       'isStrategyComplete', 'chatDisabled'
     ];
     basicFields.forEach(field => {
