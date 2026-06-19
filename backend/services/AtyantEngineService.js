@@ -163,6 +163,26 @@ function countLayers(context = {}) {
   return count;
 }
 
+// What we ACTUALLY need to connect a student to a mentor: who they are
+// (college or branch) + what they want (a goal). Blockers, timeline and
+// constraints are bonus context — NOT gates. Requiring all five just traps the
+// student in endless questions and never routes, which is the bug we're fixing.
+function readyToRoute(context = {}) {
+  const id = context.identity || {};
+  const hasWho  = !!(id.college || id.branch);
+  const hasGoal = !!context.target;
+  return hasWho && hasGoal;
+}
+
+// Detect an explicit ask to be connected to a mentor/senior ("connect me with a
+// mentor", "talk to a senior", "i want a mentor"). When the student asks, we
+// stop interrogating and route.
+function wantsMentor(message) {
+  const m = String(message || '').toLowerCase();
+  if (!/\bmentor|\bsenior|\bguide\b/.test(m)) return false;
+  return /connect|talk|speak|chat|find|need|want|get|meet|book|assign|introduce/.test(m);
+}
+
 function generateProblemStatement(context = {}) {
   const { identity = {}, target, gap = [], timeline, constraint = [] } = context;
   const lines = [];
@@ -485,8 +505,20 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
   // clarity button at the same time. Once we have 3+ layers, we stop asking.
   conv.problemStatement = generateProblemStatement(conv.context);
 
-  // STRICT GATE: transition to 'engine' phase ONLY when all 5 layers are fully extracted.
-  if (conv.contextLayers >= 5) {
+  // ── Routing gate ─────────────────────────────────────────────────────────
+  // Route the moment we can actually match a mentor (who they are + their goal),
+  // OR the student explicitly asks for one and we have a goal to match on, OR
+  // intake has simply dragged on too long. No more waiting for all 5 layers —
+  // that strict gate is what kept the chat asking questions forever and never
+  // connecting anyone.
+  const userWantsMentor = wantsMentor(userMessage);
+  const assistantTurns = conv.messages.filter(m => m.role === 'assistant').length;
+
+  if (
+    readyToRoute(conv.context) ||
+    (userWantsMentor && conv.context.target) ||
+    (assistantTurns >= 5 && (conv.context.target || conv.context.identity?.college || conv.context.identity?.branch))
+  ) {
     conv.phase = 'engine';
   }
 
@@ -495,33 +527,23 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
   // ── Phase 1: Context Collection — ask ONE question ───────────────────────
   if (conv.phase === 'collecting') {
     const ctx = conv.context || {};
-    const layers = countLayers(ctx);
-
     const id = ctx.identity || {};
 
-    // Is the goal specific about a field/domain yet (tech vs core vs non-core, or a
-    // concrete role)? If the goal is still broad, the field question comes next —
-    // framed by their college's common paths — BEFORE we ask about blockers.
-    const ctxGoalText = [ctx.target, ...(ctx.gap || []), ...(ctx.constraint || [])].filter(Boolean).join(' ');
-    const hasDomainSignal = /\btech\b|software|\bsde\b|\bswe\b|\bdata\b|\bml\b|\bai\b|\bcore\b|non-?core|consult|finance|fintech|product|analyst|analytics|research|design|hardware|embedded|quant|trading|marketing|\bdev\b/i.test(ctxGoalText);
-
-    const missing = [];
-    if (!id.college) missing.push('college/institute name (ASK THIS FIRST — most important)');
-    if (!id.branch) missing.push('branch/department');
-    if (!id.year) missing.push('current year of study');
-    if (!ctx.target) missing.push('target goal');
-    else if (!hasDomainSignal) missing.push('FIELD/DOMAIN of the goal — tech vs core vs non-core (frame it with what students from their college + branch typically do)');
-    if (!ctx.gap?.length) missing.push('biggest blocker');
-    if (!ctx.timeline) missing.push('timeline/urgency');
-    if (!ctx.constraint?.length) missing.push('constraints');
+    // Only the essentials that actually gate a good mentor match: who they are
+    // and what they want. We do NOT interrogate for blockers/timeline/constraints
+    // — if the student mentions them, extraction still captures them silently.
+    const need = [];
+    if (!id.college && !id.branch) need.push("their college or branch — so we match a senior from a similar background");
+    if (!ctx.target) need.push("what they're actually chasing — the goal or role");
 
     const systemWithContext = `${COLLECTION_SYSTEM}
 
 ---
-Context extracted so far (${layers}/5 layers):
+What we already know about them:
 ${JSON.stringify(ctx, null, 2)}
 
-Still missing: ${missing.length ? missing.join(', ') : 'Nothing — all layers collected!'}
+Still need (ask ONLY the first one that applies, nothing more): ${need.length ? need.join('  |  ') : "nothing — wrap up warmly and tell them you're matching them to a mentor now"}
+${userWantsMentor ? "\nThe student JUST asked to be connected to a mentor. Acknowledge it in one line, ask ONLY the single thing above in one short sentence, and do NOT pile on extra questions." : ""}
 ---`;
 
     const rawReply = await callGroq(toGroqMessages(systemWithContext, conv.messages));
