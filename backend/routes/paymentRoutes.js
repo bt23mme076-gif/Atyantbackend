@@ -6,6 +6,7 @@ import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import liveKitService from '../services/LiveKitService.js';
 import { sendSessionConfirmationEmails } from '../utils/emailService.js';
+import { sendServicePurchaseNotification } from '../utils/emailNotifications.js';
 import { getService } from '../config/serviceCatalog.js';
 import { meetLinkFor } from '../utils/frontendUrl.js';
 
@@ -139,6 +140,21 @@ router.post('/order', protect, async (req, res) => {
         User.findById(mentorId).select('name username email refreshToken accessToken').lean(),
       ]);
       await finalizeSession(session, student, mentorFull);
+
+      // Send service purchase notification for free sessions as well
+      const serviceName = serviceId ? getService(serviceId)?.label || 'Session' : '1:1 Session';
+      await sendServicePurchaseNotification(
+        mentorFull.email,
+        mentorFull.name || mentorFull.username,
+        student.email,
+        student.name || student.username,
+        serviceName,
+        {
+          scheduledAt: session.scheduledAt,
+          topic: session.topic,
+        }
+      ).catch(err => console.error('Failed to send service purchase notification:', err));
+
       return res.json({ ok: true, free: true, session });
     }
 
@@ -235,6 +251,20 @@ router.post('/verify', protect, async (req, res) => {
     ]);
     await finalizeSession(session, student, mentor);
 
+    // Send service purchase notification to both mentor and student
+    const serviceName = session.serviceId ? getService(session.serviceId)?.label || 'Session' : '1:1 Session';
+    await sendServicePurchaseNotification(
+      mentor.email,
+      mentor.name || mentor.username,
+      student.email,
+      student.name || student.username,
+      serviceName,
+      {
+        scheduledAt: session.scheduledAt,
+        topic: session.topic,
+      }
+    ).catch(err => console.error('Failed to send service purchase notification:', err));
+
     res.json({ ok: true, session });
   } catch (err) {
     console.error('POST /payments/verify error:', err);
@@ -276,6 +306,21 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
           User.findById(session.mentorId).select('name username email refreshToken accessToken').lean(),
         ]);
         await finalizeSession(session, student, mentor);
+
+        // Send service purchase notification via webhook as well
+        const serviceName = session.serviceId ? getService(session.serviceId)?.label || 'Session' : '1:1 Session';
+        await sendServicePurchaseNotification(
+          mentor.email,
+          mentor.name || mentor.username,
+          student.email,
+          student.name || student.username,
+          serviceName,
+          {
+            scheduledAt: session.scheduledAt,
+            topic: session.topic,
+          }
+        ).catch(err => console.error('Failed to send service purchase notification via webhook:', err));
+
         console.log(`✅ Webhook confirmed session ${session._id}`);
       }
     }
