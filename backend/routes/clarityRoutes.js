@@ -80,7 +80,7 @@ router.post('/match', optionalAuth, async (req, res) => {
     const ids = (clarity.mentors || []).map(m => m._id);
     const display = ids.length
       ? await User.find({ _id: { $in: ids } })
-          .select('name username profilePicture yearsOfExperience primaryDomain companyDomain linkedinProfile successfulMatches rating')
+          .select('name username profilePicture yearsOfExperience primaryDomain companyDomain linkedinProfile successfulMatches rating isVerified')
           .lean()
       : [];
     const dmap = new Map(display.map(d => [String(d._id), d]));
@@ -113,6 +113,7 @@ router.post('/match', optionalAuth, async (req, res) => {
         rating: (m.rating || d.rating) ? `${(m.rating || d.rating).toFixed(1)}★` : '4.8★',
         timeline: d.yearsOfExperience ? `${d.yearsOfExperience} yrs exp` : 'Active',
         profilePicture: d.profilePicture || null,
+        isVerified: d.isVerified || false,
       };
     });
 

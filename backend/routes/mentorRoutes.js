@@ -8,11 +8,37 @@ import atyantEngine from '../services/AtyantEngine.js';
 import aiService, { getQuestionEmbedding } from '../services/AIService.js';
 import { normalizeCollege } from '../utils/collegeNormalizer.js';
 import { sendMentorWelcomeEmail } from '../utils/emailService.js';
+import { extractLinkedInProfile } from '../services/LinkedInService.js';
 
 const router = express.Router();
 
 const clean = (v) => (typeof v === 'string' ? v.trim() : v);
 const arr = (v) => (Array.isArray(v) ? v.map(clean).filter(Boolean) : []);
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  POST /api/mentor/linkedin-autofill
+//  Scrapes a LinkedIn profile URL and returns pre-filled mentor fields.
+//  Does NOT save anything — frontend uses the response to populate the form.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/linkedin-autofill', protect, async (req, res) => {
+  try {
+    const linkedinUrl = clean(req.body?.linkedinUrl);
+    if (!linkedinUrl) {
+      return res.status(400).json({ success: false, message: 'linkedinUrl is required' });
+    }
+    const fields = await extractLinkedInProfile(linkedinUrl);
+    return res.json({ success: true, fields });
+  } catch (err) {
+    console.error('POST /mentor/linkedin-autofill error:', err.message);
+    const isConfig = err.message.includes('APIFY_API_TOKEN');
+    return res.status(isConfig ? 503 : 422).json({
+      success: false,
+      message: isConfig
+        ? 'LinkedIn import is not configured on this server.'
+        : err.message,
+    });
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  POST /api/mentor/onboard
@@ -88,69 +114,6 @@ router.post('/onboard', protect, async (req, res) => {
 
     await user.save();
 
-    // ── Turn the story into an embedded AnswerCard (vector match + "Their Journey") ──
-    let answerCardId = null;
-    if (story.length >= 40) {
-      try {
-        const goalLine = primaryDomain ? `${primaryDomain} success` : 'their goal';
-        const q = await Question.create({
-          userId: user._id,
-          questionText: `How did ${user.username || 'this mentor'} achieve ${goalLine}? (${(college || 'college')} ${(branch || '')})`.slice(0, 1000),
-          status: 'answered_instantly',
-          selectedMentorId: user._id,
-          keywords: [...topCompanies, ...specialTags, branch].filter(Boolean).map(s => String(s).toLowerCase()),
-        });
-
-        // 🔥 AI-structure the story into a full answer card (situation / what
-        // worked / steps / mistakes / timeline / if-I-did-it-today) so the mentor
-        // gets a polished card automatically — no 6-box form to fill.
-        let refined = null;
-        try {
-          refined = await aiService.refineExperience({
-            story, bio, college, branch,
-            companies: topCompanies, expertise, achievements: specialTags,
-          });
-        } catch (e) {
-          console.warn('onboard refineExperience failed, using raw story:', e.message);
-        }
-
-        const answerContent = buildAnswerContent({
-          mainAnswer: refined?.mainAnswer,
-          situation: refined?.situation,
-          whatWorked: refined?.whatWorked,
-          timeline: refined?.timeline,
-          differentApproach: refined?.differentApproach,
-          keyMistakes: refined?.keyMistakes,
-          actionableSteps: refined?.actionableSteps,
-        });
-        // Fallbacks so the card is never empty even if AI was unavailable.
-        if (!answerContent.situation)  answerContent.situation = story.slice(0, 1200);
-        if (!answerContent.mainAnswer) answerContent.mainAnswer = story.slice(0, 200);
-        if (!answerContent.whatWorked && topCompanies[0]) answerContent.whatWorked = `Now at ${topCompanies[0]}`;
-
-        let embedding = null;
-        try {
-          // Embed the card content + profile signal for the richest match vector.
-          const embText = [
-            embeddingTextFor(answerContent), topCompanies.join(' '), specialTags.join(' '), expertise.join(' '),
-          ].filter(Boolean).join(' ');
-          embedding = await getQuestionEmbedding(embText);
-        } catch (e) {
-          console.warn('onboard embedding failed (card saves without vector):', e.message);
-        }
-
-        const card = await AnswerCard.create({
-          mentorId: user._id,
-          questionId: q._id,
-          answerContent,
-          ...(embedding ? { embedding } : {}),
-        });
-        answerCardId = card._id;
-      } catch (e) {
-        console.error('onboard AnswerCard creation failed (non-fatal):', e.message);
-      }
-    }
-
     // ── Make them visible to the engine right away ──
     try { atyantEngine.flushAllCaches(); } catch { /* noop */ }
 
@@ -160,15 +123,76 @@ router.post('/onboard', protect, async (req, res) => {
         .catch(err => console.error('Mentor welcome email failed (non-fatal):', err.message));
     }
 
-    return res.json({
+    // ── Return immediately — AnswerCard creation (AI refine + embedding) runs in background ──
+    res.json({
       success: true,
       listed,
       missing,
-      answerCardId,
+      answerCardId: null,
       message: listed
         ? "You're live! Students matching your background will now find you."
         : 'Profile saved. Finish the missing fields to start getting matched.',
     });
+
+    // ── Background: Turn the story into an embedded AnswerCard ──
+    if (story.length >= 40) {
+      (async () => {
+        try {
+          const goalLine = primaryDomain ? `${primaryDomain} success` : 'their goal';
+          const q = await Question.create({
+            userId: user._id,
+            questionText: `How did ${user.username || 'this mentor'} achieve ${goalLine}? (${(college || 'college')} ${(branch || '')})`.slice(0, 1000),
+            status: 'answered_instantly',
+            selectedMentorId: user._id,
+            keywords: [...topCompanies, ...specialTags, branch].filter(Boolean).map(s => String(s).toLowerCase()),
+          });
+
+          let refined = null;
+          try {
+            refined = await aiService.refineExperience({
+              story, bio, college, branch,
+              companies: topCompanies, expertise, achievements: specialTags,
+            });
+          } catch (e) {
+            console.warn('onboard refineExperience failed, using raw story:', e.message);
+          }
+
+          const answerContent = buildAnswerContent({
+            mainAnswer: refined?.mainAnswer,
+            situation: refined?.situation,
+            whatWorked: refined?.whatWorked,
+            timeline: refined?.timeline,
+            differentApproach: refined?.differentApproach,
+            keyMistakes: refined?.keyMistakes,
+            actionableSteps: refined?.actionableSteps,
+          });
+          if (!answerContent.situation)  answerContent.situation = story.slice(0, 1200);
+          if (!answerContent.mainAnswer) answerContent.mainAnswer = story.slice(0, 200);
+          if (!answerContent.whatWorked && topCompanies[0]) answerContent.whatWorked = `Now at ${topCompanies[0]}`;
+
+          let embedding = null;
+          try {
+            const embText = [
+              embeddingTextFor(answerContent), topCompanies.join(' '), specialTags.join(' '), expertise.join(' '),
+            ].filter(Boolean).join(' ');
+            embedding = await getQuestionEmbedding(embText);
+          } catch (e) {
+            console.warn('onboard embedding failed (card saves without vector):', e.message);
+          }
+
+          await AnswerCard.create({
+            mentorId: user._id,
+            questionId: q._id,
+            answerContent,
+            ...(embedding ? { embedding } : {}),
+          });
+
+          try { atyantEngine.flushAllCaches(); } catch { /* noop */ }
+        } catch (e) {
+          console.error('onboard AnswerCard creation failed (non-fatal):', e.message);
+        }
+      })();
+    }
   } catch (error) {
     console.error('POST /mentor/onboard error:', error);
     res.status(500).json({ message: 'Onboarding failed', error: error.message });
