@@ -145,4 +145,39 @@ router.patch('/:id/complete', protect, async (req, res) => {
   }
 });
 
+// POST /api/sessions/:id/review — student submits star rating + comment.
+// Updates mentor's rolling average rating and successfulMatches count.
+router.post('/:id/review', protect, async (req, res) => {
+  try {
+    const numRating = Number(req.body.rating);
+    if (!numRating || numRating < 1 || numRating > 5) {
+      return res.status(400).json({ ok: false, error: 'Rating must be 1–5' });
+    }
+    const session = await Session.findOne({ _id: req.params.id, userId: req.user.userId });
+    if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
+    if (session.review?.submittedAt) return res.status(409).json({ ok: false, error: 'Already reviewed' });
+
+    session.review = {
+      rating:      numRating,
+      comment:     (req.body.comment || '').trim().slice(0, 300),
+      submittedAt: new Date(),
+    };
+    await session.save();
+
+    if (session.mentorId) {
+      const mentor = await User.findById(session.mentorId);
+      if (mentor) {
+        const prev = mentor.feedbackCount || 0;
+        mentor.rating = ((mentor.rating || 0) * prev + numRating) / (prev + 1);
+        mentor.feedbackCount = prev + 1;
+        mentor.successfulMatches = (mentor.successfulMatches || 0) + 1;
+        await mentor.save();
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 export default router;
