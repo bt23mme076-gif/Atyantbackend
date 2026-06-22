@@ -8,6 +8,7 @@ import atyantEngine from '../services/AtyantEngine.js';
 import aiService, { getQuestionEmbedding } from '../services/AIService.js';
 import { normalizeCollege } from '../utils/collegeNormalizer.js';
 import { sendMentorWelcomeEmail } from '../utils/emailService.js';
+import { generateSlug, validateSlug } from '../utils/slugGenerator.js';
 
 const router = express.Router();
 
@@ -66,6 +67,19 @@ router.post('/onboard', protect, async (req, res) => {
       const taken = await User.findOne({ username, _id: { $ne: user._id } }).lean();
       if (!taken) user.username = username;
     }
+    
+    // Generate slug from name if not already set
+    if (!user.slug) {
+      const mentorName = user.name || username;
+      if (mentorName) {
+        try {
+          user.slug = await generateSlug(mentorName);
+        } catch (e) {
+          console.warn('Failed to generate slug for mentor:', e.message);
+        }
+      }
+    }
+    
     user.education = [{
       institutionName: college || user.education?.[0]?.institutionName || '',
       institution: college || user.education?.[0]?.institution || '',
@@ -495,6 +509,97 @@ router.get('/:id/slots', async (req, res) => {
     res.json({ ok: true, slots: allFutureSlots, bookedSlots, date });
   } catch (err) {
     console.error('GET /mentor/:id/slots error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  GET /api/mentor/:slug
+//  Public endpoint to fetch mentor profile by slug (for public profile URLs)
+//  No authentication required - completely public
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:slug', async (req, res) => {
+  try {
+    const { slug } = req.params;
+    
+    if (!slug) {
+      return res.status(400).json({ ok: false, error: 'Slug is required' });
+    }
+    
+    // Find mentor by slug
+    const mentor = await User.findOne({ 
+      slug: slug.toLowerCase(),
+      role: 'mentor',
+      mentorListed: { $ne: false } // Only listed mentors
+    }).select(
+      'name username email profilePicture bio city role primaryDomain companyDomain ' +
+      'topCompanies specialTags expertise interests skills domainExperience ' +
+      'education linkedinProfile socialLinks isVerified price servicesOffered ' +
+      'yearsOfExperience rating responseRate outcomeScore outcomeCount outcomeSuccessCount ' +
+      'profileViews totalChats feedbackScore totalAnswered helpfulCount feedbackCount'
+    ).lean();
+    
+    if (!mentor) {
+      return res.status(404).json({ ok: false, error: 'Mentor not found' });
+    }
+    
+    // Increment profile view count
+    await User.findByIdAndUpdate(mentor._id, { $inc: { profileViews: 1 } });
+    
+    res.json({ ok: true, mentor });
+  } catch (err) {
+    console.error('GET /mentor/:slug error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PUT /api/mentor/slug
+//  Allow mentor to customize their public profile slug
+//  Requires authentication
+// ─────────────────────────────────────────────────────────────────────────────
+router.put('/slug', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'mentor') {
+      return res.status(403).json({ ok: false, error: 'Only mentors can update their slug' });
+    }
+    
+    const { slug } = req.body;
+    
+    if (!slug) {
+      return res.status(400).json({ ok: false, error: 'Slug is required' });
+    }
+    
+    // Validate slug format
+    if (!validateSlug(slug)) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: 'Invalid slug format. Use lowercase letters, numbers, and hyphens only (3-100 characters)' 
+      });
+    }
+    
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ ok: false, error: 'User not found' });
+    }
+    
+    // Check if slug is already taken by another user
+    const existing = await User.findOne({ 
+      slug: slug.toLowerCase(),
+      _id: { $ne: user._id }
+    }).select('slug').lean();
+    
+    if (existing) {
+      return res.status(409).json({ ok: false, error: 'This slug is already taken' });
+    }
+    
+    // Update slug
+    user.slug = slug.toLowerCase();
+    await user.save();
+    
+    res.json({ ok: true, slug: user.slug });
+  } catch (err) {
+    console.error('PUT /mentor/slug error:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

@@ -27,6 +27,16 @@ const userSchema = new mongoose.Schema({
     maxlength: 50
   },
 
+  slug: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true,
+    lowercase: true,
+    minlength: 3,
+    maxlength: 100
+  },
+
   name: {
     type: String,
     trim: true,
