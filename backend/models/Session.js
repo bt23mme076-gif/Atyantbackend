@@ -42,6 +42,13 @@ const sessionSchema = new mongoose.Schema({
   payoutStatus:   { type: String, enum: ['na', 'pending', 'paid'], default: 'na', index: true },
   payoutBatchId:  { type: String, index: true },         // groups sessions settled together
   paidOutAt:      { type: Date },                        // when the mentor was actually credited
+
+  // ── Student review (submitted after session completes) ──
+  review: {
+    rating:      { type: Number, min: 1, max: 5, default: null },
+    comment:     { type: String, maxlength: 300, default: '' },
+    submittedAt: { type: Date, default: null },
+  },
 }, { timestamps: true });
 
 // Fast lookup for the month-end payout run.

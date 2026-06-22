@@ -64,20 +64,37 @@ class AIService {
     try {
       if (!this.apiKey) return rawData;
 
-      const systemPrompt = `You are a senior mentor at Atyant. Fix grammar and structure of mentor journeys.
+      const systemPrompt = `You are helping Indian engineering students write mentor profile cards for Atyant.
 STRICT RULES:
 1. DO NOT change the mentor's original story or specific details.
-2. KEEP the tone casual and "Senior-like".
+2. KEEP the tone casual, real, and "senior talking to junior" — not corporate.
 3. If they used Hinglish (Hindi + English), PRESERVE IT.
-4. AVOID robotic words like 'delve', 'unleash', 'comprehensive', or 'empower'.
-5. Return ONLY a valid JSON object, no markdown.`;
+4. AVOID robotic words like 'delve', 'unleash', 'comprehensive', 'empower', 'leverage'.
+5. Return ONLY a valid JSON object, no markdown, no extra text.
+
+CRITICAL — mainAnswer must be a student-facing headline:
+- Written as what a STUDENT would feel reading it, not what the mentor wants to say
+- Format: "[Starting struggle] → [What they achieved]" OR "How I [achieved X] from [background Y]"
+- Must be specific with real context (branch, college tier, company, exam, etc.)
+- Must feel like something a junior would think "this is exactly my situation"
+- NEVER describe Atyant or any platform — only the mentor's personal journey
+- BAD: "Atyant helps students find mentors" / "Mentorship is key to success"
+- BAD: "A comprehensive guide to placements"
+- GOOD: "Failed 3 campus drives, cracked Amazon off-campus in final year"
+- GOOD: "Metallurgy → IIM Calcutta research intern without CAT — exact playbook"
+- GOOD: "How I got a FAANG SDE role with zero CS background from NIT Raipur"`;
 
       const userPrompt = `/no_think
-Rewrite this mentor's raw journey into a clean, structured answer card.
-Expand each section into proper sentences (don't just copy the raw text into every field).
-Return ONLY a JSON object with these keys:
-mainAnswer (a 1-line takeaway), situation, firstAttempt, keyMistakes (array of strings),
-whatWorked, actionableSteps (array of {step, description}), timeline, differentApproach, additionalNotes.
+Rewrite this mentor's raw journey into a structured answer card a junior student would find genuinely useful.
+Expand each section into proper sentences. Don't copy the same text into every field.
+Return ONLY a JSON object with these exact keys:
+- mainAnswer: student-facing headline (see rules above — most important field)
+- situation: what was the mentor's actual starting point and challenge
+- whatWorked: the 2-3 things that actually moved the needle
+- keyMistakes: array of strings — real mistakes, not generic advice
+- actionableSteps: array of {step, description} — concrete steps a junior can follow
+- timeline: how long the whole journey took (e.g. "8 months", "Final year")
+- differentApproach: what they'd do differently if starting today
 
 RAW DATA: ${JSON.stringify(rawData)}`;
 

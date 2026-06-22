@@ -80,7 +80,7 @@ router.post('/match', optionalAuth, async (req, res) => {
     const ids = (clarity.mentors || []).map(m => m._id);
     const display = ids.length
       ? await User.find({ _id: { $in: ids } })
-          .select('name username profilePicture yearsOfExperience')
+          .select('name username profilePicture yearsOfExperience primaryDomain companyDomain linkedinProfile successfulMatches rating isVerified')
           .lean()
       : [];
     const dmap = new Map(display.map(d => [String(d._id), d]));
@@ -106,10 +106,14 @@ router.post('/match', optionalAuth, async (req, res) => {
         story: m.bio || 'Walked a similar path and now mentors students on Atyant.',
         outcome: company ? `${role} @ ${company}` : 'Active mentor on Atyant',
         tags: buildTags(m, ctx),
-        studentsHelped: String(m.successfulMatches || 0),
-        rating: m.rating ? `${m.rating.toFixed(1)}★` : '4.8★',
+        primaryDomain: m.primaryDomain || d.primaryDomain || null,
+        companyDomain: d.companyDomain || null,
+        linkedinProfile: d.linkedinProfile || null,
+        studentsHelped: String(m.successfulMatches || d.successfulMatches || 0),
+        rating: (m.rating || d.rating) ? `${(m.rating || d.rating).toFixed(1)}★` : '4.8★',
         timeline: d.yearsOfExperience ? `${d.yearsOfExperience} yrs exp` : 'Active',
         profilePicture: d.profilePicture || null,
+        isVerified: d.isVerified || false,
       };
     });
 
