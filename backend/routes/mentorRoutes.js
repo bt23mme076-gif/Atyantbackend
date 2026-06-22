@@ -8,11 +8,8 @@ import atyantEngine from '../services/AtyantEngine.js';
 import aiService, { getQuestionEmbedding } from '../services/AIService.js';
 import { normalizeCollege } from '../utils/collegeNormalizer.js';
 import { sendMentorWelcomeEmail } from '../utils/emailService.js';
-<<<<<<< HEAD
 import { generateSlug, validateSlug } from '../utils/slugGenerator.js';
-=======
 import { extractLinkedInProfile } from '../services/LinkedInService.js';
->>>>>>> ea342a5123cd022947f7103cd52f2697139045ff
 
 const router = express.Router();
 
