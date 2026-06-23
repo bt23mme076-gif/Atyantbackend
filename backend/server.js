@@ -7,22 +7,18 @@ dns.setServers(['8.8.8.8', '8.8.4.4']);
 // late; `import 'dotenv/config'` loads it as a side-effect before the imports below.
 import 'dotenv/config';
 
-// ─── Boot diagnostic: which Google Meet account is loaded? ───
-console.log('🔑 GOOGLE_MEET_EMAIL loaded as:', process.env.GOOGLE_MEET_EMAIL);
-console.log('🔑 GOOGLE_MEET_CLIENT_ID:', (process.env.GOOGLE_MEET_CLIENT_ID || '').slice(0, 20) + '…');
-
 // ─── Fail fast on a missing/insecure JWT secret ──────────────────────────────
 // Tokens are SIGNED and VERIFIED with process.env.JWT_SECRET. If it's unset (or
 // left as the old placeholder), every authenticated request 401s even though
 // login appears to succeed — exactly the "works locally, fails in prod" trap.
 // Refuse to boot so the misconfiguration is caught at deploy time, not by users.
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'your_jwt_secret') {
-  console.error('❌ FATAL: JWT_SECRET is missing or set to the insecure default. ' +
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+  console.error('❌ FATAL: JWT_SECRET is missing or too short (min 32 chars). ' +
     'Set a strong, unique JWT_SECRET in this environment (it must match across all ' +
     'services that issue or verify auth tokens). Refusing to start.');
   process.exit(1);
 }
-console.log('🔐 JWT_SECRET loaded:', `${process.env.JWT_SECRET.length} chars`);
+console.log('✅ JWT_SECRET entropy check passed.');
 
 import express from 'express';
 import http from 'http';
@@ -268,8 +264,8 @@ app.use(errorHandler);
 app.get('/api/stats/college', async (req, res) => {
   try {
     const { name } = req.query;
-    if (!name || name.trim().length < 2) {
-      return res.status(400).json({ ok: false, error: 'College name required' });
+    if (!name || name.trim().length < 2 || name.trim().length > 100) {
+      return res.status(400).json({ ok: false, error: 'College name must be 2–100 characters' });
     }
 
     const { normalizeCollege, buildCollegeRegex } = await import('./utils/collegeNormalizer.js');
@@ -315,7 +311,6 @@ app.get('/api/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    memory: process.memoryUsage(),
     connections: io?.engine?.clientsCount || 0
   });
 });
