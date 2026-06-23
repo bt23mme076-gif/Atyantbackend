@@ -284,7 +284,13 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
 
     const signature = req.headers['x-razorpay-signature'];
     const digest = crypto.createHmac('sha256', secret).update(req.body).digest('hex');
-    if (digest !== signature) {
+    let signatureValid = false;
+    try {
+      signatureValid = crypto.timingSafeEqual(Buffer.from(digest, 'hex'), Buffer.from(signature || '', 'hex'));
+    } catch {
+      signatureValid = false; // length mismatch / malformed header
+    }
+    if (!signatureValid) {
       console.error('❌ Invalid Razorpay webhook signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }
