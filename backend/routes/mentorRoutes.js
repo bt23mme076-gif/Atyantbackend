@@ -550,12 +550,12 @@ router.get('/:slug', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Slug is required' });
     }
     
-    // Find mentor by slug first, then fall back to username match
+    // Find mentor by slug, then case-insensitive username fallback
     const query = slug.toLowerCase();
     const mentor = await User.findOne({
       $or: [
         { slug: query },
-        { username: query },
+        { username: { $regex: new RegExp(`^${query}$`, 'i') } },
       ],
       role: 'mentor',
       mentorListed: { $ne: false } // Only listed mentors
