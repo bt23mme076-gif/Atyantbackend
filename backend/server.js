@@ -7,22 +7,18 @@ dns.setServers(['8.8.8.8', '8.8.4.4']);
 // late; `import 'dotenv/config'` loads it as a side-effect before the imports below.
 import 'dotenv/config';
 
-// ─── Boot diagnostic: which Google Meet account is loaded? ───
-console.log('🔑 GOOGLE_MEET_EMAIL loaded as:', process.env.GOOGLE_MEET_EMAIL);
-console.log('🔑 GOOGLE_MEET_CLIENT_ID:', (process.env.GOOGLE_MEET_CLIENT_ID || '').slice(0, 20) + '…');
-
 // ─── Fail fast on a missing/insecure JWT secret ──────────────────────────────
 // Tokens are SIGNED and VERIFIED with process.env.JWT_SECRET. If it's unset (or
 // left as the old placeholder), every authenticated request 401s even though
 // login appears to succeed — exactly the "works locally, fails in prod" trap.
 // Refuse to boot so the misconfiguration is caught at deploy time, not by users.
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'your_jwt_secret') {
-  console.error('❌ FATAL: JWT_SECRET is missing or set to the insecure default. ' +
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+  console.error('❌ FATAL: JWT_SECRET is missing or too short (min 32 chars). ' +
     'Set a strong, unique JWT_SECRET in this environment (it must match across all ' +
     'services that issue or verify auth tokens). Refusing to start.');
   process.exit(1);
 }
-console.log('🔐 JWT_SECRET loaded:', `${process.env.JWT_SECRET.length} chars`);
+console.log('✅ JWT_SECRET entropy check passed.');
 
 import express from 'express';
 import http from 'http';
@@ -62,7 +58,6 @@ import User from './models/User.js';
 import { moderator } from './utils/ContentModerator.js';
 import { globalRateLimit } from './middleware/globalRateLimiter.js';
 import { sendAutoReply } from './controllers/messageController.js';
-import { getChatEntitlement } from './utils/chatEntitlement.js';
 import ReminderCron from './services/ReminderCron.js';
 
 // ─── Passport Configuration ────────────────────────────────────────────────
@@ -269,8 +264,8 @@ app.use(errorHandler);
 app.get('/api/stats/college', async (req, res) => {
   try {
     const { name } = req.query;
-    if (!name || name.trim().length < 2) {
-      return res.status(400).json({ ok: false, error: 'College name required' });
+    if (!name || name.trim().length < 2 || name.trim().length > 100) {
+      return res.status(400).json({ ok: false, error: 'College name must be 2–100 characters' });
     }
 
     const { normalizeCollege, buildCollegeRegex } = await import('./utils/collegeNormalizer.js');
@@ -316,7 +311,6 @@ app.get('/api/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    memory: process.memoryUsage(),
     connections: io?.engine?.clientsCount || 0
   });
 });
@@ -460,45 +454,22 @@ io.use((socket, next) => {
   }
 });
 
-// Expose io to REST routes (e.g. payment kickoff emits a live chat message).
-app.set('io', io);
-
 // In-memory maps (per process)
 const activeUsers = new Map();
-const userSockets = new Map();   // userId → Set<socketId> (multi-tab safe)
+const userSockets = new Map();
 const pendingNotifications = new Map();
-
-// Currently-online userIds (derived from userSockets). Used for presence.
-const onlineUserIds = () => Array.from(userSockets.keys());
 
 io.on('connection', socket => {
   let currentUserId = null;
 
-  socket.on('join_user_room', () => {
+  socket.on('join_user_room', userId => {
     // Ignore client-supplied userId and use verified JWT identity
     const socketUserId = socket.user?.userId;
     if (!socketUserId) return socket.emit('auth_error', { error: 'Not authenticated' });
-    currentUserId = String(socketUserId);
+    currentUserId = socketUserId;
     socket.join(currentUserId);
-
-    // Track every socket (tab) for this user so presence is accurate with
-    // multiple tabs and reconnects don't flap online→offline.
-    const wasOffline = !userSockets.has(currentUserId);
-    if (wasOffline) userSockets.set(currentUserId, new Set());
-    userSockets.get(currentUserId).add(socket.id);
+    userSockets.set(currentUserId, socket.id);
     if (!activeUsers.has(currentUserId)) activeUsers.set(currentUserId, new Set());
-
-    // Tell this socket who is currently online…
-    socket.emit('presence_snapshot', { online: onlineUserIds() });
-    // …and, if this user just came online, tell everyone else.
-    if (wasOffline) io.emit('presence_update', { userId: currentUserId, online: true });
-  });
-
-  // Client asks "which of these partners are online right now?"
-  socket.on('get_presence', (ids) => {
-    const list = Array.isArray(ids) ? ids.map(String) : [];
-    const online = list.filter(id => userSockets.has(id));
-    socket.emit('presence_snapshot', { online });
   });
 
   socket.on('enter_chat', ({ partnerId }) => {
@@ -517,16 +488,8 @@ io.on('connection', socket => {
 
   socket.on('disconnect', () => {
     if (!currentUserId) return;
-    const set = userSockets.get(currentUserId);
-    if (set) {
-      set.delete(socket.id);
-      // Only mark offline once the user's LAST tab disconnects.
-      if (set.size === 0) {
-        userSockets.delete(currentUserId);
-        activeUsers.delete(currentUserId);
-        io.emit('presence_update', { userId: currentUserId, online: false });
-      }
-    }
+    userSockets.delete(currentUserId);
+    activeUsers.delete(currentUserId);
   });
 
   socket.on('private_message', async data => {
@@ -557,20 +520,8 @@ io.on('connection', socket => {
       if (receiver.role === 'mentor' && receiver.chatDisabled) {
         return socket.emit('message_error', { error: 'Mentor not accepting messages' });
       }
-
-      // ── CHAT ENTITLEMENT (server-side gate; can't be bypassed from the client) ──
-      // A student may only message a mentor they hold an ACTIVE Text Q&A purchase
-      // with (purchase → end of the booked day). Mentors replying are never gated.
-      if (sender.role === 'user' && receiver.role === 'mentor') {
-        const ent = await getChatEntitlement(sender._id, receiver._id);
-        if (!ent.allowed) {
-          return socket.emit('message_error', {
-            success: false,
-            error: 'Book a session to unlock chat.',
-            code: 'NO_ENTITLEMENT',
-            mentorId: String(receiver._id),
-          });
-        }
+      if (sender.role === 'user' && (sender.messageCredits || 0) <= 0) {
+        return socket.emit('insufficient_credits', { message: 'Your free message limit is over.' });
       }
 
       // Save message
@@ -581,6 +532,12 @@ io.on('connection', socket => {
         status: 'sent',
         seen: false
       });
+
+      // Deduct credit (non-blocking)
+      if (sender.role === 'user') {
+        User.findByIdAndUpdate(sender._id, { $inc: { messageCredits: -1 } })
+          .catch(err => console.error('Credit deduct failed:', err.message));
+      }
 
       // First-message totalChats increment
       const msgCount = await Message.countDocuments({
@@ -766,4 +723,3 @@ server.listen(PORT, () => {
 
 export default server;
 // Trigger restart
-

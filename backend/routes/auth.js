@@ -1,13 +1,24 @@
 // backend/routes/auth.js
 import express from 'express';
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 import { OAuth2Client } from 'google-auth-library';
 import nodemailer from 'nodemailer';
 import User from '../models/User.js';
 import passport from 'passport';
 import { protect } from '../middleware/authMiddleware.js';
 import { sendUserWelcomeEmail, sendMentorWelcomeEmail, sendPasswordOTPEmail } from '../utils/emailService.js';
+
+// Dedicated rate limiter for password-reset flow (5 requests per 15 min per IP)
+const passwordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many password reset attempts. Please try again in 15 minutes.' },
+});
 
 
 // Fire-and-forget welcome email — never blocks or breaks signup if email fails.
@@ -174,21 +185,11 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    // ✅ GENERATE TOKEN WITH PROFILE PICTURE
     const token = jwt.sign(
-      {
-        userId: user._id,
-        role: user.role,
-        username: user.username,        // ✅ ADD
-        name: user.name,                // ✅ ADD
-        email: user.email,              // ✅ ADD
-        profilePicture: user.profilePicture || null, // ✅ ADD
-      },
+      { userId: user._id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
-
-    console.log('✅ Login token generated with profilePicture:', user.profilePicture);
 
     const requiresCalendarSetup = user.role === 'mentor' && !user.calendarConnected;
 
@@ -280,7 +281,7 @@ router.post('/google-login', async (req, res) => {
   }
 });
 
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', passwordResetLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (
@@ -301,7 +302,7 @@ router.post('/forgot-password', async (req, res) => {
       });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 1000000).toString();
 
     user.resetOTP = otp;
     user.resetOTPExpires = Date.now() + 10 * 60 * 1000;
@@ -320,7 +321,7 @@ router.post('/forgot-password', async (req, res) => {
   }
 });
 
-router.post('/verify-reset-code', async (req, res) => {
+router.post('/verify-reset-code', passwordResetLimiter, async (req, res) => {
   try {
     const { email, code } = req.body;
     if (
@@ -351,7 +352,7 @@ router.post('/verify-reset-code', async (req, res) => {
   }
 });
 
-router.post('/reset-password', async (req, res) => {
+router.post('/reset-password', passwordResetLimiter, async (req, res) => {
   try {
     const { email, code, newPassword } = req.body;
     if (
@@ -410,16 +411,8 @@ router.get('/google/callback',
   }),
   (req, res) => {
     try {
-      // Generate JWT token for the authenticated user
       const token = jwt.sign(
-        {
-          userId: req.user._id,
-          role: req.user.role,
-          username: req.user.username,
-          name: req.user.name,
-          email: req.user.email,
-          profilePicture: req.user.profilePicture || req.user.picture || null,
-        },
+        { userId: req.user._id, role: req.user.role },
         process.env.JWT_SECRET,
         { expiresIn: '7d' }
       );
