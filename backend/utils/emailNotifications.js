@@ -13,7 +13,7 @@ if (!resend) {
   console.log('✅ Resend email service ready');
 }
 
-const FROM    = 'Atyant <notification@atyant.in>';
+const FROM = 'Atyant <notification@atyant.in>';
 const APP_URL = process.env.FRONTEND_URL || 'https://www.atyant.in';
 
 // ─────────────────────────────────────────────
@@ -149,7 +149,7 @@ export const sendMeetingNotification = async (mentorEmail, userEmail, meetingDet
 // ─────────────────────────────────────────────
 //  SERVICE PURCHASE: notification to mentor and student
 // ─────────────────────────────────────────────
-export const sendServicePurchaseNotification = async (mentorEmail, mentorName, userEmail, userName, serviceName, sessionDetails = {}) => {
+export const sendServicePurchaseNotification = async (mentorEmail, mentorName, mentorId, userEmail, userName, userId, serviceName, sessionDetails = {}) => {
   const mentorHtml = `
 <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
   <h1 style="color:#6366f1;text-align:center;margin:0 0 30px">💰 New Service Purchase</h1>
@@ -219,3 +219,103 @@ export const sendServicePurchaseNotification = async (mentorEmail, mentorName, u
 
   return { mentorResult, studentResult };
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  TEXT Q&A: a student bought a chat plan → tell the mentor & deep-link them
+//  straight into that student's chat thread (no Google Meet for Text Q&A).
+// ─────────────────────────────────────────────────────────────────────────────
+export const sendMentorChatRequestNotification = async (mentorEmail, mentorName, studentName, chatUrl) => {
+  return sendMentorChatRequestNotificationWithDetails(mentorEmail, mentorName, studentName, chatUrl);
+};
+
+export const sendMentorChatRequestNotificationWithDetails = async (mentorEmail, mentorName, studentName, chatUrl, sessionDetails = {}) => {
+  const when = sessionDetails.scheduledAt
+    ? new Date(sessionDetails.scheduledAt).toLocaleString('en-IN', { dateStyle: 'full', timeStyle: 'short', timeZone: 'Asia/Kolkata' })
+    : null;
+  const html = `
+<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
+  <h1 style="color:#6366f1;text-align:center;margin:0 0 30px">💬 New Chat Request</h1>
+  <div style="background:#ede9fe;padding:30px;border-radius:10px;border-left:4px solid #6366f1">
+    <h2 style="color:#1f2937;margin-top:0">A student wants to chat with you</h2>
+    <p style="color:#6b7280;line-height:1.6">Hi ${mentorName},</p>
+    <p style="color:#6b7280;line-height:1.6"><strong>${studentName}</strong> just purchased a <strong>Text Q&amp;A</strong> session and wants to ask you their doubts over chat.</p>
+    ${when || sessionDetails.amount ? `
+    <div style="background:#fff;padding:20px;border-radius:8px;margin:20px 0;border:2px solid #6366f1">
+      <h3 style="color:#6366f1;margin-top:0;font-size:14px;text-transform:uppercase;letter-spacing:1px">Purchase Details</h3>
+      ${when ? `<p style="color:#1f2937;font-size:15px;line-height:1.6;margin:0 0 6px"><strong>When:</strong> ${when} (IST)</p>` : ''}
+      ${sessionDetails.amount ? `<p style="color:#1f2937;font-size:15px;line-height:1.6;margin:0 0 6px"><strong>Amount paid:</strong> ₹${sessionDetails.amount}</p>` : ''}
+      ${sessionDetails.topic ? `<p style="color:#1f2937;font-size:15px;line-height:1.6;margin:0"><strong>Topic:</strong> ${sessionDetails.topic}</p>` : ''}
+    </div>
+    ` : ''}
+    <div style="background:#fff;padding:20px;border-radius:8px;margin:20px 0;border:2px solid #6366f1">
+      <p style="color:#1f2937;font-size:15px;line-height:1.6;margin:0">Open the conversation, answer their questions, and mark it resolved once you're done. You can reply on Atyant any time before the session day ends.</p>
+    </div>
+    <div style="text-align:center;margin:30px 0">
+      <a href="${chatUrl}"
+         style="background:#6366f1;color:#fff;padding:14px 36px;text-decoration:none;border-radius:8px;font-weight:700;display:inline-block">
+        💬 Open Chat
+      </a>
+    </div>
+  </div>
+  <p style="text-align:center;color:#9ca3af;font-size:12px;margin-top:30px">© ${new Date().getFullYear()} Atyant. All rights reserved.</p>
+</div>`;
+
+  const result = await sendEmail({
+    to: mentorEmail,
+    subject: `💬 ${studentName} wants to chat with you`,
+    html
+  });
+
+  console.log("CHAT EMAIL RESULT =", result);
+  console.log("mentorEmail =", mentorEmail);
+
+  if (result.success) {
+    console.log(`✅ Chat-request notification sent → ${mentorEmail}`);
+  } else {
+    console.error("❌ Chat email failed:", result.error);
+  }
+
+  return result;
+};
+
+export const sendTextQaPurchaseNotification = async ({
+  studentEmail,
+  studentName,
+  mentorName,
+  openChatUrl,
+  sessionDetails = {},
+}) => {
+  const when = sessionDetails.scheduledAt
+    ? new Date(sessionDetails.scheduledAt).toLocaleString('en-IN', { dateStyle: 'full', timeStyle: 'short', timeZone: 'Asia/Kolkata' })
+    : null;
+
+  const html = `
+<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
+  <h1 style="color:#10b981;text-align:center;margin:0 0 30px">✨ Text Q&amp;A Purchased</h1>
+  <div style="background:#f0fdf4;padding:30px;border-radius:10px;border-left:4px solid #10b981">
+    <h2 style="color:#1f2937;margin-top:0">Your chat is ready</h2>
+    <p style="color:#6b7280;line-height:1.6">Hi ${studentName},</p>
+    <p style="color:#6b7280;line-height:1.6">Your <strong>Text Q&amp;A</strong> purchase with <strong>${mentorName}</strong> is confirmed. You can open the conversation and start asking your questions right away.</p>
+    <div style="background:#fff;padding:20px;border-radius:8px;margin:20px 0;border:2px solid #10b981">
+      <h3 style="color:#10b981;margin-top:0;font-size:14px;text-transform:uppercase;letter-spacing:1px">Purchase Details</h3>
+      ${when ? `<p style="color:#1f2937;font-size:15px;line-height:1.6;margin:0 0 6px"><strong>When:</strong> ${when} (IST)</p>` : ''}
+      ${sessionDetails.amount ? `<p style="color:#1f2937;font-size:15px;line-height:1.6;margin:0 0 6px"><strong>Amount paid:</strong> ₹${sessionDetails.amount}</p>` : ''}
+      ${sessionDetails.topic ? `<p style="color:#1f2937;font-size:15px;line-height:1.6;margin:0"><strong>Topic:</strong> ${sessionDetails.topic}</p>` : ''}
+    </div>
+    <div style="text-align:center;margin:30px 0">
+      <a href="${openChatUrl}"
+         style="background:#10b981;color:#fff;padding:14px 36px;text-decoration:none;border-radius:8px;font-weight:700;display:inline-block">
+        Open Chat
+      </a>
+    </div>
+  </div>
+  <p style="text-align:center;color:#9ca3af;font-size:12px;margin-top:30px">© ${new Date().getFullYear()} Atyant. All rights reserved.</p>
+</div>`;
+
+  return sendEmail({
+    to: studentEmail,
+    subject: '✨ Your Text Q&A purchase is confirmed',
+    html,
+  });
+};
+

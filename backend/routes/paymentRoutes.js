@@ -6,9 +6,11 @@ import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import liveKitService from '../services/LiveKitService.js';
 import { sendSessionConfirmationEmails } from '../utils/emailService.js';
-import { sendServicePurchaseNotification } from '../utils/emailNotifications.js';
+import { sendMentorChatRequestNotificationWithDetails, sendTextQaPurchaseNotification } from '../utils/emailNotifications.js';
 import { getService } from '../config/serviceCatalog.js';
-import { meetLinkFor } from '../utils/frontendUrl.js';
+import { meetLinkFor, chatLinkFor } from '../utils/frontendUrl.js';
+import { sendChatKickoff } from '../controllers/messageController.js';
+import { CHAT_SERVICE_ID } from '../utils/chatEntitlement.js';
 
 const router = express.Router();
 
@@ -50,27 +52,189 @@ const parseSchedule = (date, time) => {
   return isNaN(d.getTime()) ? null : d;
 };
 
-// Create LiveKit room + email both parties. Used by free and paid paths.
-async function finalizeSession(session, student, mentor) {
-  try {
-    if (liveKitService.isConfigured()) {
-      const roomName = await liveKitService.createRoom(session._id);
-      session.livekitRoomName = roomName;
-      session.meetingLink = meetLinkFor(session._id);
-      await session.save();
-      console.log(`✅ LiveKit room created: ${roomName}`);
+// ─────────────────────────────────────────────────────────────────────────────
+//  finalizeSession — called after payment is confirmed.
+//
+//  Uses ATOMIC DB updates ($set with $exists:false guards) to guarantee that
+//  each email/kickoff fires EXACTLY ONCE, even when /verify and the Razorpay
+//  webhook both call this function concurrently.
+//
+//  • Text Q&A  → chat kickoff message + mentor chat-request email + student
+//                purchase email. NO Google Meet / LiveKit. NO session-
+//                confirmation emails.
+//  • Everything else → LiveKit room + session-confirmation emails to both.
+// ─────────────────────────────────────────────────────────────────────────────
+async function finalizeSession(sessionId, student, mentor, io = null) {
+  console.log('===== FINALIZE SESSION =====', sessionId);
+
+  // Atomically claim the "kickoff" work so only one concurrent caller does it.
+  // findOneAndUpdate returns null if the flag was already true → skip.
+  const sessionForKickoff = await Session.findOneAndUpdate(
+    { _id: sessionId, serviceId: CHAT_SERVICE_ID, chatKickoffSent: { $ne: true } },
+    { $set: { chatKickoffSent: true } },
+    { new: true }
+  );
+
+  if (sessionForKickoff) {
+    // We won the race — send the kickoff message.
+    try {
+      await sendChatKickoff(io, sessionForKickoff.userId, sessionForKickoff.mentorId, {
+        username: mentor?.name || mentor?.username,
+      });
+    } catch (err) {
+      console.error('Chat kickoff failed (non-fatal):', err.message);
+      // Roll back the flag so it can be retried.
+      await Session.findByIdAndUpdate(sessionId, { $set: { chatKickoffSent: false } });
     }
-  } catch (err) {
-    console.error('LiveKit room creation failed (non-fatal):', err.message);
   }
 
-  // Confirmation emails to both (non-blocking)
-  sendSessionConfirmationEmails({
-    studentEmail: student?.email, studentName: student?.name || student?.username,
-    mentorEmail:  mentor?.email,  mentorName:  mentor?.name  || mentor?.username,
-    scheduledAt: session.scheduledAt, durationMin: session.durationMin,
-    topic: session.topic, meetLink: session.meetingLink, amount: session.amount,
-  }).catch(err => console.error('Session emails failed (non-fatal):', err.message));
+  // ── Mentor chat-request email (Text Q&A only) ──
+  const sessionForMentorEmail = await Session.findOneAndUpdate(
+    { _id: sessionId, serviceId: CHAT_SERVICE_ID, chatMentorEmailSent: { $ne: true } },
+    { $set: { chatMentorEmailSent: true } },
+    { new: true }
+  );
+
+  if (sessionForMentorEmail) {
+    try {
+      const mentorChatUrl = chatLinkFor(sessionForMentorEmail.userId);
+      const result = await sendMentorChatRequestNotificationWithDetails(
+        mentor?.email,
+        mentor?.name || mentor?.username,
+        student?.name || student?.username || 'A student',
+        mentorChatUrl,
+        {
+          scheduledAt: sessionForMentorEmail.scheduledAt,
+          topic: sessionForMentorEmail.topic,
+          amount: sessionForMentorEmail.amount,
+        },
+      );
+      if (!result?.success) {
+        // Roll back so it can be retried.
+        await Session.findByIdAndUpdate(sessionId, { $set: { chatMentorEmailSent: false } });
+      }
+    } catch (err) {
+      console.error('Mentor chat-request email failed (non-fatal):', err.message);
+      await Session.findByIdAndUpdate(sessionId, { $set: { chatMentorEmailSent: false } });
+    }
+  }
+
+  // ── Student purchase-confirmation email (Text Q&A only) ──
+  const sessionForStudentEmail = await Session.findOneAndUpdate(
+    { _id: sessionId, serviceId: CHAT_SERVICE_ID, chatStudentEmailSent: { $ne: true } },
+    { $set: { chatStudentEmailSent: true } },
+    { new: true }
+  );
+
+  if (sessionForStudentEmail) {
+    try {
+      const studentChatUrl = chatLinkFor(sessionForStudentEmail.mentorId);
+      const result = await sendTextQaPurchaseNotification({
+        studentEmail: student?.email,
+        studentName: student?.name || student?.username || 'there',
+        mentorName: mentor?.name || mentor?.username || 'your mentor',
+        openChatUrl: studentChatUrl,
+        sessionDetails: {
+          scheduledAt: sessionForStudentEmail.scheduledAt,
+          topic: sessionForStudentEmail.topic,
+          amount: sessionForStudentEmail.amount,
+        },
+      });
+      if (!result?.success) {
+        await Session.findByIdAndUpdate(sessionId, { $set: { chatStudentEmailSent: false } });
+      }
+    } catch (err) {
+      console.error('Student chat purchase email failed (non-fatal):', err.message);
+      await Session.findByIdAndUpdate(sessionId, { $set: { chatStudentEmailSent: false } });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  NON-CHAT SERVICES (audio call, video call, resume review, etc.)
+  //  Only runs if the session is NOT a Text Q&A.
+  //  The atomic findOneAndUpdate above already returned null for non-chat
+  //  sessions (serviceId !== CHAT_SERVICE_ID), so we check the session type
+  //  here before doing LiveKit / confirmation emails.
+  // ─────────────────────────────────────────────────────────────────────────
+  const session = await Session.findById(sessionId).lean();
+  if (!session) {
+    console.error('finalizeSession: session not found:', sessionId);
+    return;
+  }
+
+  // ⛔ Text Q&A is fully handled above — never create a meet link or send
+  //    session-confirmation emails for it.
+  if (session.serviceId === CHAT_SERVICE_ID) {
+    console.log('✅ Text Q&A finalize complete — chat-only, no meet link.');
+    return;
+  }
+
+  // ── LiveKit room (non-chat) ──
+  const sessionForRoom = await Session.findOneAndUpdate(
+    { _id: sessionId, meetingLink: { $exists: false } },
+    { $set: { meetingLink: '__creating__' } }, // placeholder to prevent double-create
+    { new: false }
+  );
+
+  if (sessionForRoom && liveKitService.isConfigured()) {
+    try {
+      const roomName = await liveKitService.createRoom(sessionId);
+      const meetLink = meetLinkFor(sessionId);
+      await Session.findByIdAndUpdate(sessionId, {
+        $set: { livekitRoomName: roomName, meetingLink: meetLink },
+      });
+      console.log(`✅ LiveKit room created: ${roomName}`);
+    } catch (err) {
+      console.error('LiveKit room creation failed (non-fatal):', err.message);
+      // Clear placeholder so next call can retry.
+      await Session.findByIdAndUpdate(sessionId, { $unset: { meetingLink: '' } });
+    }
+  }
+
+  // ── Session-confirmation emails to both parties (non-chat) ──
+  const sessionForConfirmEmail = await Session.findOneAndUpdate(
+    { _id: sessionId, confirmationEmailsSent: { $ne: true } },
+    { $set: { confirmationEmailsSent: true } },
+    { new: true }
+  );
+
+  if (sessionForConfirmEmail) {
+    // Get the freshest meetingLink (might have just been written above).
+    const fresh = await Session.findById(sessionId).lean();
+    const meetLink = fresh?.meetingLink && fresh.meetingLink !== '__creating__'
+      ? fresh.meetingLink
+      : null;
+
+    sendSessionConfirmationEmails({
+      studentEmail: student?.email, studentName: student?.name || student?.username,
+      mentorEmail: mentor?.email, mentorName: mentor?.name || mentor?.username,
+      scheduledAt: session.scheduledAt, durationMin: session.durationMin,
+      topic: session.topic, meetLink, amount: session.amount,
+    }).catch(err => {
+      console.error('Session confirmation emails failed (non-fatal):', err.message);
+      // Roll back so it can be retried.
+      Session.findByIdAndUpdate(sessionId, { $set: { confirmationEmailsSent: false } })
+        .catch(() => {});
+    });
+  }
+}
+
+// ─────────────────────────────────────────────
+//  Server-side coupon catalog — must match frontend VALID_COUPONS
+// ─────────────────────────────────────────────
+const COUPONS = {
+  FIRST50: { type: 'fixed', value: 50, desc: '₹50 off for first-time students' },
+  CAREER20: { type: 'percent', value: 20, desc: '20% off on any session' },
+  SUMMER15: { type: 'percent', value: 15, desc: 'Summer special discount' },
+};
+
+function applyCoupon(price, code) {
+  const c = COUPONS[String(code || '').toUpperCase()];
+  if (!c) return { discount: 0, valid: false };
+  const discount = c.type === 'fixed'
+    ? Math.min(c.value, price)
+    : Math.round(price * c.value / 100);
+  return { discount, valid: true, desc: c.desc };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -78,22 +242,6 @@ async function finalizeSession(session, student, mentor) {
 //  Body: { mentorId, date, time, topic?, durationMin? }
 //  Free mentor (price 0) → confirms immediately. Paid → returns Razorpay order.
 // ─────────────────────────────────────────────────────────────
-// Server-side coupon catalog — must match frontend VALID_COUPONS
-const COUPONS = {
-  FIRST50:   { type: 'fixed',   value: 50,  desc: '₹50 off for first-time students' },
-  CAREER20:  { type: 'percent', value: 20,  desc: '20% off on any session' },
-  SUMMER15:  { type: 'percent', value: 15,  desc: 'Summer special discount' },
-};
-
-function applyCoupon(price, code) {
-  const c = COUPONS[String(code || '').toUpperCase()];
-  if (!c) return { discount: 0, valid: false };
-  const discount = c.type === 'fixed'
-    ? Math.min(c.value, price)                        // cap fixed discount at price
-    : Math.round(price * c.value / 100);
-  return { discount, valid: true, desc: c.desc };
-}
-
 router.post('/order', protect, async (req, res) => {
   try {
     const { mentorId, date, time, topic, durationMin, serviceId, couponCode } = req.body;
@@ -119,13 +267,13 @@ router.post('/order', protect, async (req, res) => {
     }
 
     const mentorName = mentor.name || mentor.username || 'Your Mentor';
-    const baseAmount = service ? Math.max(0, service.price) : Math.max(0, Number(mentor.price) || 0); // rupees
-    const dur        = service ? service.durationMin : (Number(durationMin) || 30);
-    const sessTopic  = topic || service?.label || 'Career Guidance Session';
+    const baseAmount = service ? Math.max(0, service.price) : Math.max(0, Number(mentor.price) || 0);
+    const dur = service ? service.durationMin : (Number(durationMin) || 30);
+    const sessTopic = topic || service?.label || 'Career Guidance Session';
 
     // Apply coupon server-side
-    const coupon   = applyCoupon(baseAmount, couponCode);
-    const amount   = Math.max(0, baseAmount - coupon.discount);
+    const coupon = applyCoupon(baseAmount, couponCode);
+    const amount = Math.max(0, baseAmount - coupon.discount);
 
     // ── Free (or fully discounted) → confirm right away ──
     if (amount === 0) {
@@ -139,21 +287,7 @@ router.post('/order', protect, async (req, res) => {
         User.findById(req.user.userId).select('name username email refreshToken accessToken').lean(),
         User.findById(mentorId).select('name username email refreshToken accessToken').lean(),
       ]);
-      await finalizeSession(session, student, mentorFull);
-
-      // Send service purchase notification for free sessions as well
-      const serviceName = serviceId ? getService(serviceId)?.label || 'Session' : '1:1 Session';
-      await sendServicePurchaseNotification(
-        mentorFull.email,
-        mentorFull.name || mentorFull.username,
-        student.email,
-        student.name || student.username,
-        serviceName,
-        {
-          scheduledAt: session.scheduledAt,
-          topic: session.topic,
-        }
-      ).catch(err => console.error('Failed to send service purchase notification:', err));
+      await finalizeSession(session._id, student, mentorFull, req.app.get('io'));
 
       return res.json({ ok: true, free: true, session });
     }
@@ -162,7 +296,7 @@ router.post('/order', protect, async (req, res) => {
     if (!razorpay) return res.status(500).json({ ok: false, error: 'Payments not configured' });
 
     const order = await razorpay.orders.create({
-      amount: amount * 100,        // paise — already after coupon deduction
+      amount: amount * 100,
       currency: 'INR',
       receipt: `sess_${Date.now()}`,
       notes: {
@@ -185,7 +319,7 @@ router.post('/order', protect, async (req, res) => {
       free: false,
       keyId: RZP_KEY_ID,
       orderId: order.id,
-      amount: order.amount,       // paise (Razorpay checkout expects paise)
+      amount: order.amount,
       currency: order.currency,
       sessionId: session._id,
       mentorName,
@@ -205,6 +339,7 @@ router.post('/order', protect, async (req, res) => {
 //  Verifies signature → confirms session → Meet link + emails.
 // ─────────────────────────────────────────────────────────────
 router.post('/verify', protect, async (req, res) => {
+  console.log('🔥 VERIFY ROUTE HIT');
   try {
     const { sessionId, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
     if (!sessionId || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
@@ -214,10 +349,19 @@ router.post('/verify', protect, async (req, res) => {
     const session = await Session.findOne({
       _id: sessionId, userId: req.user.userId, razorpayOrderId: razorpay_order_id,
     });
+    console.log('Found session:', session?._id, '| serviceId:', session?.serviceId, '| paymentStatus:', session?.paymentStatus);
     if (!session) return res.status(404).json({ ok: false, error: 'Session/order not found' });
 
-    // Idempotent: already confirmed
+    const [student, mentor] = await Promise.all([
+      User.findById(session.userId).select('name username email refreshToken accessToken').lean(),
+      User.findById(session.mentorId).select('name username email refreshToken accessToken').lean(),
+    ]);
+
+    // If already paid (webhook beat us here), just run finalizeSession to catch
+    // anything still pending — atomic guards inside prevent double-sending.
     if (session.paymentStatus === 'paid') {
+      console.log('⚡ Already paid — running finalizeSession for any pending work');
+      await finalizeSession(session._id, student, mentor, req.app.get('io'));
       return res.json({ ok: true, alreadyConfirmed: true, session });
     }
 
@@ -239,33 +383,32 @@ router.post('/verify', protect, async (req, res) => {
       return res.status(502).json({ ok: false, error: 'Could not confirm payment with Razorpay' });
     }
 
-    session.paymentStatus = 'paid';
-    session.status = 'upcoming';
-    session.razorpayPaymentId = razorpay_payment_id;
-    applyMentorShare(session);            // queue the mentor's share for the monthly payout
-    await session.save();
-
-    const [student, mentor] = await Promise.all([
-      User.findById(session.userId).select('name username email refreshToken accessToken').lean(),
-      User.findById(session.mentorId).select('name username email refreshToken accessToken').lean(),
-    ]);
-    await finalizeSession(session, student, mentor);
-
-    // Send service purchase notification to both mentor and student
-    const serviceName = session.serviceId ? getService(session.serviceId)?.label || 'Session' : '1:1 Session';
-    await sendServicePurchaseNotification(
-      mentor.email,
-      mentor.name || mentor.username,
-      student.email,
-      student.name || student.username,
-      serviceName,
+    // Atomically mark as paid (only if not already paid — prevents double-processing
+    // if /verify and the webhook race here at the same time).
+    const updatedSession = await Session.findOneAndUpdate(
+      { _id: session._id, paymentStatus: { $ne: 'paid' } },
       {
-        scheduledAt: session.scheduledAt,
-        topic: session.topic,
-      }
-    ).catch(err => console.error('Failed to send service purchase notification:', err));
+        $set: {
+          paymentStatus: 'paid',
+          status: 'upcoming',
+          razorpayPaymentId: razorpay_payment_id,
+          platformFeePct: PLATFORM_FEE_PCT,
+          mentorShare: Math.round((session.amount || 0) * (100 - PLATFORM_FEE_PCT) / 100),
+          payoutStatus: session.amount > 0 ? 'pending' : 'na',
+        },
+      },
+      { new: true }
+    );
 
-    res.json({ ok: true, session });
+    if (!updatedSession) {
+      // Another process (webhook) already marked it paid — still finalize.
+      console.log('⚡ Race: session already marked paid by another process');
+    }
+
+    await finalizeSession(session._id, student, mentor, req.app.get('io'));
+    console.log('✅ FINALIZE SESSION FINISHED');
+
+    res.json({ ok: true, session: updatedSession || session });
   } catch (err) {
     console.error('POST /payments/verify error:', err);
     res.status(500).json({ ok: false, error: err.message });
@@ -278,6 +421,7 @@ router.post('/verify', protect, async (req, res) => {
 //  before /verify ran. Requires RAZORPAY_WEBHOOK_SECRET + raw body.
 // ─────────────────────────────────────────────────────────────
 router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  console.log('🌐 WEBHOOK HIT');
   try {
     const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
     if (!secret) return res.status(400).json({ error: 'Webhook secret not configured' });
@@ -293,34 +437,32 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
     const entity = body.payload?.payment?.entity;
 
     if (body.event === 'payment.captured' && entity) {
+      console.log('💰 PAYMENT CAPTURED EVENT');
       const session = await Session.findOne({ razorpayOrderId: entity.order_id });
-      if (session && session.paymentStatus !== 'paid') {
-        session.paymentStatus = 'paid';
-        session.status = 'upcoming';
-        session.razorpayPaymentId = entity.id;
-        applyMentorShare(session);        // queue the mentor's share for the monthly payout
-        await session.save();
-
+      if (session) {
         const [student, mentor] = await Promise.all([
           User.findById(session.userId).select('name username email refreshToken accessToken').lean(),
           User.findById(session.mentorId).select('name username email refreshToken accessToken').lean(),
         ]);
-        await finalizeSession(session, student, mentor);
 
-        // Send service purchase notification via webhook as well
-        const serviceName = session.serviceId ? getService(session.serviceId)?.label || 'Session' : '1:1 Session';
-        await sendServicePurchaseNotification(
-          mentor.email,
-          mentor.name || mentor.username,
-          student.email,
-          student.name || student.username,
-          serviceName,
+        // Atomically mark paid — no-op if /verify already did it.
+        await Session.findOneAndUpdate(
+          { _id: session._id, paymentStatus: { $ne: 'paid' } },
           {
-            scheduledAt: session.scheduledAt,
-            topic: session.topic,
+            $set: {
+              paymentStatus: 'paid',
+              status: 'upcoming',
+              razorpayPaymentId: entity.id,
+              platformFeePct: PLATFORM_FEE_PCT,
+              mentorShare: Math.round((session.amount || 0) * (100 - PLATFORM_FEE_PCT) / 100),
+              payoutStatus: session.amount > 0 ? 'pending' : 'na',
+            },
           }
-        ).catch(err => console.error('Failed to send service purchase notification via webhook:', err));
+        );
 
+        console.log('🚀 WEBHOOK CALLING FINALIZE SESSION');
+        await finalizeSession(session._id, student, mentor, req.app.get('io'));
+        console.log('✅ WEBHOOK FINALIZE COMPLETE');
         console.log(`✅ Webhook confirmed session ${session._id}`);
       }
     }
@@ -333,8 +475,7 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
 });
 
 // ─────────────────────────────────────────────────────────────
-//  GET /api/payments/mentor-earnings  — mentor's paid sessions + payout breakdown
-//  Shows NET (the mentor's share), split into what's still pending vs already paid.
+//  GET /api/payments/mentor-earnings
 // ─────────────────────────────────────────────────────────────
 router.get('/mentor-earnings', protect, async (req, res) => {
   try {
@@ -349,15 +490,15 @@ router.get('/mentor-earnings', protect, async (req, res) => {
 
     const shareOf = (s) => (s.mentorShare || 0);
     const pendingPayout = sessions.filter(s => s.payoutStatus === 'pending').reduce((sum, s) => sum + shareOf(s), 0);
-    const paidOut       = sessions.filter(s => s.payoutStatus === 'paid').reduce((sum, s) => sum + shareOf(s), 0);
+    const paidOut = sessions.filter(s => s.payoutStatus === 'paid').reduce((sum, s) => sum + shareOf(s), 0);
 
     res.json({
       ok: true,
       totalSessions: sessions.length,
-      grossCollected: sessions.reduce((sum, s) => sum + (s.amount || 0), 0), // what students paid
-      netEarnings: pendingPayout + paidOut,   // mentor's share across all paid sessions
-      pendingPayout,                          // owed, not yet credited
-      paidOut,                                // already credited
+      grossCollected: sessions.reduce((sum, s) => sum + (s.amount || 0), 0),
+      netEarnings: pendingPayout + paidOut,
+      pendingPayout,
+      paidOut,
       sessions,
     });
   } catch (err) {
@@ -368,10 +509,6 @@ router.get('/mentor-earnings', protect, async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 //  ADMIN — monthly payout run
-//
-//  GET  /api/payments/payouts/pending   — what we owe each mentor right now
-//  POST /api/payments/payouts/settle    — mark a mentor's pending sessions as paid
-//                                          Body: { mentorId, reference? }
 // ─────────────────────────────────────────────────────────────
 const requireAdmin = (req, res, next) => {
   if (req.user?.role !== 'admin') {
@@ -384,14 +521,16 @@ router.get('/payouts/pending', protect, requireAdmin, async (req, res) => {
   try {
     const rows = await Session.aggregate([
       { $match: { paymentStatus: 'paid', payoutStatus: 'pending', mentorShare: { $gt: 0 } } },
-      { $group: {
+      {
+        $group: {
           _id: '$mentorId',
           mentorName: { $first: '$mentorName' },
           sessions: { $sum: 1 },
           amountOwed: { $sum: '$mentorShare' },
           grossCollected: { $sum: '$amount' },
           oldest: { $min: '$scheduledAt' },
-      } },
+        }
+      },
       { $sort: { amountOwed: -1 } },
     ]);
 
@@ -419,7 +558,6 @@ router.post('/payouts/settle', protect, requireAdmin, async (req, res) => {
       { $set: { payoutStatus: 'paid', payoutBatchId: batchId, paidOutAt: new Date() } },
     );
 
-    // Re-read the just-settled total for confirmation.
     const settled = await Session.find({ mentorId, payoutBatchId: batchId }).select('mentorShare').lean();
     const amountPaid = settled.reduce((sum, s) => sum + (s.mentorShare || 0), 0);
 

@@ -62,6 +62,7 @@ import User from './models/User.js';
 import { moderator } from './utils/ContentModerator.js';
 import { globalRateLimit } from './middleware/globalRateLimiter.js';
 import { sendAutoReply } from './controllers/messageController.js';
+import { getChatEntitlement } from './utils/chatEntitlement.js';
 import ReminderCron from './services/ReminderCron.js';
 
 // ─── Passport Configuration ────────────────────────────────────────────────
@@ -459,22 +460,45 @@ io.use((socket, next) => {
   }
 });
 
+// Expose io to REST routes (e.g. payment kickoff emits a live chat message).
+app.set('io', io);
+
 // In-memory maps (per process)
 const activeUsers = new Map();
-const userSockets = new Map();
+const userSockets = new Map();   // userId → Set<socketId> (multi-tab safe)
 const pendingNotifications = new Map();
+
+// Currently-online userIds (derived from userSockets). Used for presence.
+const onlineUserIds = () => Array.from(userSockets.keys());
 
 io.on('connection', socket => {
   let currentUserId = null;
 
-  socket.on('join_user_room', userId => {
+  socket.on('join_user_room', () => {
     // Ignore client-supplied userId and use verified JWT identity
     const socketUserId = socket.user?.userId;
     if (!socketUserId) return socket.emit('auth_error', { error: 'Not authenticated' });
-    currentUserId = socketUserId;
+    currentUserId = String(socketUserId);
     socket.join(currentUserId);
-    userSockets.set(currentUserId, socket.id);
+
+    // Track every socket (tab) for this user so presence is accurate with
+    // multiple tabs and reconnects don't flap online→offline.
+    const wasOffline = !userSockets.has(currentUserId);
+    if (wasOffline) userSockets.set(currentUserId, new Set());
+    userSockets.get(currentUserId).add(socket.id);
     if (!activeUsers.has(currentUserId)) activeUsers.set(currentUserId, new Set());
+
+    // Tell this socket who is currently online…
+    socket.emit('presence_snapshot', { online: onlineUserIds() });
+    // …and, if this user just came online, tell everyone else.
+    if (wasOffline) io.emit('presence_update', { userId: currentUserId, online: true });
+  });
+
+  // Client asks "which of these partners are online right now?"
+  socket.on('get_presence', (ids) => {
+    const list = Array.isArray(ids) ? ids.map(String) : [];
+    const online = list.filter(id => userSockets.has(id));
+    socket.emit('presence_snapshot', { online });
   });
 
   socket.on('enter_chat', ({ partnerId }) => {
@@ -493,8 +517,16 @@ io.on('connection', socket => {
 
   socket.on('disconnect', () => {
     if (!currentUserId) return;
-    userSockets.delete(currentUserId);
-    activeUsers.delete(currentUserId);
+    const set = userSockets.get(currentUserId);
+    if (set) {
+      set.delete(socket.id);
+      // Only mark offline once the user's LAST tab disconnects.
+      if (set.size === 0) {
+        userSockets.delete(currentUserId);
+        activeUsers.delete(currentUserId);
+        io.emit('presence_update', { userId: currentUserId, online: false });
+      }
+    }
   });
 
   socket.on('private_message', async data => {
@@ -525,8 +557,20 @@ io.on('connection', socket => {
       if (receiver.role === 'mentor' && receiver.chatDisabled) {
         return socket.emit('message_error', { error: 'Mentor not accepting messages' });
       }
-      if (sender.role === 'user' && (sender.messageCredits || 0) <= 0) {
-        return socket.emit('insufficient_credits', { message: 'Your free message limit is over.' });
+
+      // ── CHAT ENTITLEMENT (server-side gate; can't be bypassed from the client) ──
+      // A student may only message a mentor they hold an ACTIVE Text Q&A purchase
+      // with (purchase → end of the booked day). Mentors replying are never gated.
+      if (sender.role === 'user' && receiver.role === 'mentor') {
+        const ent = await getChatEntitlement(sender._id, receiver._id);
+        if (!ent.allowed) {
+          return socket.emit('message_error', {
+            success: false,
+            error: 'Book a session to unlock chat.',
+            code: 'NO_ENTITLEMENT',
+            mentorId: String(receiver._id),
+          });
+        }
       }
 
       // Save message
@@ -537,12 +581,6 @@ io.on('connection', socket => {
         status: 'sent',
         seen: false
       });
-
-      // Deduct credit (non-blocking)
-      if (sender.role === 'user') {
-        User.findByIdAndUpdate(sender._id, { $inc: { messageCredits: -1 } })
-          .catch(err => console.error('Credit deduct failed:', err.message));
-      }
 
       // First-message totalChats increment
       const msgCount = await Message.countDocuments({
@@ -728,3 +766,4 @@ server.listen(PORT, () => {
 
 export default server;
 // Trigger restart
+
