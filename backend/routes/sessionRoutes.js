@@ -29,11 +29,13 @@ router.get('/my', optionalAuth, async (req, res) => {
       s.viewerRole = isMentorView ? 'mentor' : 'student';
       if (isMentorView) {
         const student = s.userId || {};
-        s.counterpartName    = student.name || student.username || 'Student';
+        s.counterpartName = student.name || student.username || 'Student';
         s.counterpartPicture = student.profilePicture || '';
+        s.counterpartId = student._id ? String(student._id) : (s.userId ? String(s.userId) : null);
       } else {
-        s.counterpartName    = s.mentorName || 'Your Mentor';
+        s.counterpartName = s.mentorName || 'Your Mentor';
         s.counterpartPicture = s.mentorProfilePicture || '';
+        s.counterpartId = s.mentorId ? String(s.mentorId) : null;
       }
       // userId was populated to an object for the lookup above; collapse it back
       // to a plain id so existing consumers that expect a string keep working.
@@ -100,13 +102,13 @@ router.post('/book', protect, async (req, res) => {
     }
 
     const session = await Session.create({
-      userId:         req.user.userId,
-      mentorId:       resolvedMentorId,
+      userId: req.user.userId,
+      mentorId: resolvedMentorId,
       mentorName,
       mentorInitials,
-      topic:          topic || 'Career Guidance Session',
+      topic: topic || 'Career Guidance Session',
       scheduledAt,
-      status:         'upcoming',
+      status: 'upcoming',
     });
 
     res.status(201).json({ ok: true, session });
@@ -158,8 +160,8 @@ router.post('/:id/review', protect, async (req, res) => {
     if (session.review?.submittedAt) return res.status(409).json({ ok: false, error: 'Already reviewed' });
 
     session.review = {
-      rating:      numRating,
-      comment:     (req.body.comment || '').trim().slice(0, 300),
+      rating: numRating,
+      comment: (req.body.comment || '').trim().slice(0, 300),
       submittedAt: new Date(),
     };
     await session.save();

@@ -27,6 +27,16 @@ export function meetLinkFor(sessionId) {
   return `${frontendBase()}/?meet=${sessionId}`;
 }
 
+// Absolute in-app CHAT deep link, built for the current environment.
+// Served at the root with a ?chat=<partnerId> query param for the same reason
+// meet links use ?meet= — the marketing site only proxies "/" to the product
+// app, and root + query keeps it same-origin so the localStorage auth token is
+// available. `partnerId` is the OTHER person in the thread (mentor opens the
+// student's thread, student opens the mentor's thread).
+export function chatLinkFor(partnerId) {
+  return `${frontendBase()}/?chat=${partnerId}`;
+}
+
 // Re-point a stored (possibly cross-environment) meet link at the current
 // frontend base. Handles both the new ?meet=<id> form and the legacy
 // /session/meet/<id> path. Returns the input unchanged if it isn't a meet link.
