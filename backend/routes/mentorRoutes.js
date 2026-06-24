@@ -588,27 +588,28 @@ router.get('/:slug', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.put('/slug', protect, async (req, res) => {
   try {
-    if (req.user.role !== 'mentor') {
-      return res.status(403).json({ ok: false, error: 'Only mentors can update their slug' });
-    }
-    
     const { slug } = req.body;
-    
+
     if (!slug) {
       return res.status(400).json({ ok: false, error: 'Slug is required' });
     }
-    
+
     // Validate slug format
     if (!validateSlug(slug)) {
-      return res.status(400).json({ 
-        ok: false, 
-        error: 'Invalid slug format. Use lowercase letters, numbers, and hyphens only (3-100 characters)' 
+      return res.status(400).json({
+        ok: false,
+        error: 'Invalid slug format. Use lowercase letters, numbers, and hyphens only (3-100 characters)'
       });
     }
-    
+
+    // Fetch from DB — JWT role may be stale if user became mentor after last login
     const user = await User.findById(req.user.userId);
     if (!user) {
       return res.status(404).json({ ok: false, error: 'User not found' });
+    }
+
+    if (user.role !== 'mentor') {
+      return res.status(403).json({ ok: false, error: 'Only mentors can update their slug' });
     }
     
     // Check if slug is already taken by another user
