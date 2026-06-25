@@ -67,6 +67,17 @@ const answerCardSchema = new mongoose.Schema({
     default: () => ({})
   },
 
+  // Intent of the question this card answers. Lets the matcher refuse to serve a
+  // placement journey to an internship query (and vice-versa). Set at creation
+  // from the source question; legacy cards (default 'general') are re-derived
+  // from their text at query time, so they're never wrongly excluded.
+  domain: {
+    type   : String,
+    enum   : ['internship', 'placement', 'general'],
+    default: 'general',
+    index  : true
+  },
+
   audioUrl  : { type: String, default: null },
   transcript: { type: String, default: null },
 
