@@ -39,12 +39,14 @@ router.post('/join/:sessionId', protect, async (req, res) => {
     const user = await User.findById(userId).select('name username').lean();
     const participantName = user?.name || user?.username || userId;
     const role = isMentor ? 'admin' : 'participant';
+    const callType = session.serviceId === 'audio-call' ? 'audio' : 'video';
 
     const token = await liveKitService.generateToken(
       session.livekitRoomName,
       userId,
       participantName,
-      role
+      role,
+      callType
     );
 
     // Start egress on first join (only once per session)
@@ -67,6 +69,7 @@ router.post('/join/:sessionId', protect, async (req, res) => {
       token,
       roomName: session.livekitRoomName,
       livekitUrl: process.env.LIVEKIT_WS_URL || process.env.LIVEKIT_HOST?.replace('http', 'ws'),
+      callType,
     });
   } catch (err) {
     console.error('LiveKit join error:', err);

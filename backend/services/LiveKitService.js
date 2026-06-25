@@ -1,6 +1,6 @@
 import {
   AccessToken, RoomServiceClient, EgressClient, WebhookReceiver,
-  EncodedFileOutput, EncodedFileType, S3Upload,
+  EncodedFileOutput, EncodedFileType, S3Upload, TrackSource,
 } from 'livekit-server-sdk';
 
 class LiveKitService {
@@ -43,20 +43,25 @@ class LiveKitService {
   }
 
   // role: 'participant' | 'admin'
-  async generateToken(roomName, userId, participantName, role = 'participant') {
+  // callType: 'audio' | 'video' — 'audio' locks publish to microphone only (server-enforced)
+  async generateToken(roomName, userId, participantName, role = 'participant', callType = 'video') {
     this._init();
     const at = new AccessToken(this._key, this._secret, {
       identity: String(userId),
       name: participantName,
       ttl: 4 * 60 * 60,
     });
-    at.addGrant({
+    const grant = {
       roomJoin: true,
       room: roomName,
       canPublish: true,
       canSubscribe: true,
       roomAdmin: role === 'admin',
-    });
+    };
+    if (callType === 'audio') {
+      grant.canPublishSources = [TrackSource.MICROPHONE];
+    }
+    at.addGrant(grant);
     return at.toJwt();
   }
 
