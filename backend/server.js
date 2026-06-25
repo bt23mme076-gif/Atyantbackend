@@ -470,6 +470,20 @@ io.on('connection', socket => {
     socket.join(currentUserId);
     userSockets.set(currentUserId, socket.id);
     if (!activeUsers.has(currentUserId)) activeUsers.set(currentUserId, new Set());
+
+    // Notify all currently online users that this user came online
+    for (const [onlineId] of userSockets) {
+      if (onlineId !== currentUserId) {
+        io.to(onlineId).emit('presence_update', { userId: currentUserId, online: true });
+      }
+    }
+  });
+
+  // Return presence snapshot for the requested user IDs
+  socket.on('get_presence', (userIds) => {
+    if (!Array.isArray(userIds)) return;
+    const online = userIds.filter(id => userSockets.has(String(id))).map(String);
+    socket.emit('presence_snapshot', { online });
   });
 
   socket.on('enter_chat', ({ partnerId }) => {
@@ -490,6 +504,11 @@ io.on('connection', socket => {
     if (!currentUserId) return;
     userSockets.delete(currentUserId);
     activeUsers.delete(currentUserId);
+
+    // Notify all remaining online users that this user went offline
+    for (const [onlineId] of userSockets) {
+      io.to(onlineId).emit('presence_update', { userId: currentUserId, online: false });
+    }
   });
 
   socket.on('private_message', async data => {

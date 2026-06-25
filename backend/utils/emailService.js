@@ -163,7 +163,7 @@ export const sendMentorWelcomeEmail = async (email, mentorName) => {
 
 // ─────────────────────────────────────────────────────────────
 //  Session confirmed (after payment) — emails BOTH student & mentor
-//  with the auto-generated Google Meet link.
+//  with the platform meet link.
 // ─────────────────────────────────────────────────────────────
 export const sendSessionConfirmationEmails = async ({
   studentEmail, studentName, mentorEmail, mentorName,
@@ -179,11 +179,11 @@ export const sendSessionConfirmationEmails = async ({
   });
   const meetBlock = meetLink
     ? `<div style="text-align:center;margin:28px 0;">
-         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Google Meet</a>
+         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Session</a>
          <p style="color:#9ca3af;font-size:12px;margin-top:10px;">Link: <a href="${meetLink}" style="color:#4F46E5;">${meetLink}</a></p>
        </div>`
     : `<p style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:12px;border-radius:8px;line-height:1.5;">
-         Your Google Meet link will be shared shortly before the session. We'll email it to you.
+         Your session link will be shared shortly before the session. We'll email it to you.
        </p>`;
 
   const card = (heading, intro) => `
@@ -252,11 +252,11 @@ export const sendSessionReminderEmails = async ({
   });
   const meetBlock = meetLink
     ? `<div style="text-align:center;margin:28px 0;">
-         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Google Meet</a>
+         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Session</a>
          <p style="color:#9ca3af;font-size:12px;margin-top:10px;">Link: <a href="${meetLink}" style="color:#4F46E5;">${meetLink}</a></p>
        </div>`
     : `<p style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:12px;border-radius:8px;line-height:1.5;">
-         The Google Meet link will be shared shortly before the session.
+         The session link will be shared shortly before the session.
        </p>`;
 
   const card = (heading, intro) => `
