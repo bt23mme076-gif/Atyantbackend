@@ -51,12 +51,9 @@ export function buildProfileUrl(username, { via } = {}) {
  * page exists, set SHARE_LANDING=profile to deep-link to it instead.
  */
 export function buildLandingUrl(username, { via } = {}) {
-  const mode = (process.env.SHARE_LANDING || 'home').toLowerCase();
-  if (mode === 'profile') return buildProfileUrl(username, { via });
+  return buildProfileUrl(username, { via });
 
-  const params = new URLSearchParams({ ref: 'share' });
-  if (via) params.set('via', via);
-  return `${frontendBase()}/?${params.toString()}`;
+  
 }
 
 /**
@@ -65,10 +62,8 @@ export function buildLandingUrl(username, { via } = {}) {
  * Falls back to the direct frontend URL if no public backend base is configured.
  */
 export function buildTrackedUrl(username, { via } = {}) {
-  const base = backendBase();
-  if (!base) return buildProfileUrl(username, { via });
-  const url = `${base}/api/share/r/${encodeURIComponent(username)}`;
-  return via ? `${url}?via=${encodeURIComponent(via)}` : url;
+  return buildProfileUrl(username, { via });
+  
 }
 
 /** A short, ready-to-post message a mentor can use as a caption. */

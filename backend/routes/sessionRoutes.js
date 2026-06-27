@@ -68,7 +68,7 @@ router.get('/my', optionalAuth, async (req, res) => {
 // time format: "9:00 AM" or "09:00"
 router.post('/book', protect, async (req, res) => {
   try {
-    const { mentorId, date, time, topic } = req.body;
+    const { mentorId, date, time, topic, sessionType } = req.body;
 
     if (!date || !time) {
       return res.status(400).json({ ok: false, error: 'date and time are required' });
@@ -100,6 +100,28 @@ router.post('/book', protect, async (req, res) => {
           .slice(0, 2);
       }
     }
+    let amount = 0;
+
+switch (sessionType) {
+  case 'chat':
+    amount = 49;
+    break;
+
+  case 'audio':
+    amount = 149;
+    break;
+
+  case 'video':
+    amount = 299;
+    break;
+
+  case 'resume':
+    amount = 199;
+    break;
+
+  default:
+    amount = 49;
+}
 
     const session = await Session.create({
       userId: req.user.userId,
@@ -108,7 +130,7 @@ router.post('/book', protect, async (req, res) => {
       mentorInitials,
       topic: topic || 'Career Guidance Session',
       scheduledAt,
-      status: 'upcoming',
+      status:         'upcoming',
     });
 
     res.status(201).json({ ok: true, session });
@@ -145,6 +167,95 @@ router.patch('/:id/complete', protect, async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+router.get('/mentor/:mentorId/stats', async (req, res) => {
+  try {
+    const mentorId = req.params.mentorId;
+
+    const sessions = await Session.find({ mentorId });
+
+    const now = new Date();
+
+    const bookedToday = sessions.filter(session => {
+      const sessionDate = new Date(session.scheduledAt);
+
+      return (
+        sessionDate.getDate() === now.getDate() &&
+        sessionDate.getMonth() === now.getMonth() &&
+        sessionDate.getFullYear() === now.getFullYear()
+      );
+    }).length;
+
+    const completed = sessions.filter(
+      session => session.status === 'completed'
+    ).length;
+
+    const pending = sessions.filter(
+      session => session.status === 'upcoming'
+    ).length;
+
+    const totalStudents = new Set(
+      sessions.map(session => session.userId.toString())
+    ).size;
+
+    const chatSessions = sessions.filter(
+      session => session.sessionType === 'chat'
+    ).length;
+
+    const audioSessions = sessions.filter(
+      session => session.sessionType === 'audio'
+    ).length;
+
+    const videoSessions = sessions.filter(
+      session => session.sessionType === 'video'
+    ).length;
+
+    const resumeReviews = sessions.filter(
+      session => session.sessionType === 'resume'
+    ).length;
+
+    const totalEarnings = sessions.reduce(
+      (sum, session) => sum + (session.amount || 0),
+      0
+    );
+
+    res.json({
+      bookedToday,
+      completed,
+      pending,
+      totalStudents,
+      chatSessions,
+      audioSessions,
+      videoSessions,
+      resumeReviews,
+      totalEarnings
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
+
+router.get('/mentor/:mentorId/stats', async (req, res) => {
+    try {
+        const mentorId = req.params.mentorId;
+
+        const sessions = await Session.find({ mentorId });
+
+        const totalEarnings = sessions.reduce(
+            (sum, session) => sum + session.amount,
+            0
+        );
+
+        res.json({
+            totalEarnings
+        });
+
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // POST /api/sessions/:id/review — student submits star rating + comment.
