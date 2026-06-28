@@ -13,6 +13,24 @@ const sessionSchema = new mongoose.Schema({
   meetingLink: { type: String },
   calendarEventId: { type: String },
   notes: { type: String, maxlength: 500 },
+  topic:          { type: String, default: 'Career Guidance Session' },
+  serviceId:      { type: String },   // platform service id (config/serviceCatalog.js)
+  scheduledAt:    { type: Date, required: true, index: true },
+  durationMin:    { type: Number, default: 30 },
+  status:         { type: String, enum: ['pending', 'upcoming', 'completed', 'cancelled'], default: 'upcoming', index: true },
+  meetingLink:    { type: String },
+  calendarEventId:{ type: String },
+  notes:          { type: String, maxlength: 500 },
+  sessionType: {
+    type: String,
+    enum: ['chat', 'voice', 'video', 'resume'],
+    default: 'chat'
+},
+
+amount: {
+    type: Number,
+   required: true
+},
 
   // ── LiveKit in-house meet ──
   livekitRoomName: { type: String },               // LiveKit room name e.g. session_<id>

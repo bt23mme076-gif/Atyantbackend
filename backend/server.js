@@ -741,4 +741,3 @@ server.listen(PORT, () => {
 });
 
 export default server;
-// Trigger restart
