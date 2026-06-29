@@ -116,6 +116,18 @@ class LiveKitService {
     }
   }
 
+  // Force-end a room: disconnects any remaining participants and ends the room
+  // (which also stops its egress → fires the egress_ended webhook → pipeline).
+  // Idempotent — deleting an already-closed room is a harmless no-op.
+  async deleteRoom(roomName) {
+    this._init();
+    try {
+      await this.roomService.deleteRoom(roomName);
+    } catch (err) {
+      console.warn('deleteRoom warning (non-fatal):', err.message);
+    }
+  }
+
   receiveWebhook(rawBody, authHeader) {
     this._init();
     return this.receiver.receive(rawBody, authHeader);

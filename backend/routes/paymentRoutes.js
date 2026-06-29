@@ -83,6 +83,9 @@ const COUPONS = {
   FIRST50:   { type: 'fixed',   value: 50,  desc: '₹50 off for first-time students' },
   CAREER20:  { type: 'percent', value: 20,  desc: '20% off on any session' },
   SUMMER15:  { type: 'percent', value: 15,  desc: 'Summer special discount' },
+  // ── B2B college pilots — 100% off so partner-college students book free.
+  // The college pays Atyant out-of-band; students never hit Razorpay.
+  VNIT100:   { type: 'percent', value: 100, desc: 'VNIT placement pilot — free access' },
 };
 
 function applyCoupon(price, code) {

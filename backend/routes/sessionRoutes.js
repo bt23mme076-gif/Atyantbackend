@@ -1,5 +1,7 @@
 import express from 'express';
 import Session from '../models/Session.js';
+import SessionTranscript from '../models/SessionTranscript.js';
+import SessionInsight from '../models/SessionInsight.js';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
@@ -177,6 +179,69 @@ router.post('/:id/review', protect, async (req, res) => {
       }
     }
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Shared guard — only the session's two participants (student or mentor) may
+// read its post-session artifacts. Returns the session (id-only) or null after
+// already sending the error response.
+async function loadParticipantSession(req, res) {
+  const session = await Session.findById(req.params.id)
+    .select('userId mentorId pipelineStatus')
+    .lean();
+  if (!session) {
+    res.status(404).json({ ok: false, error: 'Session not found' });
+    return null;
+  }
+  const uid = String(req.user.userId);
+  const isParticipant =
+    String(session.userId) === uid || String(session.mentorId || '') === uid;
+  if (!isParticipant) {
+    res.status(403).json({ ok: false, error: 'Not a participant of this session' });
+    return null;
+  }
+  return session;
+}
+
+// GET /api/sessions/:id/transcript — full discussion (text + timestamped
+// segments) from the recording pipeline. Participants only.
+router.get('/:id/transcript', protect, async (req, res) => {
+  try {
+    const session = await loadParticipantSession(req, res);
+    if (!session) return;
+
+    const transcript = await SessionTranscript.findOne({ sessionId: req.params.id }).lean();
+    if (!transcript) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Transcript not ready',
+        pipelineStatus: session.pipelineStatus || 'none',
+      });
+    }
+    res.json({ ok: true, transcript });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/sessions/:id/insight — AI summary, action items and scores from the
+// recording pipeline. Participants only.
+router.get('/:id/insight', protect, async (req, res) => {
+  try {
+    const session = await loadParticipantSession(req, res);
+    if (!session) return;
+
+    const insight = await SessionInsight.findOne({ sessionId: req.params.id }).lean();
+    if (!insight) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Insight not ready',
+        pipelineStatus: session.pipelineStatus || 'none',
+      });
+    }
+    res.json({ ok: true, insight });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
