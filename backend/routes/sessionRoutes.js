@@ -240,26 +240,6 @@ router.get('/mentor/:mentorId/stats', async (req, res) => {
   }
 });
 
-router.get('/mentor/:mentorId/stats', async (req, res) => {
-    try {
-        const mentorId = req.params.mentorId;
-
-        const sessions = await Session.find({ mentorId });
-
-        const totalEarnings = sessions.reduce(
-            (sum, session) => sum + session.amount,
-            0
-        );
-
-        res.json({
-            totalEarnings
-        });
-
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // POST /api/sessions/:id/review — student submits star rating + comment.
 // Updates mentor's rolling average rating and successfulMatches count.
 router.post('/:id/review', protect, async (req, res) => {
