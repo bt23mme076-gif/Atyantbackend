@@ -10,7 +10,9 @@ import { groqJSON, GROQ_API_KEYS } from '../utils/groqClient.js';
 
 const ROADMAP_MODEL = process.env.GROQ_ROADMAP_MODEL || 'llama-3.3-70b-versatile';
 
-const STATUS = ['active', 'upcoming', 'locked', 'completed'];
+// No 'locked' — every phase stays open/visible. First phase is 'active', the
+// rest 'upcoming'; we never gate a phase behind another.
+const OPEN_STATUS = ['active', 'upcoming', 'completed'];
 
 // Normalize whatever the model returns into clean roadmapStepSchema steps.
 function sanitizeSteps(raw) {
@@ -20,7 +22,9 @@ function sanitizeSteps(raw) {
       phase:    String(s?.phase || `Phase ${i + 1}`).slice(0, 80),
       title:    String(s?.title || '').slice(0, 120),
       duration: String(s?.duration || '2–4 weeks').slice(0, 40),
-      status:   STATUS.includes(s?.status) ? s.status : (i === 0 ? 'active' : 'upcoming'),
+      // Coerce anything not in OPEN_STATUS (notably 'locked') to a sensible open
+      // status so no phase ever renders locked.
+      status:   OPEN_STATUS.includes(s?.status) ? s.status : (i === 0 ? 'active' : 'upcoming'),
       tasks:    (Array.isArray(s?.tasks) ? s.tasks : [])
                   .map(t => String(t).trim()).filter(Boolean).slice(0, 6),
     }))
@@ -35,7 +39,7 @@ const GOAL_FALLBACK = (goal) => [
     tasks: ['Build 2 end-to-end projects and deploy them', 'Write a LinkedIn post on your learning journey', 'Make 1 open-source contribution'] },
   { phase: 'Phase 3', title: 'Application Strategy', duration: '2–3 weeks', status: 'upcoming',
     tasks: ['Tailor resume for target roles', 'Apply to 50+ relevant openings', 'Reach out to 10 people at target companies'] },
-  { phase: 'Phase 4', title: 'Interview Prep', duration: 'Ongoing', status: 'locked',
+  { phase: 'Phase 4', title: 'Interview Prep', duration: 'Ongoing', status: 'upcoming',
     tasks: ['Practice DSA (easy → medium)', 'Do 5 mock interviews', 'Review domain-specific interview questions'] },
 ];
 
@@ -95,8 +99,8 @@ Goal: ${goal}
 ${college ? `College: ${college}` : ''}${branch ? `\nBranch: ${branch}` : ''}${year ? `\nYear: ${year}` : ''}${cgpa ? `\nCGPA: ${cgpa}` : ''}
 
 Return ONLY:
-{ "steps": [ { "phase": "Phase 1", "title": "short title", "duration": "e.g. 4–6 weeks", "status": "active|upcoming|locked", "tasks": ["specific task"] } ] }
-First phase "active". 4 phases, 3 tasks each.` },
+{ "steps": [ { "phase": "Phase 1", "title": "short title", "duration": "e.g. 4–6 weeks", "status": "active|upcoming", "tasks": ["specific task"] } ] }
+First phase "active", the rest "upcoming". Never use "locked". 4 phases, 3 tasks each.` },
         ],
         { model: ROADMAP_MODEL, maxTokens: 1800, timeoutMs: 45000 },
       );
