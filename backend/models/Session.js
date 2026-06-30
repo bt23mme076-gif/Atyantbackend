@@ -18,7 +18,7 @@ const sessionSchema = new mongoose.Schema({
   // ── LiveKit in-house meet ──
   livekitRoomName: { type: String },               // LiveKit room name e.g. session_<id>
   egressId: { type: String },               // LiveKit egress job id for audio recording
-  pipelineStatus: { type: String, enum: ['none', 'processing', 'completed', 'failed'], default: 'none' },
+  pipelineStatus: { type: String, enum: ['none', 'processing', 'completed', 'failed', 'skipped'], default: 'none' },
 
   // ── Reminder emails (sent by ReminderCron) — flags prevent duplicate sends ──
   remindersSent: {

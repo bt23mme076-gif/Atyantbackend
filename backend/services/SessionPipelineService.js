@@ -5,11 +5,20 @@ import Session from '../models/Session.js';
 import SessionTranscript from '../models/SessionTranscript.js';
 import SessionInsight from '../models/SessionInsight.js';
 import SavedAnswer from '../models/SavedAnswer.js';
-import Roadmap from '../models/Roadmap.js';
+import SessionRoadmap from '../models/SessionRoadmap.js';
+import roadmapGenerator from './RoadmapGenerator.js';
 import { groqJSON, groqRotate, GROQ_API_KEYS } from '../utils/groqClient.js';
 
 const WHISPER_MODEL   = process.env.GROQ_WHISPER_MODEL  || 'whisper-large-v3';
-const PIPELINE_MODEL  = process.env.GROQ_PIPELINE_MODEL || 'llama-3.1-8b-instant';
+// In-depth analysis needs a capable model — the 8b "instant" model produced thin,
+// generic summaries. 70b-versatile gives a genuinely useful breakdown.
+const PIPELINE_MODEL  = process.env.GROQ_PIPELINE_MODEL || 'llama-3.3-70b-versatile';
+
+// Below this, a recording isn't a real session (an early test join, or an egress
+// that died before the conversation). We must NOT write junk insights for it, and
+// must never let it overwrite/precede the real session's analysis.
+const MIN_DURATION_SEC = 90;
+const MIN_TRANSCRIPT_CHARS = 200;
 
 class SessionPipelineService {
 
@@ -18,8 +27,21 @@ class SessionPipelineService {
     await Session.findByIdAndUpdate(sessionId, { pipelineStatus: 'processing' });
     try {
       const transcript = await this._transcribe(audioPath);
+
+      // Guard against junk recordings (early test joins / egress that died before
+      // the real session). Bail BEFORE writing anything so we never create a
+      // misleading "too short to summarize" summary or overwrite the real one.
+      const text = (transcript.text || '').trim();
+      const dur  = transcript.duration || 0;
+      if (text.length < MIN_TRANSCRIPT_CHARS || dur < MIN_DURATION_SEC) {
+        await Session.findByIdAndUpdate(sessionId, { pipelineStatus: 'skipped' });
+        this._cleanup(audioPath);
+        console.log(`⏭️  Pipeline skipped for session ${sessionId} — recording too short (${Math.round(dur)}s, ${text.length} chars). Likely an early/partial recording.`);
+        return;
+      }
+
       const sessionDoc = await Session.findById(sessionId).lean();
-      const insights = await this._extractInsights(transcript.text, sessionDoc);
+      const insights = await this._extractInsights(text, sessionDoc);
 
       await Promise.all([
         SessionTranscript.findOneAndUpdate(
@@ -101,22 +123,28 @@ class SessionPipelineService {
       [
         {
           role: 'system',
-          content: 'You are a session analysis AI. Return ONLY valid JSON, no markdown, no extra text.',
+          content: 'You are an expert career-mentorship analyst. You read a transcript of a 1:1 mentor–student session and produce a thorough, specific, useful breakdown for the student to act on. Be concrete and grounded ONLY in what was actually said — never invent advice that was not given. Return ONLY valid JSON, no markdown, no extra text.',
         },
         {
           role: 'user',
-          content: `Analyze this mentor-student career guidance session transcript.
+          content: `Analyze this mentor–student career guidance session transcript in depth.
 Topic: ${sessionDoc?.topic || 'Career Guidance'}
 
-Return ONLY this JSON structure:
+Return ONLY this JSON structure (fill every field from the transcript; use [] or "" if genuinely not discussed):
 {
-  "topics": ["string"],
-  "studentPainPoints": [{ "point": "string", "timestamp": "string" }],
-  "actionItems": { "student": ["string"], "mentor": ["string"] },
+  "summary": "2-3 sentence recap of the session",
+  "detailedSummary": "4-8 sentence in-depth narrative: what the student came in with, what was actually discussed, the mentor's main guidance, and how it concluded. Be specific to THIS conversation.",
+  "topics": ["specific topics discussed"],
+  "keyDiscussionPoints": ["the most important things actually said/decided, each a full sentence"],
+  "studentPainPoints": [{ "point": "a real concern the student raised", "timestamp": "mm:ss if known else ''" }],
+  "strengths": ["things the student is already doing well, per the conversation"],
+  "areasToImprove": ["concrete gaps/weaknesses surfaced in the session"],
+  "actionItems": { "student": ["specific, doable next steps for the student"], "mentor": ["follow-ups the mentor committed to"] },
+  "recommendedResources": ["books, courses, tools, people, or links the mentor suggested"],
+  "nextSessionFocus": ["what the next session should cover"],
   "mentorQualityScore": 7,
-  "mentorQualityReason": "string",
+  "mentorQualityReason": "1-2 sentences justifying the score from the transcript",
   "studentSentiment": "positive",
-  "summary": "2-3 sentence summary",
   "careerContext": "placement"
 }
 
@@ -124,10 +152,10 @@ Valid values — studentSentiment: positive|neutral|negative
 Valid values — careerContext: placement|higher_studies|skill_gap|other
 
 Transcript:
-${transcriptText.slice(0, 6000)}`,
+${transcriptText.slice(0, 12000)}`,
         },
       ],
-      { model: PIPELINE_MODEL, maxTokens: 1024 },
+      { model: PIPELINE_MODEL, maxTokens: 2560, timeoutMs: 45000 },
     );
   }
 
@@ -139,12 +167,14 @@ ${transcriptText.slice(0, 6000)}`,
 
     const ops = [];
 
-    // Session summary → SavedAnswer (shown in "Saved Answers")
-    if (insights.summary) {
+    // Session summary → SavedAnswer (shown in "Saved Answers"). Prefer the
+    // in-depth narrative so the student gets the full picture, not one line.
+    const summaryText = insights.detailedSummary || insights.summary;
+    if (summaryText) {
       ops.push(
         SavedAnswer.create({
           userId:     studentId,
-          question:   insights.summary,
+          question:   summaryText,
           tags:       [...(insights.topics?.slice(0, 3) || []), 'Session Summary'],
           sourceType: 'mentor',
           mentorId,
@@ -166,27 +196,33 @@ ${transcriptText.slice(0, 6000)}`,
       );
     }
 
-    // Action items → new phase in student's roadmap
-    if (actionItems.length) {
-      const sessionDate = new Date(sessionDoc.scheduledAt || Date.now())
-        .toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-
-      const newStep = {
-        phase:    `Session – ${sessionDate}`,
-        title:    `${mentorName} — ${topic}`,
-        duration: '2–4 weeks',
-        status:   'active',
-        tasks:    actionItems.slice(0, 6),
-      };
-
-      ops.push(
-        Roadmap.findOneAndUpdate(
-          { userId: studentId },
-          { $push: { steps: newStep } },
-          { upsert: false }
-        )
-      );
-    }
+    // Per-session roadmap → AI-generated from THIS session's summary (no longer a
+    // hardcoded step). Stored as its own SessionRoadmap so the student can have
+    // one roadmap per session and pick between them when they have several.
+    ops.push(
+      (async () => {
+        try {
+          const steps = await roadmapGenerator.fromSession({ topic, insights });
+          if (!steps.length) return;
+          await SessionRoadmap.findOneAndUpdate(
+            { sessionId: sessionDoc._id },
+            {
+              sessionId:  sessionDoc._id,
+              userId:     studentId,
+              mentorId,
+              topic,
+              mentorName,
+              summary:    insights.detailedSummary || insights.summary || '',
+              steps,
+              generatedAt: new Date(),
+            },
+            { upsert: true, new: true }
+          );
+        } catch (err) {
+          console.error('Session roadmap generation failed (non-fatal):', err.message);
+        }
+      })()
+    );
 
     try {
       await Promise.all(ops);
