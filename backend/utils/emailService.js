@@ -777,3 +777,55 @@ export const sendPasswordOTPEmail = async (email, otp) => {
     throw error;
   }
 };
+// ─────────────────────────────────────────────────────────────
+//  Email Verification OTP — sent on first-time registration
+// ─────────────────────────────────────────────────────────────
+export const sendEmailVerificationOTP = async (email, otp, username) => {
+  if (!getResend()) {
+    console.warn('⚠️ Email service not configured. Skipping email verification OTP.');
+    return { success: false, error: 'Email service not configured' };
+  }
+
+  const name = username || 'there';
+
+  try {
+    const { data, error } = await getResend().emails.send({
+      from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
+      to: [email],
+      subject: 'Verify your Atyant account — OTP inside',
+      headers: {
+        'List-Unsubscribe': '<mailto:support@atyant.in?subject=unsubscribe>'
+      },
+      text: `Atyant Email Verification\n\nHi ${name},\n\nThanks for signing up! Use the code below to verify your email address:\n\n${otp}\n\nThis code expires in 10 minutes. Do not share it with anyone.\n\nIf you didn't create an Atyant account, you can safely ignore this email.\n\nRegards,\nTeam Atyant\nsupport@atyant.in`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; color: #333333; line-height: 1.6;">
+          <h1 style="color:#4F46E5; margin-bottom: 20px;">Atyant</h1>
+          <h2 style="color:#1f2937;">Verify your email, ${name} 👋</h2>
+          <p>Thanks for signing up! Enter the code below to activate your account.</p>
+          <div style="font-size:36px; font-weight:bold; color:#4F46E5; letter-spacing:8px; margin:30px 0; background-color:#f9fafb; padding:20px; text-align:center; border-radius:10px; border: 2px dashed #4F46E5;">
+            ${otp}
+          </div>
+          <p>This code expires in <strong>10 minutes</strong>.</p>
+          <p style="color:#666666; font-size:14px;">If you didn't create an Atyant account, you can safely ignore this email.</p>
+          <hr style="margin-top:30px; border:none; border-top:1px solid #eeeeee;">
+          <p style="font-size:12px; color:#999999; text-align:center;">
+            This email was sent by Atyant.<br>
+            Questions? Contact support@atyant.in
+          </p>
+        </div>
+      `
+    });
+
+    if (error) {
+      console.error('Resend error (email verification OTP):', error);
+      throw new Error('Failed to send verification OTP email');
+    }
+
+    console.log('Email verification OTP sent:', data?.id);
+    return data;
+  } catch (error) {
+    console.error('sendEmailVerificationOTP error:', error);
+    throw error;
+  }
+};
