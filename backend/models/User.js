@@ -156,6 +156,15 @@ const userSchema = new mongoose.Schema({
     default: null
   },
 
+  // ─── CUSTOM SERVICE (mentor-defined, separate from platform catalog) ───────
+  customService: {
+    enabled:     { type: Boolean, default: false },
+    label:       { type: String,  trim: true, maxlength: 80  },
+    description: { type: String,  trim: true, maxlength: 200 },
+    price:       { type: Number,  min: 0 },
+    durationMin: { type: Number,  min: 5, max: 180 },
+  },
+
   // ─── STATS ─────────────────────────────────
   referralSignups: {
     type: Number,

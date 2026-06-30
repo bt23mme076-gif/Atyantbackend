@@ -11,6 +11,7 @@ export const SERVICE_CATALOG = [
   { id: 'audio-call',     label: 'Audio Call',        description: 'Resume talk, strategy, no video needed',   durationMin: 25, duration: '25 min',     price: 99 },
   { id: 'video-call',     label: 'Video Call',        description: 'Mock interview, screen share, deep dive',   durationMin: 45, duration: '45 min',     price: 299 },
   { id: 'resume-review',  label: 'Resume Review',     description: 'Written feedback on PDF, no call needed',  durationMin: 30, duration: '48hr async', price: 199 },
+  { id: 'free-help',      label: 'Free Help',         description: 'One free session, no payment needed',      durationMin: 30, duration: '30 min',     price: 0   },
 ];
 
 const byId = new Map(SERVICE_CATALOG.map(s => [s.id, s]));
