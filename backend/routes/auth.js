@@ -467,7 +467,7 @@ router.get('/google/callback',
         process.env.JWT_SECRET,
         { expiresIn: '7d' }
       );
-      res.redirect(`${getFrontendUrl()}/?token=${token}`);
+      res.redirect(`${getFrontendUrl()}/atyantEngine?token=${token}`);
     } catch (error) {
       console.error('OAuth callback error:', error);
       res.redirect(`${getFrontendUrl()}/login?error=auth_failed`);
