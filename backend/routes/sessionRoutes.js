@@ -6,6 +6,7 @@ import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
 import { localizeMeetLink } from '../utils/frontendUrl.js';
+import { sendMentorReviewNotification } from '../utils/emailService.js';
 
 const router = express.Router();
 
@@ -267,6 +268,18 @@ router.post('/:id/review', protect, async (req, res) => {
         mentor.feedbackCount = prev + 1;
         mentor.successfulMatches = (mentor.successfulMatches || 0) + 1;
         await mentor.save();
+
+        if (mentor.email) {
+          const student = await User.findById(req.user.userId).select('name username').lean();
+          await sendMentorReviewNotification({
+            mentorEmail: mentor.email,
+            mentorName: mentor.name || mentor.username || 'Mentor',
+            studentName: student?.name || student?.username || 'A student',
+            rating: numRating,
+            comment: session.review.comment,
+            topic: session.topic,
+          }).catch(err => console.error('Review notification email failed (non-fatal):', err.message));
+        }
       }
     }
     res.json({ ok: true });

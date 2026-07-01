@@ -1,4 +1,5 @@
 import { Resend } from 'resend';
+import { productAppUrl } from './frontendUrl.js';
 
 // Lazy-initialized so env is always read at call time, not module load time
 let _resend = null;
@@ -523,6 +524,70 @@ export const sendMentorPaymentNotification = async (mentorEmail, mentorName, stu
     return data;
   } catch (error) {
     console.error('Error sending mentor payment notification:', error);
+    throw error;
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+//  Review notification — student rated/reviewed a completed session
+// ─────────────────────────────────────────────────────────────
+export const sendMentorReviewNotification = async ({ mentorEmail, mentorName, studentName, rating, comment, topic }) => {
+  if (!getResend()) {
+    console.warn('⚠️ Email service not configured. Skipping mentor review notification email.');
+    return { success: false, error: 'Email service not configured' };
+  }
+
+  try {
+    const stars = '★'.repeat(rating) + '☆'.repeat(5 - rating);
+
+    const { data, error } = await getResend().emails.send({
+      from: 'Atyant <notifications@atyant.in>',
+      replyTo: 'support@atyant.in',
+      to: [mentorEmail],
+      subject: `⭐ ${studentName} left you a ${rating}-star review`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #4F46E5; margin: 0;">Atyant</h1>
+          </div>
+
+          <div style="background-color: #fffbeb; padding: 30px; border-radius: 10px; border-left: 4px solid #f59e0b;">
+            <h2 style="color: #1f2937; margin-top: 0;">New review from ${studentName}</h2>
+
+            <p style="color: #6b7280; line-height: 1.6; margin-bottom: 20px;">
+              Hi ${mentorName},
+            </p>
+
+            <p style="color: #6b7280; line-height: 1.6; margin-bottom: 20px;">
+              <strong>${studentName}</strong> just reviewed your session${topic ? ` on <strong>${topic}</strong>` : ''}.
+            </p>
+
+            <div style="background-color: #ffffff; padding: 20px; border-radius: 8px; margin: 20px 0;">
+              <div style="font-size: 24px; color: #f59e0b; letter-spacing: 4px;">${stars}</div>
+              ${comment ? `<p style="color: #1f2937; line-height: 1.6; margin: 14px 0 0; font-style: italic;">"${comment}"</p>` : ''}
+            </div>
+
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${productAppUrl()}/"
+                 style="background-color: #4F46E5; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
+                View in My Sessions
+              </a>
+            </div>
+          </div>
+          ${emailFooter}
+        </div>
+      `
+    });
+
+    if (error) {
+      console.error('Email send error:', error);
+      throw new Error('Failed to send mentor review notification email');
+    }
+
+    console.log('Mentor review notification email sent successfully:', data);
+    return data;
+  } catch (error) {
+    console.error('Error sending mentor review notification:', error);
     throw error;
   }
 };
