@@ -426,7 +426,7 @@ router.get('/google/callback',
 
       // Redirect to frontend with token (frontend lands the user on their profile)
       const frontendUrl = getFrontendUrl();
-      res.redirect(`${frontendUrl}/?token=${token}`);
+      res.redirect(`${frontendUrl}/atyantEngine?token=${token}`);
     } catch (error) {
       console.error('OAuth callback error:', error);
       const frontendUrl = getFrontendUrl();
