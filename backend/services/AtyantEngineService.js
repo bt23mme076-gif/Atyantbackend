@@ -1,9 +1,5 @@
 import AtyantConversation from '../models/AtyantConversation.js';
 import User from '../models/User.js';
-// The real ranking engine — same scoreMentor() pipeline (inverted index,
-// college/branch/company/domain/feedback/outcome signals) used everywhere else.
-// The chat handoff MUST go through this, not a loose keyword query.
-import atyantEngine from './AtyantEngine.js';
 // ─── Groq — shared rotating client ───────────────────────────────────────────
 // All Groq traffic in the backend flows through utils/groqClient.js, which does
 // multi-key round-robin + cooldown failover (see that file). Add GROQ_API_KEY_2
@@ -297,73 +293,9 @@ function mergeContext(existing = {}, update) {
   return merged;
 }
 
-// Shape an engine/DB mentor doc into the card the frontend renders. Single
-// source of truth for the card shape so both the engine path and the fallback
-// emit identical objects.
-function toMentorCard(m) {
-  return {
-    id: String(m._id),
-    // Most mentor records have no `name` set — fall back to username so cards never render blank.
-    name: m.name || m.username || 'Atyant Mentor',
-    username: m.username,
-    profilePicture: m.profilePicture || m.avatar || null,
-    bio: m.bio,
-    expertise: m.expertise || [],
-    topCompanies: m.topCompanies || [],
-    companyDomain: m.companyDomain,
-    college: m.education?.[0]?.institutionName || m.education?.[0]?.institution || null,
-    // matchScore is present only on engine-ranked mentors; null on the fallback.
-    matchScore: m.matchScore ?? null,
-  };
-}
-
 // Find REAL mentors from the DB to back a MENTOR_ROUTING decision. The LLM must
 // never invent mentors — this is the only source of truth the frontend renders.
-//
-// Primary path: the real AtyantEngine ranker (findTopMentors → scoreMentor),
-// the SAME pipeline used by the question flow and the clarity page — inverted
-// index, college/branch/company/domain match, plus feedback & verified-outcome
-// signals. Previously this surface used a loose regex query that bypassed all of
-// that, so chat-handoff cards were effectively random within a keyword filter.
-async function matchMentors(context = {}, limit = 3, userId = null) {
-  const { identity = {}, target, gap = [] } = context;
-
-  // The engine scores on keywords + studentContext. Goal + branch + blockers are
-  // the strongest matchable signals we have from the 5-layer context.
-  const keywords = [target, identity.branch, ...(gap || [])]
-    .filter(Boolean)
-    .flatMap(t => String(t).toLowerCase().split(/\s+/))
-    .filter(Boolean);
-
-  const studentContext = {
-    college: identity.college || null,
-    branch: identity.branch || null,
-    year: identity.year || null,
-    goal: target || null,
-  };
-
-  try {
-    const ranked = await atyantEngine.findTopMentors(
-      userId,
-      keywords.length ? keywords : [target || identity.branch || ''].filter(Boolean),
-      null,            // let the engine infer intent (internship/placement) from keywords
-      limit,
-      studentContext
-    );
-    if (ranked && ranked.length) {
-      return ranked.map(toMentorCard);
-    }
-  } catch (err) {
-    console.error('Engine ranking failed, falling back to loose match:', err.message);
-  }
-
-  // ── Fallback ──────────────────────────────────────────────────────────────
-  // Engine returned no qualifying mentor (or threw). Never show the student an
-  // empty handoff: loose relevance match, then recently-active fill.
-  return matchMentorsFallback(context, limit);
-}
-
-async function matchMentorsFallback(context = {}, limit = 3) {
+async function matchMentors(context = {}, limit = 3) {
   const { identity = {}, target, gap = [] } = context;
   const terms = [target, identity.branch, ...(gap || [])]
     .filter(Boolean)
@@ -384,7 +316,7 @@ async function matchMentorsFallback(context = {}, limit = 3) {
         { topCompanies: { $in: rx } },
       ],
     })
-      .select('name username profilePicture avatar bio expertise interests topCompanies companyDomain education')
+      .select('name username profilePicture bio expertise interests topCompanies companyDomain education')
       .limit(limit)
       .lean();
   }
@@ -393,14 +325,25 @@ async function matchMentorsFallback(context = {}, limit = 3) {
   if (mentors.length < limit) {
     const existing = new Set(mentors.map(m => String(m._id)));
     const fill = await User.find({ ...base, _id: { $nin: [...existing] } })
-      .select('name username profilePicture avatar bio expertise interests topCompanies companyDomain education')
+      .select('name username profilePicture bio expertise interests topCompanies companyDomain education')
       .sort({ lastActive: -1 })
       .limit(limit - mentors.length)
       .lean();
     mentors = [...mentors, ...fill];
   }
 
-  return mentors.map(toMentorCard);
+  return mentors.map(m => ({
+    id: String(m._id),
+    // Most mentor records have no `name` set — fall back to username so cards never render blank.
+    name: m.name || m.username || 'Atyant Mentor',
+    username: m.username,
+    profilePicture: m.profilePicture,
+    bio: m.bio,
+    expertise: m.expertise || [],
+    topCompanies: m.topCompanies || [],
+    companyDomain: m.companyDomain,
+    college: m.education?.[0]?.institutionName || m.education?.[0]?.institution || null,
+  }));
 }
 
 // ─── Greeting Detection ─────────────────────────────────────────────────────
@@ -649,7 +592,7 @@ ${conv.problemStatement}
   let matchedMentors = [];
   if (outputMode === 'MENTOR_ROUTING') {
     try {
-      matchedMentors = await matchMentors(conv.context, 3, userId);
+      matchedMentors = await matchMentors(conv.context);
     } catch (err) {
       console.error('Mentor match failed (non-fatal):', err.message);
     }

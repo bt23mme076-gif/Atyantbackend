@@ -213,19 +213,6 @@ router.put('/me', protect, async (req, res) => {
       user.servicesOffered = sanitizeServiceIds(updateData.servicesOffered);
     }
 
-    // Custom service (mentor-defined, stored separately)
-    if (updateData.customService !== undefined && typeof updateData.customService === 'object') {
-      const cs = updateData.customService;
-      user.customService = {
-        enabled:     Boolean(cs.enabled),
-        label:       String(cs.label || '').trim().slice(0, 80),
-        description: String(cs.description || '').trim().slice(0, 200),
-        price:       Math.max(0, Number(cs.price) || 0),
-        durationMin: Math.min(180, Math.max(5, Number(cs.durationMin) || 30)),
-      };
-      user.markModified('customService');
-    }
-
     // Education — 🔴 FIX: sync both institution & institutionName for AtyantEngine
     if (updateData.education !== undefined) {
       user.education = Array.isArray(updateData.education)

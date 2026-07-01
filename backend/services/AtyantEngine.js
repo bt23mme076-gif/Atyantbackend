@@ -211,46 +211,6 @@ const SPECIAL_TAGS = [
 ];
 
 // ─────────────────────────────────────────────
-//  INTENT (internship vs placement)
-//  Module-level so the live query analyzer AND the answer-card intent detector
-//  share ONE source of truth — they must never drift apart.
-// ─────────────────────────────────────────────
-const INTERNSHIP_PATTERNS = ['internship', 'intern', 'summer internship', 'winter internship', 'intern offer', 'internship offer', 'intern prep'];
-const PLACEMENT_PATTERNS = ['placement', 'job', 'full time', 'full-time', 'ft role', 'ft offer', 'job offer', 'campus placement', 'recruitment'];
-
-function detectIntentFromText(text) {
-  const t = String(text || '').toLowerCase();
-  const internMatches = INTERNSHIP_PATTERNS.filter(p => t.includes(p)).length;
-  const placeMatches = PLACEMENT_PATTERNS.filter(p => t.includes(p)).length;
-  if (internMatches > placeMatches && internMatches > 0) return 'internship';
-  if (placeMatches > 0) return 'placement';
-  return 'general';
-}
-
-// An answer card's intent: prefer the stored domain, else derive from its text.
-// Legacy cards (created before `domain` existed) default to 'general' in the DB,
-// so we re-detect from the answer content — but a card that doesn't clearly read
-// as the opposite intent stays 'general' and is never wrongly filtered out.
-function cardIntent(card) {
-  if (card?.domain && card.domain !== 'general') return card.domain;
-  const ac = card?.answerContent || {};
-  const text = [
-    ac.mainAnswer, ac.situation, ac.firstAttempt, ac.whatWorked,
-    ac.timeline, ac.differentApproach, ac.additionalNotes,
-  ].filter(Boolean).join(' ');
-  return detectIntentFromText(text);
-}
-
-// Hard intent gate. A CONFIDENT internship/placement query must NOT be served a
-// card of the opposite intent — this is what served placement answers to interns.
-// General queries never conflict; general/unknown cards never conflict.
-function intentConflict(queryIntent, theCardIntent) {
-  if (queryIntent !== 'internship' && queryIntent !== 'placement') return false;
-  if (!theCardIntent || theCardIntent === 'general') return false;
-  return theCardIntent !== queryIntent;
-}
-
-// ─────────────────────────────────────────────
 //  UTILITY FUNCTIONS
 // ─────────────────────────────────────────────
 // Auto-generate lookup variants from a mentor-entered company name so new
@@ -755,7 +715,7 @@ async function getActiveMentors() {
       ],
     })
       .select(
-        'username name profilePicture avatar email education primaryDomain topCompanies milestones specialTags ' +
+        'username email education primaryDomain topCompanies milestones specialTags ' +
         'expertise bio activeQuestions rating responseRate lastActive successfulMatches ' +
         'companyDomain feedbackScore totalAnswered feedbackCount outcomeScore outcomeCount'
       )
@@ -819,14 +779,17 @@ class AtyantEngine {
   async detectQueryDetails(text) {
     const t = text.toLowerCase();
 
-    const internMatches = INTERNSHIP_PATTERNS.filter(p => t.includes(p)).length;
-    const placeMatches = PLACEMENT_PATTERNS.filter(p => t.includes(p)).length;
+    const internshipPatterns = ['internship', 'intern', 'summer internship', 'winter internship', 'intern offer', 'internship offer', 'intern prep'];
+    const placementPatterns = ['placement', 'job', 'full time', 'full-time', 'ft role', 'ft offer', 'job offer', 'campus placement', 'recruitment'];
+
+    const internMatches = internshipPatterns.filter(p => t.includes(p)).length;
+    const placeMatches = placementPatterns.filter(p => t.includes(p)).length;
 
     let intent, confidence;
     if (internMatches > placeMatches && internMatches > 0) {
-      intent = 'internship'; confidence = Math.min(internMatches / INTERNSHIP_PATTERNS.length, 1);
+      intent = 'internship'; confidence = Math.min(internMatches / internshipPatterns.length, 1);
     } else if (placeMatches > 0) {
-      intent = 'placement'; confidence = Math.min(placeMatches / PLACEMENT_PATTERNS.length, 1);
+      intent = 'placement'; confidence = Math.min(placeMatches / placementPatterns.length, 1);
     } else {
       intent = 'general'; confidence = 0.3;
     }
@@ -924,7 +887,6 @@ class AtyantEngine {
             answerContent: 1,
             mentorId: 1,
             questionId: 1,
-            domain: 1,
             createdAt: 1,
             score: { $meta: 'vectorSearchScore' },
           },
@@ -948,12 +910,6 @@ class AtyantEngine {
 
       for (const match of candidates) {
         if (match.score < CONFIG.SEMANTIC_FLOOR) continue;
-        // HARD intent gate: never let a placement card answer an internship query
-        // (or vice-versa). This is the fix for interns getting placement answers.
-        if (intentConflict(intent, cardIntent(match))) {
-          dlog(`⏭️  Skip card ${match._id} — intent conflict (q=${intent}, card=${cardIntent(match)})`);
-          continue;
-        }
         const mentor = mentorMap.get(match.mentorId.toString());
         if (!mentor) continue;
 
@@ -1450,7 +1406,7 @@ class AtyantEngine {
       // Scrollable feed: top N answer cards (one per senior who solved a similar problem)
       let answerCards = [];
       if (vector) {
-        try { answerCards = await this.getTopAnswerCards(vector, options.answerLimit || 4, studentContext, queryDetails?.intent || 'general'); }
+        try { answerCards = await this.getTopAnswerCards(vector, options.answerLimit || 4, studentContext); }
         catch (e) { console.error('getTopAnswerCards error:', e.message); }
       }
 
@@ -1473,7 +1429,7 @@ class AtyantEngine {
       Returns up to `n` distinct seniors' answer cards,
       ranked by semantic similarity to the question.
      ============================================= */
-  async getTopAnswerCards(vector, n = 4, studentContext = null, intent = 'general') {
+  async getTopAnswerCards(vector, n = 4, studentContext = null) {
     const candidates = await AnswerCard.aggregate([
       {
         $vectorSearch: {
@@ -1485,16 +1441,13 @@ class AtyantEngine {
           filter: {},
         },
       },
-      { $project: { answerContent: 1, mentorId: 1, domain: 1, score: { $meta: 'vectorSearchScore' } } },
+      { $project: { answerContent: 1, mentorId: 1, score: { $meta: 'vectorSearchScore' } } },
     ]);
 
     // Feed is lenient (surfaces relevant journeys for free insight) — unlike the
-    // strict instant-answer floor used for the single auto-answer. Intent still
-    // gates hard: an internship query never shows placement journeys here either.
+    // strict instant-answer floor used for the single auto-answer.
     const FEED_FLOOR = 0.45;
-    const passing = candidates
-      .filter(c => (c.score || 0) >= FEED_FLOOR)
-      .filter(c => !intentConflict(intent, cardIntent(c)));
+    const passing = candidates.filter(c => (c.score || 0) >= FEED_FLOOR);
     if (passing.length === 0) return [];
 
     // #4 — exclude the "Atyant Engine" fallback/seed account so it never shows as
@@ -1622,16 +1575,9 @@ class AtyantEngine {
         console.error(`⚠️ Embedding failed — card saves without vector:`, embErr.message);
       }
 
-      // Stamp the card's intent from its source question so future internship vs
-      // placement gating is exact (no runtime re-derivation needed).
-      const cardDomain = detectIntentFromText(
-        [question?.questionText, ...(question?.keywords || [])].filter(Boolean).join(' ')
-      );
-
       const newCard = new AnswerCard({
         mentorId, questionId, mentorExperienceId,
         answerContent: polishedContent,
-        domain: cardDomain,
         ...(embedding ? { embedding } : {}),
       });
       await newCard.save();

@@ -83,9 +83,6 @@ const COUPONS = {
   FIRST50:   { type: 'fixed',   value: 50,  desc: '₹50 off for first-time students' },
   CAREER20:  { type: 'percent', value: 20,  desc: '20% off on any session' },
   SUMMER15:  { type: 'percent', value: 15,  desc: 'Summer special discount' },
-  // ── B2B college pilots — 100% off so partner-college students book free.
-  // The college pays Atyant out-of-band; students never hit Razorpay.
-  VNIT100:   { type: 'percent', value: 100, desc: 'VNIT placement pilot — free access' },
 };
 
 function applyCoupon(price, code) {
@@ -287,13 +284,7 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
 
     const signature = req.headers['x-razorpay-signature'];
     const digest = crypto.createHmac('sha256', secret).update(req.body).digest('hex');
-    let signatureValid = false;
-    try {
-      signatureValid = crypto.timingSafeEqual(Buffer.from(digest, 'hex'), Buffer.from(signature || '', 'hex'));
-    } catch {
-      signatureValid = false; // length mismatch / malformed header
-    }
-    if (!signatureValid) {
+    if (digest !== signature) {
       console.error('❌ Invalid Razorpay webhook signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }

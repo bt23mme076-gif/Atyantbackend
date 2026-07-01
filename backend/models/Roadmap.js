@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 
-export const roadmapStepSchema = new mongoose.Schema({
+const roadmapStepSchema = new mongoose.Schema({
   phase:    { type: String },
   title:    { type: String },
   duration: { type: String },

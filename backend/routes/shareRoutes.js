@@ -60,8 +60,6 @@ router.get('/u/:username', async (req, res) => {
       .select('username name bio topCompanies profilePicture picture')
       .lean();
 
-      
-
     if (!user) return res.status(404).json({ message: 'Profile not found' });
 
     res.json({ success: true, share: buildShareKit(user) });
@@ -88,7 +86,6 @@ router.post('/me/track', protect, async (req, res) => {
 
 // GET /api/share/r/:username — tracked referral link (the one mentors post)
 router.get('/r/:username', async (req, res) => {
-   console.log("USERNAME =", req.params.username);
   const { username } = req.params;
   const via = normalizeSource(req.query.via);
 
@@ -98,8 +95,6 @@ router.get('/r/:username', async (req, res) => {
     })
       .select('username name bio topCompanies profilePicture picture')
       .lean();
-
-       console.log("USER FOUND =", user);
 
     if (!user) {
       return res.redirect(302, (process.env.FRONTEND_URL || 'https://atyant.in'));
@@ -111,8 +106,6 @@ router.get('/r/:username', async (req, res) => {
     }).catch((err) => console.error('referralClicks increment error:', err.message));
 
     const target = buildLandingUrl(user.username, { via });
-
-    console.log("TARGET =", target);
 
     // ── Topmate-style unfurl ──────────────────────────────────────────────────
     // We serve the SAME Open Graph HTML to EVERYONE (not just detected crawlers),

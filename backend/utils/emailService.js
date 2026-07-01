@@ -1,5 +1,4 @@
 import { Resend } from 'resend';
-import { productAppUrl } from './frontendUrl.js';
 
 // Lazy-initialized so env is always read at call time, not module load time
 let _resend = null;
@@ -164,7 +163,7 @@ export const sendMentorWelcomeEmail = async (email, mentorName) => {
 
 // ─────────────────────────────────────────────────────────────
 //  Session confirmed (after payment) — emails BOTH student & mentor
-//  with the platform meet link.
+//  with the auto-generated Google Meet link.
 // ─────────────────────────────────────────────────────────────
 export const sendSessionConfirmationEmails = async ({
   studentEmail, studentName, mentorEmail, mentorName,
@@ -180,11 +179,11 @@ export const sendSessionConfirmationEmails = async ({
   });
   const meetBlock = meetLink
     ? `<div style="text-align:center;margin:28px 0;">
-         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Session</a>
+         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Google Meet</a>
          <p style="color:#9ca3af;font-size:12px;margin-top:10px;">Link: <a href="${meetLink}" style="color:#4F46E5;">${meetLink}</a></p>
        </div>`
     : `<p style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:12px;border-radius:8px;line-height:1.5;">
-         Your session link will be shared shortly before the session. We'll email it to you.
+         Your Google Meet link will be shared shortly before the session. We'll email it to you.
        </p>`;
 
   const card = (heading, intro) => `
@@ -253,11 +252,11 @@ export const sendSessionReminderEmails = async ({
   });
   const meetBlock = meetLink
     ? `<div style="text-align:center;margin:28px 0;">
-         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Session</a>
+         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Google Meet</a>
          <p style="color:#9ca3af;font-size:12px;margin-top:10px;">Link: <a href="${meetLink}" style="color:#4F46E5;">${meetLink}</a></p>
        </div>`
     : `<p style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:12px;border-radius:8px;line-height:1.5;">
-         The session link will be shared shortly before the session.
+         The Google Meet link will be shared shortly before the session.
        </p>`;
 
   const card = (heading, intro) => `
@@ -528,70 +527,6 @@ export const sendMentorPaymentNotification = async (mentorEmail, mentorName, stu
   }
 };
 
-// ─────────────────────────────────────────────────────────────
-//  Review notification — student rated/reviewed a completed session
-// ─────────────────────────────────────────────────────────────
-export const sendMentorReviewNotification = async ({ mentorEmail, mentorName, studentName, rating, comment, topic }) => {
-  if (!getResend()) {
-    console.warn('⚠️ Email service not configured. Skipping mentor review notification email.');
-    return { success: false, error: 'Email service not configured' };
-  }
-
-  try {
-    const stars = '★'.repeat(rating) + '☆'.repeat(5 - rating);
-
-    const { data, error } = await getResend().emails.send({
-      from: 'Atyant <notifications@atyant.in>',
-      replyTo: 'support@atyant.in',
-      to: [mentorEmail],
-      subject: `⭐ ${studentName} left you a ${rating}-star review`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h1 style="color: #4F46E5; margin: 0;">Atyant</h1>
-          </div>
-
-          <div style="background-color: #fffbeb; padding: 30px; border-radius: 10px; border-left: 4px solid #f59e0b;">
-            <h2 style="color: #1f2937; margin-top: 0;">New review from ${studentName}</h2>
-
-            <p style="color: #6b7280; line-height: 1.6; margin-bottom: 20px;">
-              Hi ${mentorName},
-            </p>
-
-            <p style="color: #6b7280; line-height: 1.6; margin-bottom: 20px;">
-              <strong>${studentName}</strong> just reviewed your session${topic ? ` on <strong>${topic}</strong>` : ''}.
-            </p>
-
-            <div style="background-color: #ffffff; padding: 20px; border-radius: 8px; margin: 20px 0;">
-              <div style="font-size: 24px; color: #f59e0b; letter-spacing: 4px;">${stars}</div>
-              ${comment ? `<p style="color: #1f2937; line-height: 1.6; margin: 14px 0 0; font-style: italic;">"${comment}"</p>` : ''}
-            </div>
-
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${productAppUrl()}/"
-                 style="background-color: #4F46E5; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-                View in My Sessions
-              </a>
-            </div>
-          </div>
-          ${emailFooter}
-        </div>
-      `
-    });
-
-    if (error) {
-      console.error('Email send error:', error);
-      throw new Error('Failed to send mentor review notification email');
-    }
-
-    console.log('Mentor review notification email sent successfully:', data);
-    return data;
-  } catch (error) {
-    console.error('Error sending mentor review notification:', error);
-    throw error;
-  }
-};
-
 // Add mentor booking notification function
 export const sendMentorBookingNotification = async ({
   mentorEmail,
@@ -839,58 +774,6 @@ export const sendPasswordOTPEmail = async (email, otp) => {
     return data;
   } catch (error) {
     console.error('OTP email error:', error);
-    throw error;
-  }
-};
-// ─────────────────────────────────────────────────────────────
-//  Email Verification OTP — sent on first-time registration
-// ─────────────────────────────────────────────────────────────
-export const sendEmailVerificationOTP = async (email, otp, username) => {
-  if (!getResend()) {
-    console.warn('⚠️ Email service not configured. Skipping email verification OTP.');
-    return { success: false, error: 'Email service not configured' };
-  }
-
-  const name = username || 'there';
-
-  try {
-    const { data, error } = await getResend().emails.send({
-      from: 'Atyant <notifications@atyant.in>',
-      replyTo: 'support@atyant.in',
-      to: [email],
-      subject: 'Verify your Atyant account — OTP inside',
-      headers: {
-        'List-Unsubscribe': '<mailto:support@atyant.in?subject=unsubscribe>'
-      },
-      text: `Atyant Email Verification\n\nHi ${name},\n\nThanks for signing up! Use the code below to verify your email address:\n\n${otp}\n\nThis code expires in 10 minutes. Do not share it with anyone.\n\nIf you didn't create an Atyant account, you can safely ignore this email.\n\nRegards,\nTeam Atyant\nsupport@atyant.in`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; color: #333333; line-height: 1.6;">
-          <h1 style="color:#4F46E5; margin-bottom: 20px;">Atyant</h1>
-          <h2 style="color:#1f2937;">Verify your email, ${name} 👋</h2>
-          <p>Thanks for signing up! Enter the code below to activate your account.</p>
-          <div style="font-size:36px; font-weight:bold; color:#4F46E5; letter-spacing:8px; margin:30px 0; background-color:#f9fafb; padding:20px; text-align:center; border-radius:10px; border: 2px dashed #4F46E5;">
-            ${otp}
-          </div>
-          <p>This code expires in <strong>10 minutes</strong>.</p>
-          <p style="color:#666666; font-size:14px;">If you didn't create an Atyant account, you can safely ignore this email.</p>
-          <hr style="margin-top:30px; border:none; border-top:1px solid #eeeeee;">
-          <p style="font-size:12px; color:#999999; text-align:center;">
-            This email was sent by Atyant.<br>
-            Questions? Contact support@atyant.in
-          </p>
-        </div>
-      `
-    });
-
-    if (error) {
-      console.error('Resend error (email verification OTP):', error);
-      throw new Error('Failed to send verification OTP email');
-    }
-
-    console.log('Email verification OTP sent:', data?.id);
-    return data;
-  } catch (error) {
-    console.error('sendEmailVerificationOTP error:', error);
     throw error;
   }
 };

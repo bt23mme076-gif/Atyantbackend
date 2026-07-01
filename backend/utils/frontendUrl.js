@@ -18,33 +18,13 @@ export function frontendBase() {
   return base.replace(/\/+$/, '');
 }
 
-// Path prefix under which atyant.in now proxies the product app. atyant.in used
-// to proxy bare "/" to the product app, but that changed: "/" is now the
-// marketing site's own homepage, and the product app moved to "/atyantEngine"
-// (and everything under it). Overridable via PRODUCT_APP_PATH; empty string
-// restores the old bare-root behaviour (e.g. atyantproduct.vercel.app directly,
-// where the product app IS the root — no prefix needed there).
-const PRODUCT_APP_PATH = (process.env.PRODUCT_APP_PATH ?? '/atyantEngine').replace(/\/+$/, '');
-
-// Absolute base URL of the product app itself (frontend origin + PRODUCT_APP_PATH).
-// Use this for any new in-app deep link so the /atyantEngine prefix isn't
-// duplicated ad hoc across callers.
-export function productAppUrl() {
-  return `${frontendBase()}${PRODUCT_APP_PATH}`;
-}
-
 // Absolute in-app meet link for a session id, built for the current environment.
-// Query param (?meet=) keeps it same-origin with the product app so the user's
-// localStorage auth token is available.
+// Served at the root with a ?meet= query param because the marketing site
+// (atyant.in) only proxies "/" to the product app — a /session/meet/<id> path
+// would fall through to the marketing site. Root + query keeps it same-origin
+// so the user's localStorage auth token is available on the meet page.
 export function meetLinkFor(sessionId) {
-  return `${productAppUrl()}/?meet=${sessionId}`;
-}
-
-// Absolute in-app CHAT deep link, built for the current environment. Same
-// same-origin reasoning as meetLinkFor. `partnerId` is the OTHER person in the
-// thread (mentor opens the student's thread, student opens the mentor's thread).
-export function chatLinkFor(partnerId) {
-  return `${productAppUrl()}/?chat=${partnerId}`;
+  return `${frontendBase()}/?meet=${sessionId}`;
 }
 
 // Re-point a stored (possibly cross-environment) meet link at the current
@@ -53,8 +33,8 @@ export function chatLinkFor(partnerId) {
 export function localizeMeetLink(meetingLink) {
   if (!meetingLink) return meetingLink;
   const q = meetingLink.match(/[?&]meet=([^&#]+)/);
-  if (q) return `${productAppUrl()}/?meet=${q[1]}`;
+  if (q) return `${frontendBase()}/?meet=${q[1]}`;
   const m = meetingLink.match(/\/session\/meet\/([^/?#]+)/);
-  if (m) return `${productAppUrl()}/?meet=${m[1]}`;
+  if (m) return `${frontendBase()}/?meet=${m[1]}`;
   return meetingLink;
 }
