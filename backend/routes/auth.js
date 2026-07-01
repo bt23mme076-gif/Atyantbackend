@@ -41,11 +41,17 @@ const sendWelcomeEmail = (user) => {
     .catch(err => console.error('Welcome email failed (non-fatal):', err.message));
 };
 
+// atyant.in no longer proxies bare "/" to the product app — it moved to
+// "/atyantEngine" (see backend/utils/frontendUrl.js for the full story).
+// OAuth must land the browser inside that prefix or the token query param is
+// dropped on the marketing site's own homepage and the user never gets signed in.
+const PRODUCT_APP_PATH = (process.env.PRODUCT_APP_PATH ?? '/atyantEngine').replace(/\/+$/, '');
+
 const getFrontendUrl = () => {
-  if (process.env.NODE_ENV !== 'production' && process.env.LOCAL_FRONTEND_URL) {
-    return process.env.LOCAL_FRONTEND_URL;
-  }
-  return process.env.FRONTEND_URL || 'http://localhost:5173';
+  const base = (process.env.NODE_ENV !== 'production' && process.env.LOCAL_FRONTEND_URL)
+    ? process.env.LOCAL_FRONTEND_URL
+    : (process.env.FRONTEND_URL || 'http://localhost:5173');
+  return `${base.replace(/\/+$/, '')}${PRODUCT_APP_PATH}`;
 };
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
