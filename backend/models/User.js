@@ -68,8 +68,6 @@ const userSchema = new mongoose.Schema({
 
     lowercase: true,
 
-    minlength: 3,
-
     maxlength: 100
 
   },
@@ -104,7 +102,25 @@ const userSchema = new mongoose.Schema({
 
   },
 
+<<<<<<< HEAD
 
+=======
+  // ─── EMAIL VERIFICATION (NEW) ───────────────
+  isEmailVerified: { type: Boolean, index: true },
+
+  emailOTP: {
+    type: String,
+    select: false,
+    default: null
+  },
+
+  emailOTPExpires: {
+    type: Date,
+    select: false,
+    default: null
+  },
+  // ────────────────────────────────────────────
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
 
   password: {
 
@@ -159,13 +175,17 @@ const userSchema = new mongoose.Schema({
   companyDomain: {
 
     type: String,
+<<<<<<< HEAD
 
     enum: ['Tech', 'Data Analytics', 'Consulting', 'Product', 'Core Engineering', null],
 
+=======
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
     default: null
 
   },
 
+<<<<<<< HEAD
 
 
   tier: { type: Number, default: 1 },
@@ -191,12 +211,26 @@ const userSchema = new mongoose.Schema({
   interests: { type: [String], default: [] },
 
   domainExperience: { type: [String], default: [] },
+=======
+  // ─── PROFILE ───────────────────────────────
+  profilePicture: {
+    type: String,
+    default: null
+  },
+
+  bio: {
+    type: String,
+    maxlength: 500,
+    default: null
+  },
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
 
 
 
   // ─── EDUCATION ─────────────────────────────
 
   education: [{
+<<<<<<< HEAD
 
     institutionName: { type: String },
 
@@ -236,12 +270,28 @@ const userSchema = new mongoose.Schema({
 
   passwordResetExpires: { type: Date, select: false },
 
+=======
+    institution: String,
+    degree: String,
+    field: String,
+    startYear: Number,
+    endYear: Number,
+    current: Boolean
+  }],
+
+  // ─── RESET PASSWORD ────────────────────────
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
   resetOTP: {
 
     type: String,
+<<<<<<< HEAD
 
     select: false
 
+=======
+    select: false,
+    default: null
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
   },
 
 
@@ -249,6 +299,7 @@ const userSchema = new mongoose.Schema({
   resetOTPExpires: {
 
     type: Date,
+<<<<<<< HEAD
 
     select: false
 
@@ -468,17 +519,31 @@ const userSchema = new mongoose.Schema({
 
     type: Date,
 
+=======
+    select: false,
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
     default: null
 
   },
 
+<<<<<<< HEAD
   razorpaySubscriptionId: {
 
+=======
+  // ─── CALENDAR ──────────────────────────────
+  calendarConnected: {
+    type: Boolean,
+    default: false
+  },
+
+  calendarProvider: {
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
     type: String,
 
     default: null
 
   },
+<<<<<<< HEAD
 
   subscriptionCredits: {
 
@@ -516,12 +581,20 @@ const userSchema = new mongoose.Schema({
 
   // ─── OAUTH & CALENDAR ──────────────────────
 
+=======
+
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
   accessToken: {
 
     type: String,
+<<<<<<< HEAD
 
     select: false
 
+=======
+    select: false,
+    default: null
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
   },
 
 
@@ -529,6 +602,7 @@ const userSchema = new mongoose.Schema({
   refreshToken: {
 
     type: String,
+<<<<<<< HEAD
 
     select: false
 
@@ -550,17 +624,43 @@ const userSchema = new mongoose.Schema({
 
     enum: ['google', 'outlook', 'manual', null],
 
+=======
+    select: false,
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
     default: null
 
   },
 
+<<<<<<< HEAD
 
 
   lastLogin: { type: Date, default: null },
+=======
+  // ─── CUSTOM SERVICE (mentor-defined, separate from platform catalog) ───────
+  customService: {
+    enabled:     { type: Boolean, default: false },
+    label:       { type: String,  trim: true, maxlength: 80  },
+    description: { type: String,  trim: true, maxlength: 200 },
+    price:       { type: Number,  min: 0 },
+    durationMin: { type: Number,  min: 5, max: 180 },
+  },
+
+  // ─── STATS ─────────────────────────────────
+  referralSignups: {
+    type: Number,
+    default: 0
+  },
+
+  credits: {
+    type: Number,
+    default: 0
+  },
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
 
 
 
 }, {
+<<<<<<< HEAD
 
   timestamps: true
 
@@ -702,6 +802,11 @@ userSchema.methods.calculateProfileStrength = function () {
 
 
 
+=======
+  timestamps: true,
+});
+
+>>>>>>> 933d8f482f01947c64d5defdb3a867a47a33b02c
 const User = mongoose.model('User', userSchema);
 
 export default User;

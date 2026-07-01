@@ -53,6 +53,66 @@ const shouldSendAutoReply = async (senderId, receiverId) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  PURCHASE KICK-OFF
+//  Called the moment a student buys a Text Q&A session. Creates the mentor's
+//  first automated "ask your doubts" message so the conversation exists for BOTH
+//  sides immediately (the mentor sees the thread; the student sees a prompt to
+//  start asking). Idempotent — never creates a second automated message for a
+//  pair that already has one. `io` is optional; when present we emit live so an
+//  already-open chat updates without a refresh.
+// ─────────────────────────────────────────────────────────────────────────────
+export const sendChatKickoff = async (io, studentId, mentorId, mentorData = {}) => {
+  try {
+    // Already have an automated greeting from this mentor to this student? Skip.
+    const existing = await Message.findOne({ sender: mentorId, receiver: studentId, isAutoReply: true });
+    if (existing) return existing;
+
+    const kickoff = await Message.create({
+      sender: mentorId,                 // mentor
+      receiver: studentId,              // student
+      text: `Hi! 👋 Thanks for booking a Text Q&A session with ${mentorData.username || mentorData.name || 'me'}.\n\nGo ahead and ask your doubts here in as much detail as you can — I'll get back to you with personalized guidance. You can chat with me any time before your session day ends.`,
+      isAutoReply: true,
+      seen: false,
+      status: 'sent',
+    });
+
+    if (io) {
+      const populated = await Message.findById(kickoff._id)
+        .populate('sender', 'username name profilePicture')
+        .populate('receiver', 'username name profilePicture')
+        .lean();
+
+      const payload = {
+        _id: populated._id,
+        sender: populated.sender._id,
+        senderName: populated.sender.username || populated.sender.name,
+        senderAvatar: populated.sender.profilePicture,
+        receiver: populated.receiver._id,
+        receiverName: populated.receiver.username || populated.receiver.name,
+        receiverAvatar: populated.receiver.profilePicture,
+        text: populated.text,
+        createdAt: populated.createdAt,
+        timestamp: populated.createdAt,
+        isAutoReply: true,
+        seen: false,
+        status: 'sent',
+        deliveredAt: null,
+        readAt: null,
+      };
+      io.to(String(studentId)).emit('receive_private_message', payload);
+      io.to(String(mentorId)).emit('receive_private_message', payload);
+      io.to(String(studentId)).emit('chat_update', { type: 'new_message', messageId: kickoff._id });
+      io.to(String(mentorId)).emit('chat_update', { type: 'new_message', messageId: kickoff._id });
+    }
+
+    return kickoff;
+  } catch (error) {
+    console.error('❌ sendChatKickoff error:', error);
+    return null;
+  }
+};
+
 // ✅ Send auto-reply (FIXED - Real-time without refresh)
 export const sendAutoReply = async (io, senderId, receiverId, mentorData) => {
   try {

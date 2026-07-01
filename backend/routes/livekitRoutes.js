@@ -39,27 +39,41 @@ router.post('/join/:sessionId', protect, async (req, res) => {
     const user = await User.findById(userId).select('name username').lean();
     const participantName = user?.name || user?.username || userId;
     const role = isMentor ? 'admin' : 'participant';
+    const callType = session.serviceId === 'audio-call' ? 'audio' : 'video';
 
     const token = await liveKitService.generateToken(
       session.livekitRoomName,
       userId,
       participantName,
-      role
+      role,
+      callType
     );
 
-    // Start egress on first join (only once per session)
-    if (!session.egressId) {
-      try {
+    // Ensure recording is actually RUNNING on every join — not "start once".
+    // The old `if (!session.egressId)` guard started egress a single time, so if
+    // egress died early (someone joined a few seconds before the real session,
+    // the room briefly emptied, and the composite egress stopped) it was never
+    // restarted → the entire hour-long session went unrecorded. Instead: ask
+    // LiveKit whether a live egress exists for this room; if one does, sync its
+    // id; if none is active, (re)start one. This self-heals an early-dead egress.
+    try {
+      const active = await liveKitService.getActiveEgress(session.livekitRoomName);
+      if (active) {
+        if (session.egressId !== active.egressId) {
+          session.egressId = active.egressId;
+          await session.save();
+        }
+      } else {
         const { egressId } = await liveKitService.startAudioEgress(
           session.livekitRoomName,
           session._id
         );
         session.egressId = egressId;
         await session.save();
-      } catch (err) {
-        // Non-fatal — session still works, just won't be recorded
-        console.error('Egress start failed (non-fatal):', err.message);
       }
+    } catch (err) {
+      // Non-fatal — session still works, just won't be recorded
+      console.error('Egress ensure failed (non-fatal):', err.message);
     }
 
     res.json({
@@ -67,6 +81,7 @@ router.post('/join/:sessionId', protect, async (req, res) => {
       token,
       roomName: session.livekitRoomName,
       livekitUrl: process.env.LIVEKIT_WS_URL || process.env.LIVEKIT_HOST?.replace('http', 'ws'),
+      callType,
     });
   } catch (err) {
     console.error('LiveKit join error:', err);

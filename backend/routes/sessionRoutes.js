@@ -1,9 +1,12 @@
 import express from 'express';
 import Session from '../models/Session.js';
+import SessionTranscript from '../models/SessionTranscript.js';
+import SessionInsight from '../models/SessionInsight.js';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
 import { localizeMeetLink } from '../utils/frontendUrl.js';
+import { sendMentorReviewNotification } from '../utils/emailService.js';
 
 const router = express.Router();
 
@@ -29,11 +32,13 @@ router.get('/my', optionalAuth, async (req, res) => {
       s.viewerRole = isMentorView ? 'mentor' : 'student';
       if (isMentorView) {
         const student = s.userId || {};
-        s.counterpartName    = student.name || student.username || 'Student';
+        s.counterpartName = student.name || student.username || 'Student';
         s.counterpartPicture = student.profilePicture || '';
+        s.counterpartId = student._id ? String(student._id) : (s.userId ? String(s.userId) : null);
       } else {
-        s.counterpartName    = s.mentorName || 'Your Mentor';
+        s.counterpartName = s.mentorName || 'Your Mentor';
         s.counterpartPicture = s.mentorProfilePicture || '';
+        s.counterpartId = s.mentorId ? String(s.mentorId) : null;
       }
       // userId was populated to an object for the lookup above; collapse it back
       // to a plain id so existing consumers that expect a string keep working.
@@ -66,7 +71,7 @@ router.get('/my', optionalAuth, async (req, res) => {
 // time format: "9:00 AM" or "09:00"
 router.post('/book', protect, async (req, res) => {
   try {
-    const { mentorId, date, time, topic } = req.body;
+    const { mentorId, date, time, topic, sessionType } = req.body;
 
     if (!date || !time) {
       return res.status(400).json({ ok: false, error: 'date and time are required' });
@@ -98,13 +103,35 @@ router.post('/book', protect, async (req, res) => {
           .slice(0, 2);
       }
     }
+    let amount = 0;
+
+switch (sessionType) {
+  case 'chat':
+    amount = 49;
+    break;
+
+  case 'audio':
+    amount = 149;
+    break;
+
+  case 'video':
+    amount = 299;
+    break;
+
+  case 'resume':
+    amount = 199;
+    break;
+
+  default:
+    amount = 49;
+}
 
     const session = await Session.create({
-      userId:         req.user.userId,
-      mentorId:       resolvedMentorId,
+      userId: req.user.userId,
+      mentorId: resolvedMentorId,
       mentorName,
       mentorInitials,
-      topic:          topic || 'Career Guidance Session',
+      topic: topic || 'Career Guidance Session',
       scheduledAt,
       status:         'upcoming',
     });
@@ -144,6 +171,75 @@ router.patch('/:id/complete', protect, async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+router.get('/mentor/:mentorId/stats', async (req, res) => {
+  try {
+    const mentorId = req.params.mentorId;
+
+    const sessions = await Session.find({ mentorId });
+
+    const now = new Date();
+
+    const bookedToday = sessions.filter(session => {
+      const sessionDate = new Date(session.scheduledAt);
+
+      return (
+        sessionDate.getDate() === now.getDate() &&
+        sessionDate.getMonth() === now.getMonth() &&
+        sessionDate.getFullYear() === now.getFullYear()
+      );
+    }).length;
+
+    const completed = sessions.filter(
+      session => session.status === 'completed'
+    ).length;
+
+    const pending = sessions.filter(
+      session => session.status === 'upcoming'
+    ).length;
+
+    const totalStudents = new Set(
+      sessions.map(session => session.userId.toString())
+    ).size;
+
+    const chatSessions = sessions.filter(
+      session => session.sessionType === 'chat'
+    ).length;
+
+    const audioSessions = sessions.filter(
+      session => session.sessionType === 'audio'
+    ).length;
+
+    const videoSessions = sessions.filter(
+      session => session.sessionType === 'video'
+    ).length;
+
+    const resumeReviews = sessions.filter(
+      session => session.sessionType === 'resume'
+    ).length;
+
+    const totalEarnings = sessions.reduce(
+      (sum, session) => sum + (session.amount || 0),
+      0
+    );
+
+    res.json({
+      bookedToday,
+      completed,
+      pending,
+      totalStudents,
+      chatSessions,
+      audioSessions,
+      videoSessions,
+      resumeReviews,
+      totalEarnings
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
 
 // POST /api/sessions/:id/review — student submits star rating + comment.
 // Updates mentor's rolling average rating and successfulMatches count.
@@ -158,8 +254,8 @@ router.post('/:id/review', protect, async (req, res) => {
     if (session.review?.submittedAt) return res.status(409).json({ ok: false, error: 'Already reviewed' });
 
     session.review = {
-      rating:      numRating,
-      comment:     (req.body.comment || '').trim().slice(0, 300),
+      rating: numRating,
+      comment: (req.body.comment || '').trim().slice(0, 300),
       submittedAt: new Date(),
     };
     await session.save();
@@ -172,9 +268,84 @@ router.post('/:id/review', protect, async (req, res) => {
         mentor.feedbackCount = prev + 1;
         mentor.successfulMatches = (mentor.successfulMatches || 0) + 1;
         await mentor.save();
+
+        if (mentor.email) {
+          const student = await User.findById(req.user.userId).select('name username').lean();
+          await sendMentorReviewNotification({
+            mentorEmail: mentor.email,
+            mentorName: mentor.name || mentor.username || 'Mentor',
+            studentName: student?.name || student?.username || 'A student',
+            rating: numRating,
+            comment: session.review.comment,
+            topic: session.topic,
+          }).catch(err => console.error('Review notification email failed (non-fatal):', err.message));
+        }
       }
     }
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Shared guard — only the session's two participants (student or mentor) may
+// read its post-session artifacts. Returns the session (id-only) or null after
+// already sending the error response.
+async function loadParticipantSession(req, res) {
+  const session = await Session.findById(req.params.id)
+    .select('userId mentorId pipelineStatus')
+    .lean();
+  if (!session) {
+    res.status(404).json({ ok: false, error: 'Session not found' });
+    return null;
+  }
+  const uid = String(req.user.userId);
+  const isParticipant =
+    String(session.userId) === uid || String(session.mentorId || '') === uid;
+  if (!isParticipant) {
+    res.status(403).json({ ok: false, error: 'Not a participant of this session' });
+    return null;
+  }
+  return session;
+}
+
+// GET /api/sessions/:id/transcript — full discussion (text + timestamped
+// segments) from the recording pipeline. Participants only.
+router.get('/:id/transcript', protect, async (req, res) => {
+  try {
+    const session = await loadParticipantSession(req, res);
+    if (!session) return;
+
+    const transcript = await SessionTranscript.findOne({ sessionId: req.params.id }).lean();
+    if (!transcript) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Transcript not ready',
+        pipelineStatus: session.pipelineStatus || 'none',
+      });
+    }
+    res.json({ ok: true, transcript });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/sessions/:id/insight — AI summary, action items and scores from the
+// recording pipeline. Participants only.
+router.get('/:id/insight', protect, async (req, res) => {
+  try {
+    const session = await loadParticipantSession(req, res);
+    if (!session) return;
+
+    const insight = await SessionInsight.findOne({ sessionId: req.params.id }).lean();
+    if (!insight) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Insight not ready',
+        pipelineStatus: session.pipelineStatus || 'none',
+      });
+    }
+    res.json({ ok: true, insight });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

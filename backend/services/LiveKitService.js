@@ -1,6 +1,6 @@
 import {
   AccessToken, RoomServiceClient, EgressClient, WebhookReceiver,
-  EncodedFileOutput, EncodedFileType, S3Upload,
+  EncodedFileOutput, EncodedFileType, S3Upload, TrackSource,
 } from 'livekit-server-sdk';
 
 class LiveKitService {
@@ -35,28 +35,36 @@ class LiveKitService {
     // re-creates it if it was garbage-collected after emptyTimeout. Either way
     // the room is guaranteed to exist on the server when this resolves.
     await this.roomService.createRoom({
+      // 10 min: a brief disconnect/reconnect in the first minute (very common
+      // right as a session starts) must NOT tear the room down — that's what
+      // killed recording early before. Keep the room (and its egress) alive.
       name: roomName,
-      emptyTimeout: 300,
+      emptyTimeout: 600,
       maxParticipants: 2,
     });
     return roomName;
   }
 
   // role: 'participant' | 'admin'
-  async generateToken(roomName, userId, participantName, role = 'participant') {
+  // callType: 'audio' | 'video' — 'audio' locks publish to microphone only (server-enforced)
+  async generateToken(roomName, userId, participantName, role = 'participant', callType = 'video') {
     this._init();
     const at = new AccessToken(this._key, this._secret, {
       identity: String(userId),
       name: participantName,
       ttl: 4 * 60 * 60,
     });
-    at.addGrant({
+    const grant = {
       roomJoin: true,
       room: roomName,
       canPublish: true,
       canSubscribe: true,
       roomAdmin: role === 'admin',
-    });
+    };
+    if (callType === 'audio') {
+      grant.canPublishSources = [TrackSource.MICROPHONE];
+    }
+    at.addGrant(grant);
     return at.toJwt();
   }
 
@@ -102,12 +110,39 @@ class LiveKitService {
     return { egressId: egress.egressId, filePath: location };
   }
 
+  // The currently-active egress for a room, or null. Used on join to decide
+  // whether recording is actually running: an egress can die early (room briefly
+  // emptied before both parties joined), and when it does it must be RESTARTED,
+  // not skipped — otherwise the whole session goes unrecorded.
+  async getActiveEgress(roomName) {
+    this._init();
+    try {
+      const list = await this.egressClient.listEgress({ roomName, active: true });
+      return Array.isArray(list) && list.length ? list[0] : null;
+    } catch (err) {
+      console.warn('listEgress warning (non-fatal):', err.message);
+      return null;
+    }
+  }
+
   async stopEgress(egressId) {
     this._init();
     try {
       await this.egressClient.stopEgress(egressId);
     } catch (err) {
       console.warn('stopEgress warning (non-fatal):', err.message);
+    }
+  }
+
+  // Force-end a room: disconnects any remaining participants and ends the room
+  // (which also stops its egress → fires the egress_ended webhook → pipeline).
+  // Idempotent — deleting an already-closed room is a harmless no-op.
+  async deleteRoom(roomName) {
+    this._init();
+    try {
+      await this.roomService.deleteRoom(roomName);
+    } catch (err) {
+      console.warn('deleteRoom warning (non-fatal):', err.message);
     }
   }
 
