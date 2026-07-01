@@ -148,7 +148,7 @@ const cspDirectives = {
   scriptSrc: ["'self'", 'https://checkout.razorpay.com'],
   connectSrc: ["'self'", 'wss:', 'https:', ...dynamicOrigins],
   styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-  fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+  fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
   imgSrc: ["'self'", 'data:', 'https://res.cloudinary.com'],
   objectSrc: ["'none'"],
 };
