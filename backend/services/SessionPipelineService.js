@@ -23,7 +23,7 @@ class SessionPipelineService {
     try {
       const transcript = await this._transcribe(audioPath);
       const sessionDoc = await Session.findById(sessionId).lean();
-      const insights = await this._extractInsights(transcript.text, sessionDoc);
+      const insights = this._normalizeInsights(await this._extractInsights(transcript.text, sessionDoc));
 
       await Promise.all([
         SessionTranscript.findOneAndUpdate(
@@ -140,11 +140,46 @@ Valid values — studentSentiment: positive|neutral|negative
 Valid values — careerContext: placement|higher_studies|skill_gap|other
 
 Transcript:
-${transcriptText.slice(0, 12000)}`,
+${transcriptText.slice(0, 24000)}`,
         },
       ],
-      { model: PIPELINE_MODEL, maxTokens: 3500, timeoutMs: 45000 },
+      // 24k chars (~6k input tokens) + ~2.5k output keeps a single request under
+      // Groq's free-tier 12k tokens-per-minute cap, so it won't 429 on long
+      // sessions — while still covering ~35–40 min of conversation (vs the old
+      // 6k-char / ~9-min window). If a run does fail, the recording is retained
+      // and can be re-run via /api/sessions/:id/reprocess.
+      { model: PIPELINE_MODEL, maxTokens: 2560, timeoutMs: 60000 },
     );
+  }
+
+  // The LLM's JSON shape varies — an array field sometimes comes back as a bare
+  // string (or is missing). Coerce every field to the type the schema and the
+  // dashboard code (.map/.slice) expect, so a formatting quirk can never crash
+  // the pipeline. Grounds the "1-hour session works without error" guarantee.
+  _normalizeInsights(insights = {}) {
+    const arr = (v) => Array.isArray(v) ? v : (v == null || v === '' ? [] : [v]);
+    const strArr = (v) => arr(v).map(x => (typeof x === 'string' ? x : String(x?.point ?? x ?? ''))).filter(Boolean);
+
+    const ai = insights.actionItems;
+    const actionItems = (ai && typeof ai === 'object' && !Array.isArray(ai))
+      ? { student: strArr(ai.student), mentor: strArr(ai.mentor) }
+      : { student: strArr(ai), mentor: [] };
+
+    return {
+      ...insights,
+      summary:              typeof insights.summary === 'string' ? insights.summary : (insights.summary ? String(insights.summary) : ''),
+      detailedSummary:      typeof insights.detailedSummary === 'string' ? insights.detailedSummary : (insights.detailedSummary ? String(insights.detailedSummary) : ''),
+      topics:               strArr(insights.topics),
+      keyDiscussionPoints:  strArr(insights.keyDiscussionPoints),
+      strengths:            strArr(insights.strengths),
+      areasToImprove:       strArr(insights.areasToImprove),
+      recommendedResources: strArr(insights.recommendedResources),
+      nextSessionFocus:     strArr(insights.nextSessionFocus),
+      studentPainPoints:    arr(insights.studentPainPoints).map(p =>
+                              typeof p === 'string' ? { point: p, timestamp: '' } : { point: String(p?.point ?? ''), timestamp: String(p?.timestamp ?? '') }
+                            ).filter(p => p.point),
+      actionItems,
+    };
   }
 
   async _saveToUserDashboard(sessionDoc, insights) {
