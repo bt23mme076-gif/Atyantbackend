@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
 import { localizeMeetLink } from '../utils/frontendUrl.js';
+import sessionPipelineService from '../services/SessionPipelineService.js';
 
 const router = express.Router();
 
@@ -175,6 +176,30 @@ router.post('/:id/review', protect, async (req, res) => {
       }
     }
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/sessions/:id/reprocess — admin-only. Re-runs the transcription
+// pipeline against the recording still on disk at RECORDINGS_PATH/<id>.ogg.
+// Recovers a session whose egress completed but whose pipeline failed
+// (transient transcription/insight error). Safe to call repeatedly — the
+// pipeline no longer deletes the source file, so the recording survives retries.
+router.post('/:id/reprocess', protect, async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ ok: false, error: 'Admin only' });
+    }
+    const session = await Session.findById(req.params.id).select('_id').lean();
+    if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
+
+    const audioPath = `${process.env.RECORDINGS_PATH || '/tmp/recordings'}/${session._id}.ogg`;
+    // Run async — don't block the response on a potentially long transcription.
+    sessionPipelineService.processSession(session._id, audioPath).catch(err =>
+      console.error('Manual reprocess error:', err.message)
+    );
+    res.json({ ok: true, message: 'Reprocessing started', audioPath });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

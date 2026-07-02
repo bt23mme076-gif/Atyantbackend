@@ -1,7 +1,19 @@
 import {
   AccessToken, RoomServiceClient, EgressClient, WebhookReceiver,
   EncodedFileOutput, EncodedFileType, S3Upload,
+  EncodingOptions, AudioCodec,
 } from 'livekit-server-sdk';
+
+// Egress default (128 kbps OPUS) produced a 49.7 MB file for a 57-min session —
+// well past Groq Whisper's per-file size limit, which is why that pipeline run
+// failed. Speech-only audio transcribes fine at a much lower bitrate, so we pin
+// a voice-optimized encoding: at 24 kbps a 90-min session is ~16 MB and a
+// 2-hour session is ~22 MB, comfortably under the limit with room to spare.
+const RECORDING_ENCODING = new EncodingOptions({
+  audioCodec: AudioCodec.OPUS,
+  audioBitrate: 24,
+  audioFrequency: 16000,
+});
 
 class LiveKitService {
   _init() {
@@ -97,7 +109,7 @@ class LiveKitService {
     const egress = await this.egressClient.startRoomCompositeEgress(
       roomName,
       output,
-      { audioOnly: true }
+      { audioOnly: true, encodingOptions: RECORDING_ENCODING }
     );
     return { egressId: egress.egressId, filePath: location };
   }

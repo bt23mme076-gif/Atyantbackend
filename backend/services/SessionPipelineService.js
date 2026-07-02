@@ -9,7 +9,11 @@ import Roadmap from '../models/Roadmap.js';
 import { groqJSON, groqRotate, GROQ_API_KEYS } from '../utils/groqClient.js';
 
 const WHISPER_MODEL   = process.env.GROQ_WHISPER_MODEL  || 'whisper-large-v3';
-const PIPELINE_MODEL  = process.env.GROQ_PIPELINE_MODEL || 'llama-3.1-8b-instant';
+// In-depth analysis needs a capable model — the 8b "instant" model produced thin,
+// generic 2-line summaries and empty rich fields (which is why saved-answer
+// summaries and roadmaps came out short). 70b-versatile gives a genuinely useful
+// breakdown. Override with GROQ_PIPELINE_MODEL if needed.
+const PIPELINE_MODEL  = process.env.GROQ_PIPELINE_MODEL || 'llama-3.3-70b-versatile';
 
 class SessionPipelineService {
 
@@ -43,13 +47,19 @@ class SessionPipelineService {
 
       await this._saveToUserDashboard(sessionDoc, insights);
 
-      this._cleanup(audioPath);
       console.log(`✅ Pipeline completed for session ${sessionId}`);
     } catch (err) {
       console.error(`❌ Pipeline failed for session ${sessionId}:`, err.message);
       await Session.findByIdAndUpdate(sessionId, { pipelineStatus: 'failed' });
-      this._cleanup(audioPath);
     }
+    // Source recording is never deleted here (success or failure) — the app no
+    // longer touches the .ogg. Raw recordings live under /tmp/recordings and are
+    // reaped by the OS (systemd-tmpfiles cleans /tmp at 30 days), so audio is
+    // retained ~30 days while the derived transcript/insights persist
+    // permanently in MongoDB. Deleting on failure was the bug that made a
+    // completed 57-min recording unrecoverable the one time transcription
+    // errored. To retry a failed run while the file still exists, POST
+    // /api/sessions/:id/reprocess (admin only).
   }
 
   async _transcribe(audioPath) {
@@ -101,22 +111,28 @@ class SessionPipelineService {
       [
         {
           role: 'system',
-          content: 'You are a session analysis AI. Return ONLY valid JSON, no markdown, no extra text.',
+          content: 'You are an expert career-mentorship analyst. You read a transcript of a 1:1 mentor–student session and produce a thorough, specific, useful breakdown for the student to act on. Be concrete and grounded ONLY in what was actually said — never invent advice that was not given. Always fill every field: use [] or "" ONLY when something was genuinely not discussed, but NEVER leave summary/detailedSummary empty. Return ONLY valid JSON, no markdown, no extra text.',
         },
         {
           role: 'user',
-          content: `Analyze this mentor-student career guidance session transcript.
+          content: `Analyze this mentor–student career guidance session transcript in depth.
 Topic: ${sessionDoc?.topic || 'Career Guidance'}
 
-Return ONLY this JSON structure:
+Return ONLY this JSON structure (fill EVERY field from the transcript):
 {
-  "topics": ["string"],
-  "studentPainPoints": [{ "point": "string", "timestamp": "string" }],
-  "actionItems": { "student": ["string"], "mentor": ["string"] },
+  "summary": "2-3 sentence recap of the session",
+  "detailedSummary": "A rich 5-8 sentence narrative: what the student came in with, what was actually discussed, the mentor's main guidance, concrete examples/numbers used, and how it concluded. Be specific to THIS conversation — no generic filler.",
+  "topics": ["specific topics discussed"],
+  "keyDiscussionPoints": ["the most important things actually said/decided, each a full sentence"],
+  "studentPainPoints": [{ "point": "a real concern the student raised", "timestamp": "mm:ss if known else ''" }],
+  "strengths": ["things the student is already doing well, per the conversation"],
+  "areasToImprove": ["concrete gaps/weaknesses surfaced in the session"],
+  "actionItems": { "student": ["specific, doable next steps for the student"], "mentor": ["follow-ups the mentor committed to"] },
+  "recommendedResources": ["books, courses, tools, people, or links the mentor suggested"],
+  "nextSessionFocus": ["what the next session should cover"],
   "mentorQualityScore": 7,
-  "mentorQualityReason": "string",
+  "mentorQualityReason": "1-2 sentences justifying the score from the transcript",
   "studentSentiment": "positive",
-  "summary": "2-3 sentence summary",
   "careerContext": "placement"
 }
 
@@ -124,10 +140,10 @@ Valid values — studentSentiment: positive|neutral|negative
 Valid values — careerContext: placement|higher_studies|skill_gap|other
 
 Transcript:
-${transcriptText.slice(0, 6000)}`,
+${transcriptText.slice(0, 12000)}`,
         },
       ],
-      { model: PIPELINE_MODEL, maxTokens: 1024 },
+      { model: PIPELINE_MODEL, maxTokens: 3500, timeoutMs: 45000 },
     );
   }
 
@@ -139,12 +155,19 @@ ${transcriptText.slice(0, 6000)}`,
 
     const ops = [];
 
-    // Session summary → SavedAnswer (shown in "Saved Answers")
-    if (insights.summary) {
+    // Session summary → SavedAnswer (shown in "Saved Answers"). Prefer the rich
+    // in-depth narrative so the card is substantive, not a one-liner; append the
+    // key discussion points so the student gets the full picture.
+    const keyPoints = (insights.keyDiscussionPoints || []).slice(0, 5);
+    const summaryBody = insights.detailedSummary || insights.summary || '';
+    const savedSummary = summaryBody + (keyPoints.length
+      ? `\n\nKey points discussed:\n${keyPoints.map(p => `• ${p}`).join('\n')}`
+      : '');
+    if (savedSummary.trim()) {
       ops.push(
         SavedAnswer.create({
           userId:     studentId,
-          question:   insights.summary,
+          question:   savedSummary.trim(),
           tags:       [...(insights.topics?.slice(0, 3) || []), 'Session Summary'],
           sourceType: 'mentor',
           mentorId,
@@ -166,8 +189,15 @@ ${transcriptText.slice(0, 6000)}`,
       );
     }
 
-    // Action items → new phase in student's roadmap
-    if (actionItems.length) {
+    // Session → new phase(s) in the student's roadmap. Build substantive tasks
+    // grounded in the session: agreed next steps, gaps to close, and what to
+    // prep for the next session — not just a bare list of action items.
+    const improve = (insights.areasToImprove || []).map(a => `Work on: ${a}`);
+    const nextFocus = (insights.nextSessionFocus || []).map(n => `Prepare: ${n}`);
+    const phaseTasks = [...actionItems, ...improve, ...nextFocus]
+      .map(t => String(t).trim()).filter(Boolean).slice(0, 8);
+
+    if (phaseTasks.length) {
       const sessionDate = new Date(sessionDoc.scheduledAt || Date.now())
         .toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 
@@ -176,14 +206,16 @@ ${transcriptText.slice(0, 6000)}`,
         title:    `${mentorName} — ${topic}`,
         duration: '2–4 weeks',
         status:   'active',
-        tasks:    actionItems.slice(0, 6),
+        tasks:    phaseTasks,
       };
 
+      // upsert:true so students who never generated a goal-roadmap still get
+      // their session roadmap (instead of the step silently going nowhere).
       ops.push(
         Roadmap.findOneAndUpdate(
           { userId: studentId },
-          { $push: { steps: newStep } },
-          { upsert: false }
+          { $push: { steps: newStep }, $setOnInsert: { userId: studentId, generatedAt: new Date() } },
+          { upsert: true }
         )
       );
     }
@@ -193,14 +225,6 @@ ${transcriptText.slice(0, 6000)}`,
       console.log(`✅ Dashboard updated for student ${studentId} (${ops.length} items)`);
     } catch (err) {
       console.error('Dashboard save error (non-fatal):', err.message);
-    }
-  }
-
-  _cleanup(audioPath) {
-    if (audioPath && fs.existsSync(audioPath)) {
-      fs.unlink(audioPath, err => {
-        if (err) console.error('Audio cleanup error:', err.message);
-      });
     }
   }
 }
