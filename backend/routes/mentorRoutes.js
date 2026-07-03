@@ -194,10 +194,12 @@ router.post('/onboard', protect, async (req, res) => {
             console.warn('onboard embedding failed (card saves without vector):', e.message);
           }
 
+          const domain = await aiService.classifyCardDomain(answerContent);
           await AnswerCard.create({
             mentorId: user._id,
             questionId: q._id,
             answerContent,
+            ...(domain ? { domain } : {}),
             ...(embedding ? { embedding } : {}),
           });
 
@@ -342,10 +344,12 @@ router.post('/answer-cards', protect, async (req, res) => {
       console.warn('create answer-card embedding failed (saves without vector):', e.message);
     }
 
+    const domain = await aiService.classifyCardDomain(ac);
     const card = await AnswerCard.create({
       mentorId: user._id,
       questionId: q._id,
       answerContent: ac,
+      ...(domain ? { domain } : {}),
       ...(embedding ? { embedding } : {}),
     });
 

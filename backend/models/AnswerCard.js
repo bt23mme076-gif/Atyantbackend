@@ -55,6 +55,18 @@ const answerCardSchema = new mongoose.Schema({
     required: false
   },
 
+  // 🎯 ROLE DOMAIN of THIS card's journey (Tech / Core Engineering / …),
+  // classified once from the card's own content by the LLM. This is the
+  // universal signal the Clarity feed gates on: a mentor's profile may be
+  // blank, but every surfaced card HAS content, so its domain is always
+  // knowable. null = genuinely domain-agnostic (falls back to semantics).
+  domain: {
+    type   : String,
+    enum   : ['Tech', 'Data Analytics', 'Consulting', 'Product', 'Core Engineering', null],
+    default: null,
+    index  : true
+  },
+
   // 🔥 Vector embedding — select: false keeps it out of default queries
   embedding: {
     type    : [Number],

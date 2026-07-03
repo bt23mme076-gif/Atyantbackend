@@ -526,9 +526,17 @@ function scoreMentor(mentor, context) {
     }
   }
 
-  // Company domain match
-  if (questionCategory && mentor.companyDomain === questionCategory) {
-    points += 800; breakdown.push(`ExactDomain(+800)`);
+  // Company domain match — and, just as important, a DEDUCTION on mismatch.
+  // Without the penalty, a same-college/same-branch Core Engineering mentor
+  // (650pts from SAME_COLLEGE+SAME_BRANCH alone) could still outrank an
+  // unrelated-background Tech mentor on a "tech job/SDE" query, since the only
+  // thing missing was a bonus, not a cost — background ended up beating role fit.
+  if (questionCategory && mentor.companyDomain) {
+    if (mentor.companyDomain === questionCategory) {
+      points += 800; breakdown.push(`ExactDomain(+800)`);
+    } else {
+      points -= 400; breakdown.push(`DomainMismatch(-400)`);
+    }
   }
 
   // Company matching
@@ -860,6 +868,9 @@ class AtyantEngine {
       const queryDetails = await this.detectQueryDetails(questionText);
       const { intent, confidence, mentionedCompanies, relatedCompanies,
         foundTags, mentionedTech, isUrgent, hasSpecifics } = queryDetails;
+      // Role-domain comes from the LLM classifier (threaded via studentContext),
+      // not a keyword list — see getClarity / classifyTargetDomain.
+      const queryDomain = studentContext?.targetDomain || null;
 
       dlog(`\n🔎 ===== VECTOR SEMANTIC SEARCH =====`);
       dlog(`Intent: ${intent} | Companies: [${mentionedCompanies}] | Tags: [${foundTags.slice(0, 5)}]`);
@@ -888,6 +899,7 @@ class AtyantEngine {
             mentorId: 1,
             questionId: 1,
             createdAt: 1,
+            domain: 1,
             score: { $meta: 'vectorSearchScore' },
           },
         },
@@ -925,6 +937,19 @@ class AtyantEngine {
 
         if (mentor.primaryDomain === intent) { const b = W.EXACT_DOMAIN * confidence; totalBonus += b; bonusLogs.push(`Domain(+${(b * 100).toFixed(1)}%)`); }
         else if (mentor.primaryDomain === 'both') { const b = W.PARTIAL_DOMAIN * confidence; totalBonus += b; bonusLogs.push(`BothDomain(+${(b * 100).toFixed(1)}%)`); }
+
+        // Role-domain fit (Tech/Product/Core Engineering/…) — deduct on mismatch
+        // too, not just skip the bonus, so a same-college/branch card whose
+        // mentor is in a DIFFERENT field can't win purely on identity bonus.
+        // Prefer THIS CARD's classified domain (from its own content) over the
+        // mentor's coarse profile domain: the card is what surfaces, and 68% of
+        // mentor profiles have no companyDomain at all, so card domain is what
+        // makes this gate actually fire.
+        const cardDomain = match.domain || mentor.companyDomain || null;
+        if (queryDomain && cardDomain) {
+          if (cardDomain === queryDomain) { totalBonus += 0.15; bonusLogs.push(`DomainMatch(+15%)`); }
+          else { totalBonus -= 0.15; bonusLogs.push(`DomainMismatch(-15%)`); }
+        }
 
         const tagCount = (mentor.specialTags || []).filter(tag => foundTags.some(ft => tag.toLowerCase().includes(ft))).length;
         if (tagCount > 0) { const b = W.SPECIAL_TAG * Math.min(tagCount, 4); totalBonus += b; bonusLogs.push(`Tags(+${(b * 100).toFixed(1)}%)`); }
@@ -977,6 +1002,7 @@ class AtyantEngine {
 
         scoredMatches.push({
           ...match, finalScore, baseScore: match.score, bonusScore: totalBonus,
+          mentorDomain: cardDomain,
           mentorProfile: {
             _id: mentor._id, username: mentor.username, avatar: mentor.avatar,
             bio: mentor.bio, education: mEdu, rating: mentor.rating,
@@ -1009,6 +1035,17 @@ class AtyantEngine {
       // tuned against the raw cosine score, so they keep their meaning here.
       if (!best || best.baseScore < CONFIG.INSTANT_THRESHOLD) {
         dlog(`⚠️ Below semantic threshold (base ${((best?.baseScore || 0) * 100).toFixed(2)}%)`);
+        return null;
+      }
+
+      // HARD DOMAIN GATE — the embedding over-scores generic "how I got placed"
+      // journeys across domains, so a Core-Engineering card can clear the semantic
+      // bar for a Tech/SDE query. A confident role-domain mismatch (query domain
+      // known AND the mentor explicitly declares a DIFFERENT domain) must NOT be
+      // served as THE instant answer — fall through to the live/feed path instead.
+      // Guarded on both being present: an unset mentor.companyDomain never blocks.
+      if (queryDomain && best.mentorDomain && best.mentorDomain !== queryDomain) {
+        dlog(`⚠️ Instant answer domain mismatch (${best.mentorDomain} ≠ ${queryDomain}) — skipping instant`);
         return null;
       }
 
@@ -1200,17 +1237,29 @@ class AtyantEngine {
       dlog(`\n🚀 ========== ATYANT ENGINE START ==========`);
       dlog(`User: ${userId} | Q: "${questionText.substring(0, 100)}..."`);
 
-      // ── FIX: detectQueryDetails ONCE at the top, inferredCategory defined here ──
       const queryDetails = await this.detectQueryDetails(questionText);
-      const inferredCategory = queryDetails?.intent || null;
 
+      // Role-domain (Tech / Core Engineering / …) is classified by the LLM from
+      // the student's goal/query — compared downstream against mentor.companyDomain.
+      // Note: `intent` (internship/placement) is a DIFFERENT enum and must never
+      // be used as the domain category — it can never match companyDomain.
       let vector = null;
-      try {
-        vector = await getQuestionEmbedding(questionText);
-        dlog(`✅ Embedding (${vector?.length || 0} dims)`);
-      } catch (err) {
-        dlog(`❌ Embedding failed: ${err.message}`);
-      }
+      let inferredCategory = options.category || null;
+      const [vecRes, domainRes] = await Promise.allSettled([
+        getQuestionEmbedding(questionText),
+        options.category
+          ? Promise.resolve(options.category)
+          : aiServiceInstance.classifyTargetDomain(options.studentContext?.goal || questionText),
+      ]);
+      if (vecRes.status === 'fulfilled') { vector = vecRes.value; dlog(`✅ Embedding (${vector?.length || 0} dims)`); }
+      else dlog(`❌ Embedding failed: ${vecRes.reason?.message}`);
+      if (domainRes.status === 'fulfilled' && domainRes.value) inferredCategory = domainRes.value;
+
+      // Thread the classified domain into studentContext so the vector path scores it too.
+      const baseContext = options.studentContext || null;
+      const studentContext = baseContext
+        ? { ...baseContext, targetDomain: inferredCategory }
+        : (inferredCategory ? { targetDomain: inferredCategory } : null);
 
       const keywords = extractSmartKeywords(questionText);
 
@@ -1220,7 +1269,7 @@ class AtyantEngine {
       if (vector && !options.isFollowUp) {
         dlog(`\n🎯 Path A: Vector search...`);
         const diagA = {};
-        const match = await this.findBestSemanticMatch(userId, vector, questionText, options.studentContext || null, diagA);
+        const match = await this.findBestSemanticMatch(userId, vector, questionText, studentContext, diagA);
 
         if (match) {
           const q = new Question({
@@ -1237,7 +1286,7 @@ class AtyantEngine {
           logMatch({
             questionId: q._id, studentId: userId, path: 'vector', questionText,
             queryDetails: diagA.queryDetails || queryDetails,
-            studentContext: options.studentContext || null,
+            studentContext,
             candidates: diagA.candidates || [],
             selectedMentorId: match.mentorProfile._id, instant: true,
           });
@@ -1262,7 +1311,7 @@ class AtyantEngine {
       // ──────────────────────────────────────────
       dlog(`\n🎯 Path B: Live routing (inferred: ${inferredCategory})...`);
       const diagB = {};
-      const bestMentor = await this.findBestMentor(userId, keywords, options.category || inferredCategory || null, options.studentContext || null, diagB);
+      const bestMentor = await this.findBestMentor(userId, keywords, inferredCategory, studentContext, diagB);
 
       const question = new Question({
         userId, questionText, keywords,
@@ -1301,7 +1350,7 @@ class AtyantEngine {
         logMatch({
           questionId: question._id, studentId: userId, path: 'live', questionText,
           queryDetails: diagB.queryDetails || queryDetails,
-          studentContext: options.studentContext || null,
+          studentContext,
           candidates: diagB.candidates || [],
           selectedMentorId: bestMentor._id, instant: false,
         });
@@ -1323,7 +1372,7 @@ class AtyantEngine {
       logMatch({
         questionId: question._id, studentId: userId, path: 'live', questionText,
         queryDetails: diagB.queryDetails || queryDetails,
-        studentContext: options.studentContext || null,
+        studentContext,
         candidates: diagB.candidates || [],
         selectedMentorId: null, instant: false,
       });
@@ -1357,18 +1406,36 @@ class AtyantEngine {
       await Promise.all([getAllTargetCompanies(), getActiveMentors()]);
 
       const limit = options.mentorLimit || 3;
-      const studentContext = options.studentContext || null; // {college, branch, year} from chat
+      const baseContext = options.studentContext || null; // {college, branch, year, goal} from chat
       const queryDetails = await this.detectQueryDetails(questionText);
-      const inferredCategory = options.category || queryDetails?.intent || null;
       const keywords = extractSmartKeywords(questionText);
 
-      // Embedding is only needed for the AnswerCard (vector) path.
+      // Embedding (vector path) + LLM role-domain classification run together.
+      // The domain is derived by the LLM from the student's goal/query, NOT a
+      // hardcoded keyword list — so it generalises to any wording/language and
+      // needs no backend edit per new phrasing.
       let vector = null;
-      try {
-        vector = await getQuestionEmbedding(questionText);
-      } catch (err) {
-        dlog(`Clarity embedding failed: ${err.message}`);
-      }
+      let targetDomain = options.category || null;
+      const [vecRes, domainRes] = await Promise.allSettled([
+        getQuestionEmbedding(questionText),
+        options.category
+          ? Promise.resolve(options.category)
+          : aiServiceInstance.classifyTargetDomain(baseContext?.goal || questionText),
+      ]);
+      if (vecRes.status === 'fulfilled') vector = vecRes.value;
+      else dlog(`Clarity embedding failed: ${vecRes.reason?.message}`);
+      if (domainRes.status === 'fulfilled' && domainRes.value) targetDomain = domainRes.value;
+
+      // Always-on diagnostic: if this prints `domain=null`, the LLM classifier
+      // didn't resolve a role (missing GROQ key / API failure) and EVERY domain
+      // gate below is inert — an off-domain card (e.g. Core Engineering for an
+      // SDE goal) will not be excluded. This is the first thing to check when a
+      // wrong-domain senior still surfaces.
+      console.log(`🎯 [Clarity] goal="${baseContext?.goal || questionText}" → domain=${targetDomain} | embedding=${vector ? 'ok' : 'NULL'}`);
+
+      // Thread the classified domain to every scorer via studentContext.
+      const studentContext = baseContext ? { ...baseContext, targetDomain } : (targetDomain ? { targetDomain } : null);
+      const inferredCategory = targetDomain;
 
       // ── Run BOTH paths simultaneously ──
       const diagC = {};
@@ -1406,7 +1473,7 @@ class AtyantEngine {
       // Scrollable feed: top N answer cards (one per senior who solved a similar problem)
       let answerCards = [];
       if (vector) {
-        try { answerCards = await this.getTopAnswerCards(vector, options.answerLimit || 4, studentContext); }
+        try { answerCards = await this.getTopAnswerCards(vector, options.answerLimit || 4, studentContext, targetDomain); }
         catch (e) { console.error('getTopAnswerCards error:', e.message); }
       }
 
@@ -1429,7 +1496,7 @@ class AtyantEngine {
       Returns up to `n` distinct seniors' answer cards,
       ranked by semantic similarity to the question.
      ============================================= */
-  async getTopAnswerCards(vector, n = 4, studentContext = null) {
+  async getTopAnswerCards(vector, n = 4, studentContext = null, queryDomain = null) {
     const candidates = await AnswerCard.aggregate([
       {
         $vectorSearch: {
@@ -1441,7 +1508,7 @@ class AtyantEngine {
           filter: {},
         },
       },
-      { $project: { answerContent: 1, mentorId: 1, score: { $meta: 'vectorSearchScore' } } },
+      { $project: { answerContent: 1, mentorId: 1, domain: 1, score: { $meta: 'vectorSearchScore' } } },
     ]);
 
     // Feed is lenient (surfaces relevant journeys for free insight) — unlike the
@@ -1459,7 +1526,7 @@ class AtyantEngine {
       username: { $ne: 'Atyant Engine' },
       email: { $ne: 'atyant.in@gmail.com' },
     })
-      .select('name username profilePicture education topCompanies expertise specialTags rating successfulMatches')
+      .select('name username profilePicture education topCompanies expertise specialTags rating successfulMatches companyDomain')
       .lean();
     const mmap = new Map(mentors.map(m => [String(m._id), m]));
 
@@ -1478,12 +1545,36 @@ class AtyantEngine {
       if (!m || seen.has(String(m._id))) continue;   // one card per mentor (best semantic kept)
       seen.add(String(m._id));
 
+      // HARD DOMAIN EXCLUSION — the embedding over-scores generic placement/prep
+      // journeys across fields, so a Core-Engineering (or IIM/management) card
+      // clears the feed floor for a Tech/SDE query. Gate on the CARD's own
+      // classified domain first (its content is always present), falling back to
+      // the mentor's profile domain. When the effective domain is known AND
+      // differs from the query, drop the card. A card with no domain and a mentor
+      // with no domain still passes (rely on semantics) so incomplete data is
+      // never over-filtered.
+      const effDomain = c.domain || m.companyDomain || null;
+      if (queryDomain && effDomain && effDomain !== queryDomain) continue;
+
       const mEdu = m.education?.[0] || {};
       const mCollege = mEdu.institutionName || mEdu.institution;
       let bonus = 0, sameCollege = false, sameBranch = false;
-      if (isSameCollege(sCollege, mCollege)) { bonus += W.SAME_COLLEGE; sameCollege = true; }
-      if (sType !== 'unknown' && sType === getCollegeType(mCollege)) bonus += W.COLLEGE_TYPE;
-      if (isSameBranch(sBranch, mEdu.field)) { bonus += W.SAME_BRANCH; sameBranch = true; }
+
+      // Identity bonus only counts once the card already clears a real relevance
+      // bar. Below that, a same-college/branch card is likely answering a
+      // DIFFERENT question (e.g. a core-engineering journey surfacing for an SDE
+      // query) — additive-boosting it would misrepresent an irrelevant answer as
+      // a top match just because the mentor shares the student's background.
+      const IDENTITY_RELEVANCE_GATE = 0.55;
+      if ((c.score || 0) >= IDENTITY_RELEVANCE_GATE) {
+        if (isSameCollege(sCollege, mCollege)) { bonus += W.SAME_COLLEGE; sameCollege = true; }
+        if (sType !== 'unknown' && sType === getCollegeType(mCollege)) bonus += W.COLLEGE_TYPE;
+        if (isSameBranch(sBranch, mEdu.field)) { bonus += W.SAME_BRANCH; sameBranch = true; }
+      }
+
+      // Role-domain fit: explicit mismatches are already excluded above, so here
+      // we only reward a positive domain match (lifts the right-field senior).
+      if (queryDomain && effDomain === queryDomain) bonus += 0.15;
 
       // ADDITIVE boost (not a weighted average): identity fit stacks ON TOP of the
       // raw relevance, so a same-branch senior reads as a HIGH match instead of a
@@ -1575,9 +1666,14 @@ class AtyantEngine {
         console.error(`⚠️ Embedding failed — card saves without vector:`, embErr.message);
       }
 
+      // Classify this card's role domain from its own content so the Clarity
+      // feed can gate on it (works even when the mentor profile has no domain).
+      const domain = await aiServiceInstance.classifyCardDomain(polishedContent);
+
       const newCard = new AnswerCard({
         mentorId, questionId, mentorExperienceId,
         answerContent: polishedContent,
+        ...(domain ? { domain } : {}),
         ...(embedding ? { embedding } : {}),
       });
       await newCard.save();

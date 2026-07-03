@@ -2,7 +2,7 @@ import axios from 'axios';
 import User from '../models/User.js';
 import AIConversation from '../models/AIConversation.js';
 import { ATYANT_KNOWLEDGE, findRelevantInfo } from './AtyantKnowledge.js';
-import { groqChat } from '../utils/groqClient.js';
+import { groqChat, groqJSON } from '../utils/groqClient.js';
 
 /**
  * 🚀 FEATURE: Question Text ko Vector mein badalna
@@ -171,9 +171,116 @@ RAW DATA: ${JSON.stringify(rawData)}`;
     
     return parsed;
   } catch (error) {
-    return rawData; 
+    return rawData;
   }
 }
+
+  /**
+   * 🎯 TARGET-DOMAIN CLASSIFIER
+   *
+   * Maps a student's goal/query to the SAME `companyDomain` enum that mentors
+   * are tagged with, so role fit ("SDE / tech job" → Tech) can be matched
+   * structurally — WITHOUT a hardcoded keyword list that needs a backend edit
+   * for every new phrasing. The LLM generalises across wordings and languages
+   * (Hinglish included), and this one field is reused everywhere in scoring.
+   *
+   * Returns one of the enum strings, or null when the goal is genuinely
+   * domain-agnostic / unclear (so we never force a wrong hard signal).
+   */
+  async classifyTargetDomain(text) {
+    const VALID = ['Tech', 'Data Analytics', 'Consulting', 'Product', 'Core Engineering'];
+    try {
+      if (!text || !String(text).trim()) return null;
+
+      const systemPrompt = `You classify an Indian engineering student's CAREER TARGET into exactly one role domain, or "none".
+Valid domains (return the label EXACTLY):
+- "Tech": software/SDE/SWE, web/app/mobile dev, ML/data/cloud/devops engineering, any coding-first role
+- "Data Analytics": data analyst, business analyst, analytics, data science reporting
+- "Consulting": management/strategy consulting, consultant roles
+- "Product": product manager / product management / APM
+- "Core Engineering": mechanical, civil, metallurgy, chemical, electrical, manufacturing, PSU/core-company roles (JSW, ONGC, HPCL, L&T, etc.)
+- "none": the target is unclear, generic, or not tied to any single domain
+
+Rules:
+- Judge by the ROLE the student wants, NOT their current branch. A Metallurgy student who wants an "SDE role" is "Tech".
+- Handle Hinglish and casual phrasing.
+- Return ONLY a JSON object: {"domain": "<one label above>"}. No prose, no markdown.`;
+
+      const userPrompt = `Student target: """${String(text).slice(0, 800)}"""\nReturn the JSON.`;
+
+      // groqJSON → deterministic (temp 0), JSON-mode, fast/cheap model. More
+      // reliable than free-text parsing, so the domain gate rarely goes inert.
+      const parsed = await groqJSON([
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: userPrompt },
+      ]);
+      const domain = String(parsed?.domain || '').trim();
+      return VALID.includes(domain) ? domain : null;
+    } catch (error) {
+      // Never break matching on a classifier hiccup — semantic path still runs.
+      console.warn('classifyTargetDomain failed:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * 🎯 CARD-DOMAIN CLASSIFIER
+   *
+   * Classifies the role domain of an answer-card's JOURNEY (what the mentor
+   * actually achieved), not the generic advice text inside it. This is the
+   * signal the Clarity feed gates on: unlike a mentor's profile (blank for
+   * 68%), every surfaced card HAS content, so its domain is always derivable.
+   * Call this once at card creation and store the result on AnswerCard.domain.
+   *
+   * IMPORTANT: mainAnswer/situation (the actual outcome — "→ IIM Mumbai intern")
+   * carry the real signal. actionableSteps are generic advice ("build a tech
+   * project", "prep case interviews") that mention OTHER domains incidentally —
+   * feeding them in undifferentiated made a management/IIM card misclassify as
+   * "Tech" because a step said "create small Tech projects". So the outcome is
+   * given separately and weighted explicitly over the advice text.
+   */
+  async classifyCardDomain(answerContent) {
+    const VALID = ['Tech', 'Data Analytics', 'Consulting', 'Product', 'Core Engineering'];
+    try {
+      const a = answerContent || {};
+      const outcome = [a.mainAnswer, a.situation].filter(Boolean).join('. ').slice(0, 500);
+      if (!outcome.trim()) return null;
+
+      const steps = Array.isArray(a.actionableSteps)
+        ? a.actionableSteps.map(s => (typeof s === 'object' ? s.description : s)).filter(Boolean).join(' ')
+        : '';
+      const advice = [a.whatWorked, steps].filter(Boolean).join(' ').slice(0, 500);
+
+      const systemPrompt = `You classify a mentor's ACHIEVED career outcome into exactly one role domain.
+Valid domains (return the label EXACTLY):
+- "Tech": software/SDE/SWE, web/app/mobile dev, ML/data/cloud/devops engineering, any coding-first role
+- "Data Analytics": data analyst, business analyst, analytics, data science reporting
+- "Consulting": management/strategy consulting, MBA-track roles, IIM/B-school internships or placements
+- "Product": product manager / product management / APM
+- "Core Engineering": mechanical, civil, metallurgy, chemical, electrical, manufacturing, PSU/core-company roles
+- "none": unclear or not tied to any single domain
+
+Rules:
+- Judge ONLY by the OUTCOME field (what role/company/programme they actually reached), NOT the advice/steps field.
+- The advice/steps field is generic guidance and may mention unrelated domains in passing (e.g. "build a tech project" as a suggestion) — IGNORE domain words that appear only there if they contradict the outcome.
+- An MBA/IIM/management internship or placement is "Consulting", never "Tech", regardless of what the advice text suggests.
+- Handle Hinglish and casual phrasing.
+- Return ONLY a JSON object: {"domain": "<one label above>"}. No prose, no markdown.`;
+
+      const userPrompt = `OUTCOME (what they actually achieved): """${outcome}"""\nADVICE/STEPS (context only, do not classify from this alone): """${advice}"""\nReturn the JSON.`;
+
+      const parsed = await groqJSON([
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: userPrompt },
+      ]);
+      const domain = String(parsed?.domain || '').trim();
+      return VALID.includes(domain) ? domain : null;
+    } catch (error) {
+      console.warn('classifyCardDomain failed:', error.message);
+      return null;
+    }
+  }
+
   // Aapka Platform Knowledge Prompt
   getSystemPrompt() {
     return `You are Atyant's AI — talk like a sharp senior who already cracked college, not like a support bot.
