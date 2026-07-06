@@ -143,19 +143,27 @@ class SessionPipelineService {
     }
   }
 
-  // Detects silence-hallucination transcripts. Real 5+ min conversations run
-  // thousands of chars with a unique-word ratio ≥ ~0.3; dead-mic sessions come
-  // back as a few hundred chars of "Thank you / you you you" loops.
+  // Detects silence-hallucination transcripts. Whisper pads silence/pauses with
+  // "you / thank you / hello" loops, so a unique-to-total word RATIO is fooled: a
+  // rich 88-min session with heavy interspersed filler scores a low ratio and
+  // gets wrongly rejected (this exact false-positive hid shyamak's real 34k-char
+  // college-guidance session — its audio was fine). Instead we STRIP the filler
+  // and measure how much REAL content is left: a genuine conversation keeps
+  // thousands of chars and hundreds of distinct words even when heavily padded;
+  // a dead-mic recording has almost nothing once the filler is removed.
   _isLowContent(transcript) {
     const text = (transcript.text || '').replace(/\s+/g, ' ').trim();
     if (text.length < 300) return true;
     if ((transcript.duration || Infinity) < 60) return true; // <1 min of audio is not a session
-    const words = text.toLowerCase().split(/[^a-z0-9']+/).filter(Boolean);
-    if (words.length >= 50) {
-      const uniqueRatio = new Set(words).size / words.length;
-      if (uniqueRatio < 0.18) return true;
-    }
-    return false;
+
+    const cleaned = text
+      .replace(/\b(you|thanks?|thank you|hello+|hi|hey|yeah|yep|okay|ok|um+|uh+|hmm+|mm+|bye)\b[.,]?/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const realWords  = cleaned.split(' ').filter(w => w.length > 1);
+    const uniqueReal = new Set(realWords.map(w => w.toLowerCase())).size;
+    // Real session: lots of distinct meaningful words survive. Dead-mic: a handful.
+    return cleaned.length < 500 || uniqueReal < 50;
   }
 
   // Retry transient failures (429 rate limits, 5xx, timeouts) with a wait long
