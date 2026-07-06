@@ -8,6 +8,10 @@ services:
       - "7880:7880"        # HTTP API / signaling
       - "7881:7881"        # TCP RTC (fallback)
       - "7882:7882/udp"    # UDP RTC — MUST match rtc.udp_port in livekit.yaml
+      - "3478:3478/udp"    # TURN/UDP — MUST match turn.udp_port (open in VPS firewall)
+      - "5349:5349"        # TURN/TLS (plain TCP; Traefik forwards 443→here). Same
+                           # Docker network as Traefik is enough — host-expose only
+                           # if not routing TURN through Traefik. See TURN_SETUP.md.
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml
     command: --config /etc/livekit.yaml

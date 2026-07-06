@@ -5,4 +5,18 @@ ws_url: ws://livekit:7880
 # Health check port
 health_port: 9090
 
-log_level: warn
+# info (not warn) so egress start/abort reasons show up in `docker logs` —
+# the July-6 "Start signal not received" aborts were invisible at warn level.
+log_level: info
+
+# ── Concurrency budget (why overlapping sessions recorded 0 bytes) ──
+# Egress reserves CPU per job and silently refuses new jobs once the budget is
+# spent — the refused request is never picked up and aborts ~30s later with
+# "Start signal not received" and an empty file. With the default reservation
+# (~2 cores per audio-only room composite) a small VPS fits only ONE recording
+# at a time, so the overlapping July-6 pilot sessions all aborted.
+# Speech-only 24 kbps compositing actually measures well under 1 core, so
+# reserve realistically and let a few sessions record in parallel.
+cpu_cost:
+  audio_room_composite_cpu_cost: 1.0
+  room_composite_cpu_cost: 2.5

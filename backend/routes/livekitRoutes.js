@@ -7,6 +7,51 @@ import sessionPipelineService from '../services/SessionPipelineService.js';
 
 const router = express.Router();
 
+// Egress start attempts are capped so a persistent LiveKit-side failure can't
+// loop forever. 3 covers the real triggers: page join, mic publish, one
+// mid-call restart after an abort.
+const MAX_EGRESS_ATTEMPTS = 3;
+
+// Start (or retry) the audio recording for a session — safe to call from every
+// join/webhook event. The findOneAndUpdate filter makes the claim atomic: when
+// join + track_published race, exactly one caller wins; the rest no-op because
+// egressId is already set or the attempt budget is spent.
+// The July-6 pilot lost 2 sessions because egress start failed once at join
+// time and was never retried — mic-publish/participant webhooks now re-trigger it.
+async function ensureEgress(sessionId) {
+  const session = await Session.findOneAndUpdate(
+    {
+      _id: sessionId,
+      egressId: null, // matches null AND missing
+      $or: [{ egressAttempts: { $lt: MAX_EGRESS_ATTEMPTS } }, { egressAttempts: { $exists: false } }],
+    },
+    { $inc: { egressAttempts: 1 } },
+    { new: true }
+  );
+  if (!session) return null; // already recording, attempts exhausted, or bad id
+
+  try {
+    const { egressId } = await liveKitService.startAudioEgress(
+      session.livekitRoomName || `session_${session._id}`,
+      session._id
+    );
+    session.egressId = egressId;
+    await session.save();
+    console.log(`🎙️ Egress started for session ${session._id} (attempt ${session.egressAttempts}): ${egressId}`);
+    return egressId;
+  } catch (err) {
+    // Non-fatal — the session still works; the next join/publish event retries.
+    console.error(`Egress start failed for session ${session._id} (attempt ${session.egressAttempts}):`, err.message);
+    return null;
+  }
+}
+
+// LiveKit EgressInfo.status arrives as an enum number (or string, depending on
+// serialization path). 3 = EGRESS_COMPLETE.
+function egressCompleted(status) {
+  return status === 3 || String(status) === '3' || String(status) === 'EGRESS_COMPLETE';
+}
+
 // POST /api/livekit/join/:sessionId
 // Authenticated — returns a LiveKit token for student or mentor to join
 router.post('/join/:sessionId', protect, async (req, res) => {
@@ -47,20 +92,9 @@ router.post('/join/:sessionId', protect, async (req, res) => {
       role
     );
 
-    // Start egress on first join (only once per session)
-    if (!session.egressId) {
-      try {
-        const { egressId } = await liveKitService.startAudioEgress(
-          session.livekitRoomName,
-          session._id
-        );
-        session.egressId = egressId;
-        await session.save();
-      } catch (err) {
-        // Non-fatal — session still works, just won't be recorded
-        console.error('Egress start failed (non-fatal):', err.message);
-      }
-    }
+    // Start egress on first join (atomic + capped; retried again from the
+    // participant/track webhooks if this attempt fails)
+    await ensureEgress(session._id);
 
     res.json({
       ok: true,
@@ -99,11 +133,46 @@ router.post('/webhook', express.raw({ type: () => true }), async (req, res) => {
 
     const eventName = event.event;
 
+    // Someone joined / published their mic → make sure a recording is running.
+    // This is the retry path for sessions whose egress failed to start at join
+    // time (July-6 pilot: 2 of 5 sessions were never recorded because of this).
+    if (eventName === 'participant_joined' || eventName === 'track_published') {
+      const roomName = event.room?.name;
+      if (roomName?.startsWith('session_')) {
+        const sessionId = roomName.replace('session_', '');
+        ensureEgress(sessionId).catch(err =>
+          console.error('ensureEgress webhook error:', err.message)
+        );
+      }
+    }
+
+    // Someone left → if NO real (non-hidden) participant remains, end the call
+    // now instead of letting an empty room (kept alive by the hidden egress
+    // participant) linger and record silence. deleteRoom disconnects everyone,
+    // stops egress, and fires room_finished + egress_ended, which run the
+    // pipeline on whatever was captured.
+    if (eventName === 'participant_left') {
+      const roomName = event.room?.name;
+      if (roomName?.startsWith('session_')) {
+        // The departing participant is already gone from the roster by the time
+        // this fires, so a false result means the room is truly empty of humans.
+        const stillActive = await liveKitService.roomHasParticipants(roomName);
+        if (!stillActive) {
+          console.log(`👋 Last participant left ${roomName} → ending call`);
+          await liveKitService.deleteRoom(roomName);
+        }
+      }
+    }
+
     if (eventName === 'room_finished') {
       const roomName = event.room?.name;
       if (roomName?.startsWith('session_')) {
         const sessionId = roomName.replace('session_', '');
-        await Session.findByIdAndUpdate(sessionId, { status: 'completed' });
+        const session = await Session.findByIdAndUpdate(sessionId, { status: 'completed' });
+        // Belt & suspenders: room-composite egress normally auto-stops when the
+        // room closes, but a stuck job would otherwise record silence for hours
+        // and hog the egress worker's CPU budget (blocking overlapping sessions).
+        if (session?.egressId) await liveKitService.stopEgress(session.egressId);
         console.log(`Room finished → session ${sessionId} marked completed`);
       }
     }
@@ -113,16 +182,38 @@ router.post('/webhook', express.raw({ type: () => true }), async (req, res) => {
       const roomName = info?.roomName;
       if (roomName?.startsWith('session_')) {
         const sessionId = roomName.replace('session_', '');
-        // Prefer the actual filename egress reported; fall back to the path we
-        // asked for. Must match LiveKitService (RECORDINGS_PATH) so the file is
-        // found — egress and backend share this directory via a Docker volume.
-        const reported = info?.fileResults?.[0]?.filename || info?.file?.filename;
-        const audioPath = reported
-          || `${process.env.RECORDINGS_PATH || '/tmp/recordings'}/${sessionId}.ogg`;
-        // Run pipeline async — do not block webhook response
-        sessionPipelineService.processSession(sessionId, audioPath).catch(err =>
-          console.error('Pipeline async error:', err.message)
-        );
+        const fileRes  = info?.fileResults?.[0] || info?.file;
+        const fileSize = Number(fileRes?.size ?? 0);
+
+        if (egressCompleted(info?.status) && fileSize > 0) {
+          // Prefer the actual filename egress reported; fall back to the path we
+          // asked for. Must match LiveKitService (RECORDINGS_PATH) so the file is
+          // found — egress and backend share this directory via a Docker volume.
+          const audioPath = fileRes?.filename
+            || `${process.env.RECORDINGS_PATH || '/tmp/recordings'}/${sessionId}.ogg`;
+          // Run pipeline async — do not block webhook response
+          sessionPipelineService.processSession(sessionId, audioPath).catch(err =>
+            console.error('Pipeline async error:', err.message)
+          );
+        } else {
+          // Aborted/failed egress (e.g. "Start signal not received" when the
+          // egress worker had no CPU budget) or a 0-byte file — nothing to
+          // transcribe. Record WHY on the session so failures are debuggable
+          // from the DB, then, if the call is still live, start a fresh
+          // recording: partial audio of the remainder beats losing the session.
+          const reason = info?.error || `egress ended without a usable file (status=${info?.status}, size=${fileSize} bytes)`;
+          console.error(`❌ Egress ${info?.egressId} for session ${sessionId}: ${reason}`);
+          await Session.findByIdAndUpdate(sessionId, {
+            pipelineStatus: 'failed',
+            pipelineError: `Recording failed: ${reason}`.slice(0, 500),
+          });
+          if (await liveKitService.roomHasParticipants(roomName)) {
+            await Session.findByIdAndUpdate(sessionId, { egressId: null });
+            ensureEgress(sessionId).catch(err =>
+              console.error('Egress restart error:', err.message)
+            );
+          }
+        }
       }
     }
 

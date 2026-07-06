@@ -7,6 +7,9 @@ const savedAnswerSchema = new mongoose.Schema({
   sourceType:   { type: String, enum: ['ai', 'mentor', 'clarity'], default: 'mentor' },
   answerCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'AnswerCard' },
   mentorId:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  // Set for pipeline auto-saved session summaries/action items — lets a
+  // /reprocess run replace its own previous cards instead of duplicating them.
+  sessionId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Session', index: true },
   savedAt:      { type: Date, default: Date.now },
 }, { timestamps: true });
 

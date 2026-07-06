@@ -48,10 +48,32 @@ class LiveKitService {
     // the room is guaranteed to exist on the server when this resolves.
     await this.roomService.createRoom({
       name: roomName,
+      // Nobody ever joins (mentor/student no-show): close the room after 5 min.
       emptyTimeout: 300,
+      // Everyone LEFT: close 60 s later. This is the native auto-end — short
+      // enough that a stuck recording can't run for 88 min like the July-6
+      // session did, but long enough to survive a transient reconnect. The
+      // participant_left webhook also force-closes empty rooms as a backstop.
+      departureTimeout: 60,
       maxParticipants: 2,
     });
     return roomName;
+  }
+
+  // Force-end a room: disconnects any remaining participants and stops egress.
+  // Used to auto-end a call the moment both real participants are gone, rather
+  // than waiting on departureTimeout (which a hidden egress participant can
+  // otherwise keep alive).
+  async deleteRoom(roomName) {
+    this._init();
+    try {
+      await this.roomService.deleteRoom(roomName);
+      return true;
+    } catch (err) {
+      // "room not found" = already closed — treat as success.
+      console.warn('deleteRoom warning (non-fatal):', err.message);
+      return false;
+    }
   }
 
   // role: 'participant' | 'admin'
@@ -119,7 +141,21 @@ class LiveKitService {
     try {
       await this.egressClient.stopEgress(egressId);
     } catch (err) {
+      // "egress is not active" here is normal — it already stopped on its own.
       console.warn('stopEgress warning (non-fatal):', err.message);
+    }
+  }
+
+  // True if the room still has real (non-hidden) participants. Egress/recorder
+  // participants join hidden, so they don't count. Used to decide whether an
+  // aborted recording is worth restarting mid-call.
+  async roomHasParticipants(roomName) {
+    this._init();
+    try {
+      const participants = await this.roomService.listParticipants(roomName);
+      return participants.some(p => !p.permission?.hidden);
+    } catch {
+      return false; // room already closed
     }
   }
 

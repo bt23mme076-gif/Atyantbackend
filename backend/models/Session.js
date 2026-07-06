@@ -17,7 +17,12 @@ const sessionSchema = new mongoose.Schema({
   // ── LiveKit in-house meet ──
   livekitRoomName: { type: String },               // LiveKit room name e.g. session_<id>
   egressId:        { type: String },               // LiveKit egress job id for audio recording
-  pipelineStatus:  { type: String, enum: ['none', 'processing', 'completed', 'failed'], default: 'none' },
+  egressAttempts:  { type: Number, default: 0 },   // recording start attempts (capped — see livekitRoutes ensureEgress)
+  // 'no_audio' = recording completed but contained no real speech (mic/connection
+  // failure) — insights are intentionally skipped so dashboards don't get fake
+  // summaries. 'skipped' exists in older rows; kept so old docs re-save cleanly.
+  pipelineStatus:  { type: String, enum: ['none', 'processing', 'completed', 'failed', 'no_audio', 'skipped'], default: 'none' },
+  pipelineError:   { type: String },               // why the last pipeline/egress run failed — debuggable without VPS logs
 
   // ── Reminder emails (sent by ReminderCron) — flags prevent duplicate sends ──
   remindersSent:  {

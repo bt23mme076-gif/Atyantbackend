@@ -1,3 +1,7 @@
+# ⚠️ SOURCE OF TRUTH — the deployed VPS copy must match this file. It had drifted
+# (the running server has TURN enabled on UDP 3478 but this file didn't), so
+# after editing, copy it to the VPS and restart the livekit container.
+
 port: 7880
 bind_addresses:
   - ""
@@ -6,6 +10,24 @@ rtc:
   tcp_port: 7881
   udp_port: 7882
   use_external_ip: true
+  # If use_external_ip mis-detects the public IP behind the VPS NAT (candidates
+  # point at a private/wrong address → media never connects → silent calls),
+  # pin it explicitly instead:
+  # node_ip: 187.127.133.111
+
+# ── TURN relay: the fix for college-WiFi / mobile-data silent calls ──
+# The frontend forces iceTransportPolicy:'relay', so EVERY call's media is
+# relayed through this TURN server. Today it only offers UDP 3478 — which many
+# college/corporate/mobile firewalls block, producing the "am I audible?" silent
+# sessions. TURN-over-TLS on 443 looks identical to HTTPS and traverses almost
+# any firewall. TLS is terminated by Traefik and forwarded to tls_port
+# (external_tls: true). See docker/livekit/TURN_SETUP.md for DNS + Traefik steps.
+turn:
+  enabled: true
+  domain: turn.meet.api.product.atyant.in
+  tls_port: 5349        # plain-TCP port Traefik forwards TLS-terminated traffic to
+  udp_port: 3478        # keep the existing UDP path for networks that allow it
+  external_tls: true    # Traefik/Let's Encrypt owns the cert, not LiveKit
 
 keys:
   # Replace with your actual key/secret — must match LIVEKIT_API_KEY / LIVEKIT_API_SECRET in .env
