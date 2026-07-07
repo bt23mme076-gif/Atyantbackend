@@ -1,6 +1,7 @@
 import fs from 'fs';
 import axios from 'axios';
 import FormData from 'form-data';
+import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import Session from '../models/Session.js';
 import SessionTranscript from '../models/SessionTranscript.js';
 import SessionInsight from '../models/SessionInsight.js';
@@ -133,11 +134,12 @@ class SessionPipelineService {
       }
 
       const sessionDoc = await Session.findById(sessionId).lean();
-      
+      const resumeText = await this._fetchResumeText(sessionDoc).catch(() => null);
+
       let insights;
       let insightsFailed = false;
       try {
-        insights = this._normalizeInsights(await this._extractInsightsSmart(transcript.text, sessionDoc));
+        insights = this._normalizeInsights(await this._extractInsightsSmart(transcript.text, sessionDoc, resumeText));
 
         // groqJSON returns {} on JSON-parse failure — treat a fully empty result
         // as an error (retryable via /reprocess) rather than storing a blank
@@ -302,14 +304,31 @@ class SessionPipelineService {
     };
   }
 
+  // Download and parse the student's resume PDF from Cloudinary (if stored on the session).
+  async _fetchResumeText(sessionDoc) {
+    const url = sessionDoc?.studentResumeUrl;
+    if (!url) return null;
+    try {
+      const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 });
+      const data = await pdfParse(Buffer.from(response.data));
+      const text = (data.text || '').trim().slice(0, 6000); // cap so it doesn't blow the token budget
+      if (text.length < 50) return null;
+      console.log(`📄 Resume loaded for session ${sessionDoc._id} (${text.length} chars)`);
+      return text;
+    } catch (err) {
+      console.warn(`Resume fetch failed for session ${sessionDoc._id}: ${err.message}`);
+      return null;
+    }
+  }
+
   // Router: short transcripts go through the proven single-call path; long ones
   // (a 90-min session is ~50–60k chars) are map-reduced so the END of the
   // session — where action items and next steps actually live — is analyzed
   // instead of sliced off. The old `.slice(0, 24000)` silently dropped
   // everything past ~40 min.
-  async _extractInsightsSmart(transcriptText, sessionDoc) {
+  async _extractInsightsSmart(transcriptText, sessionDoc, resumeText) {
     if (transcriptText.length <= SINGLE_LIMIT) {
-      return this._withRetry(() => this._extractInsights(transcriptText, sessionDoc), 'insight extraction');
+      return this._withRetry(() => this._extractInsights(transcriptText, sessionDoc, resumeText), 'insight extraction');
     }
 
     const chunks = [];
@@ -359,14 +378,19 @@ ${chunks[i]}`,
     return this._withRetry(
       () => this._extractInsights(
         `[These are condensed sequential notes from ${chunks.length} parts of one long session — merge them into a single coherent analysis.]\n\n${JSON.stringify(notes)}`,
-        sessionDoc
+        sessionDoc,
+        resumeText
       ),
       'insight merge'
     );
   }
 
-  async _extractInsights(transcriptText, sessionDoc) {
+  async _extractInsights(transcriptText, sessionDoc, resumeText) {
     if (!GROQ_API_KEYS.length) throw new Error('GROQ_API_KEY not configured');
+
+    const resumeSection = resumeText
+      ? `\n\nStudent's Resume (for context — use to make feedback more specific and targeted):\n${resumeText}`
+      : '';
 
     // Shared rotating client in JSON mode → valid JSON back, key failover for free.
     return groqJSON(
@@ -378,7 +402,7 @@ ${chunks[i]}`,
         {
           role: 'user',
           content: `Analyze this mentor–student career guidance session transcript in depth.
-Topic: ${sessionDoc?.topic || 'Career Guidance'}
+Topic: ${sessionDoc?.topic || 'Career Guidance'}${resumeSection}
 
 Return ONLY this JSON structure (fill EVERY field from the transcript):
 {

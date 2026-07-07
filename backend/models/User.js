@@ -446,6 +446,7 @@ const userSchema = new mongoose.Schema({
 
   // ─── PROFILE ───────────────────────────────
   profilePicture: { type: String, default: null },
+  resumeUrl:      { type: String, default: null },  // Cloudinary PDF URL — shown in meet ResumePanel + sent to pipeline
   bio: { type: String, default: null, maxlength: 500 },
   city: { type: String, default: '' },
 

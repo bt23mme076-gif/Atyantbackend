@@ -275,6 +275,52 @@ router.post('/upload-picture', protect, upload.single('profilePicture'), async (
 });
 
 // ─────────────────────────────────────────────
+//  POST /upload-resume  — Store resume PDF permanently
+// ─────────────────────────────────────────────
+router.post('/upload-resume', protect, upload.single('resumePdf'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    if (req.file.mimetype !== 'application/pdf') {
+      return res.status(400).json({ message: 'Only PDF files are accepted' });
+    }
+    if (req.file.size > 5 * 1024 * 1024) {
+      return res.status(400).json({ message: 'Resume must be under 5 MB' });
+    }
+
+    const user = await User.findById(req.user.userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'atyant_resumes', resource_type: 'raw', format: 'pdf' },
+        (error, result) => error ? reject(error) : resolve(result)
+      );
+      stream.end(req.file.buffer);
+    });
+
+    user.resumeUrl = result.secure_url;
+    await user.save();
+
+    res.json({ message: 'Resume uploaded', resumeUrl: user.resumeUrl });
+  } catch (error) {
+    console.error('POST /upload-resume error:', error);
+    res.status(500).json({ message: 'Upload failed', error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+//  DELETE /upload-resume  — Remove stored resume
+// ─────────────────────────────────────────────
+router.delete('/upload-resume', protect, async (req, res) => {
+  try {
+    await User.findByIdAndUpdate(req.user.userId, { resumeUrl: null });
+    res.json({ message: 'Resume removed' });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to remove resume', error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────
 //  POST /parse-linkedin  — Extract Profile Data
 // ─────────────────────────────────────────────
 router.post('/parse-linkedin', protect, upload.single('resumePdf'), async (req, res) => {

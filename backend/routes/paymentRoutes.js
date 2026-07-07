@@ -53,6 +53,13 @@ const parseSchedule = (date, time) => {
 // Create LiveKit room + email both parties. Used by free and paid paths.
 async function finalizeSession(session, student, mentor) {
   try {
+    // Snapshot the student's resume URL at session creation time so the pipeline
+    // always has the version they uploaded before the session, even if they
+    // replace it later.
+    if (student?.resumeUrl && !session.studentResumeUrl) {
+      session.studentResumeUrl = student.resumeUrl;
+    }
+
     if (liveKitService.isConfigured()) {
       const roomName = await liveKitService.createRoom(session._id);
       session.livekitRoomName = roomName;

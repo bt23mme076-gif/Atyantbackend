@@ -14,6 +14,10 @@ const sessionSchema = new mongoose.Schema({
   calendarEventId:{ type: String },
   notes:          { type: String, maxlength: 500 },
 
+  // ── Resume snapshot — copied from student.resumeUrl at session creation so the
+  // pipeline always has the resume the student used, even if they update it later.
+  studentResumeUrl: { type: String, default: null },
+
   // ── LiveKit in-house meet ──
   livekitRoomName: { type: String },               // LiveKit room name e.g. session_<id>
   egressId:        { type: String },               // LiveKit egress job id for audio recording
