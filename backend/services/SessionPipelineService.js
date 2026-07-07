@@ -135,9 +135,10 @@ class SessionPipelineService {
       const sessionDoc = await Session.findById(sessionId).lean();
       
       let insights;
+      let insightsFailed = false;
       try {
         insights = this._normalizeInsights(await this._extractInsightsSmart(transcript.text, sessionDoc));
-        
+
         // groqJSON returns {} on JSON-parse failure — treat a fully empty result
         // as an error (retryable via /reprocess) rather than storing a blank
         // insight that would render as an empty dashboard card.
@@ -145,6 +146,7 @@ class SessionPipelineService {
           throw new Error('Insight extraction returned empty JSON');
         }
       } catch (insightErr) {
+        insightsFailed = true;
         // Insight extraction failed BUT transcript is already saved above.
         // Create a fallback "processing failed" insight so the session is visible.
         console.error(`Insight extraction failed for session ${sessionId}:`, insightErr.message);
@@ -178,7 +180,7 @@ class SessionPipelineService {
       );
       
       // Only mark as completed if insights were successful
-      if (session.pipelineStatus !== 'failed') {
+      if (!insightsFailed) {
         await Session.findByIdAndUpdate(sessionId, { pipelineStatus: 'completed', pipelineError: null });
       }
       
