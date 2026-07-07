@@ -63,6 +63,7 @@ import { moderator } from './utils/ContentModerator.js';
 import { globalRateLimit } from './middleware/globalRateLimiter.js';
 import { sendAutoReply } from './controllers/messageController.js';
 import ReminderCron from './services/ReminderCron.js';
+import TranscriptRecoveryCron from './services/TranscriptRecoveryCron.js';
 
 // ─── Passport Configuration ────────────────────────────────────────────────
 import './config/passport.js';
@@ -195,8 +196,8 @@ mongoose.connect(MONGO_URI, {
 })
   .then(() => {
     console.log('✅ MongoDB connected');
-    // Start reminder cron job
     ReminderCron.start();
+    TranscriptRecoveryCron.start();
   })
   .catch(err => {
     console.error('❌ MongoDB connection error:', err.message);
