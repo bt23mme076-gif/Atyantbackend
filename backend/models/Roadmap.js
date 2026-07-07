@@ -6,6 +6,11 @@ const roadmapStepSchema = new mongoose.Schema({
   duration: { type: String },
   status:   { type: String, enum: ['active', 'upcoming', 'locked', 'completed'], default: 'upcoming' },
   tasks:    [{ type: String }],
+  tips:     [{ type: String }],
+  resources: [{
+    name: { type: String },
+    url:  { type: String },
+  }],
 }, { _id: false });
 
 const roadmapSchema = new mongoose.Schema({
@@ -13,6 +18,8 @@ const roadmapSchema = new mongoose.Schema({
   goal:        { type: String },
   college:     { type: String },
   branch:      { type: String },
+  year:        { type: String },
+  cgpa:        { type: String },
   steps:       [roadmapStepSchema],
   generatedAt: { type: Date, default: Date.now },
 }, { timestamps: true });
