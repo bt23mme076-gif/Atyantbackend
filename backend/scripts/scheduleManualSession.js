@@ -10,11 +10,12 @@
 //      --student=student@email.com \
 //      --at="2026-07-03 14:10"            # local time; "2:10 PM" also works
 //      [--topic="Mock Interview"] [--duration=30]
-//      [--base=https://atyant.in]         # meet-link origin override
+//      [--base=https://atyant.in/atyantEngine]  # meet-link base (origin + optional sub-path)
 //
-//  NOTE on --base: atyant.in only proxies "/" to the product app, so meet links
-//  must be <origin>/?meet=<id>. Any path in --base (e.g. /atyantengine) is
-//  stripped — only the origin is used.
+//  NOTE on --base: the origin AND any sub-path are preserved, so
+//  --base=https://atyant.in/atyantEngine yields
+//  https://atyant.in/atyantEngine/?meet=<id>. Pass the exact (case-sensitive)
+//  path the product app is served under; omit the path for a root-served app.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import 'dotenv/config';
@@ -42,15 +43,15 @@ function parseAt(str) {
   return isNaN(d.getTime()) ? null : d;
 }
 
-// Meet links live at the origin root (?meet=...) — see utils/frontendUrl.js.
+// Build the meet link from --base, preserving any sub-path the product app is
+// served under (e.g. https://atyant.in/atyantEngine → .../atyantEngine/?meet=<id>).
+// Falls back to FRONTEND_URL (utils/frontendUrl.js) when --base is absent/invalid.
 function meetLinkFromBase(base, sessionId) {
   if (!base) return meetLinkFor(sessionId);
   try {
     const u = new URL(base);
-    if (u.pathname !== '/' && u.pathname !== '') {
-      console.warn(`⚠️  --base path "${u.pathname}" ignored — meet links must be served from the origin root.`);
-    }
-    return `${u.origin}/?meet=${sessionId}`;
+    const path = u.pathname.replace(/\/+$/, ''); // keep sub-path; drop trailing slash(es), '' for root
+    return `${u.origin}${path}/?meet=${sessionId}`;
   } catch {
     console.warn(`⚠️  Invalid --base "${base}" — falling back to FRONTEND_URL.`);
     return meetLinkFor(sessionId);

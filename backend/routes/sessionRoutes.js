@@ -1,5 +1,7 @@
 import express from 'express';
 import Session from '../models/Session.js';
+import SessionTranscript from '../models/SessionTranscript.js';
+import SessionInsight from '../models/SessionInsight.js';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
@@ -7,6 +9,88 @@ import { localizeMeetLink } from '../utils/frontendUrl.js';
 import sessionPipelineService from '../services/SessionPipelineService.js';
 
 const router = express.Router();
+
+// GET /api/sessions/user/:userId/diagnostic (admin only)
+// Get diagnostic info for all sessions of a specific user
+router.get('/user/:userId/diagnostic', protect, async (req, res) => {
+  try {
+    // Admin only
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const user = await User.findById(req.params.userId).select('name username email').lean();
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const sessions = await Session.find({
+      $or: [
+        { userId: req.params.userId },
+        { mentorId: req.params.userId }
+      ]
+    })
+    .sort({ scheduledAt: -1 })
+    .limit(10)
+    .lean();
+
+    const diagnostics = [];
+
+    for (const session of sessions) {
+      const transcript = await SessionTranscript.findOne({ sessionId: session._id }).lean();
+      
+      const diag = {
+        sessionId: session._id,
+        scheduledAt: session.scheduledAt,
+        status: session.status,
+        pipelineStatus: session.pipelineStatus,
+        pipelineError: session.pipelineError,
+        egressAttempts: session.egressAttempts,
+        transcript: {
+          exists: !!transcript,
+          length: transcript?.rawText?.length || 0,
+          preview: transcript?.rawText?.slice(0, 150) || null,
+        },
+      };
+
+      // Calculate filler ratio
+      if (transcript?.rawText) {
+        const text = transcript.rawText.toLowerCase();
+        const fillerWords = ['you', 'thank', 'thanks', 'hello', 'hi', 'yeah', 'um', 'hmm'];
+        const totalWords = transcript.rawText.split(/\s+/).filter(Boolean).length;
+        const fillerCount = fillerWords.reduce((count, word) => {
+          const regex = new RegExp(`\\b${word}\\b`, 'g');
+          return count + (text.match(regex) || []).length;
+        }, 0);
+        
+        diag.transcript.fillerRatio = totalWords > 0 ? (fillerCount / totalWords * 100).toFixed(1) + '%' : '0%';
+        diag.micIssue = (fillerCount / totalWords) > 0.3;
+      }
+
+      diagnostics.push(diag);
+    }
+
+    res.json({
+      user: {
+        id: user._id,
+        name: user.name,
+        username: user.username,
+        email: user.email,
+      },
+      totalSessions: sessions.length,
+      sessions: diagnostics,
+      summary: {
+        noAudio: diagnostics.filter(d => d.pipelineStatus === 'no_audio').length,
+        failed: diagnostics.filter(d => d.pipelineStatus === 'failed').length,
+        completed: diagnostics.filter(d => d.pipelineStatus === 'completed').length,
+        micIssues: diagnostics.filter(d => d.micIssue).length,
+      }
+    });
+  } catch (err) {
+    console.error('User diagnostic error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // GET /api/sessions/my — returns empty list for guests, real data for logged-in users
 router.get('/my', optionalAuth, async (req, res) => {
@@ -202,6 +286,242 @@ router.post('/:id/reprocess', protect, async (req, res) => {
     res.json({ ok: true, message: 'Reprocessing started', audioPath });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/sessions/:id/transcript — get transcript + insights for a session
+// Only the student or mentor of that session can access it
+router.get('/:id/transcript', protect, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const session = await Session.findById(req.params.id)
+      .populate('userId',   'name username profilePicture')
+      .populate('mentorId', 'name username profilePicture')
+      .lean();
+
+    if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
+
+    // Only participants can view transcript
+    const isStudent = String(session.userId?._id || session.userId) === String(userId);
+    const isMentor  = String(session.mentorId?._id || session.mentorId) === String(userId);
+    const isAdmin   = req.user.role === 'admin';
+
+    if (!isStudent && !isMentor && !isAdmin) {
+      return res.status(403).json({ ok: false, error: 'Access denied' });
+    }
+
+    const [transcript, insight] = await Promise.all([
+      SessionTranscript.findOne({ sessionId: session._id }).lean(),
+      SessionInsight.findOne({ sessionId: session._id }).lean()
+    ]);
+
+    if (!transcript) {
+      return res.status(404).json({
+        ok: false,
+        error: session.pipelineStatus === 'processing'
+          ? 'Transcript is still being processed. Check back in a minute.'
+          : session.pipelineStatus === 'failed'
+          ? 'Transcript generation failed for this session.'
+          : 'No transcript available for this session.'
+      });
+    }
+
+    res.json({
+      ok: true,
+      session: {
+        id:          session._id,
+        topic:       session.topic,
+        scheduledAt: session.scheduledAt,
+        duration:    transcript.duration,
+        student: {
+          id:             String(session.userId?._id || session.userId),
+          name:           session.userId?.name || session.userId?.username || 'Student',
+          profilePicture: session.userId?.profilePicture || null
+        },
+        mentor: {
+          id:             String(session.mentorId?._id || session.mentorId),
+          name:           session.mentorId?.name || session.mentorId?.username || session.mentorName || 'Mentor',
+          profilePicture: session.mentorId?.profilePicture || null
+        }
+      },
+      transcript: {
+        rawText:  transcript.rawText,
+        segments: transcript.segments || [],
+        language: transcript.language
+      },
+      insight: insight ? {
+        summary:              insight.summary,
+        detailedSummary:      insight.detailedSummary,
+        topics:               insight.topics,
+        actionItems:          insight.actionItems,
+        studentPainPoints:    insight.studentPainPoints,
+        keyDiscussionPoints:  insight.keyDiscussionPoints,
+        strengths:            insight.strengths,
+        areasToImprove:       insight.areasToImprove,
+        recommendedResources: insight.recommendedResources,
+        nextSessionFocus:     insight.nextSessionFocus,
+        mentorQualityScore:   insight.mentorQualityScore,
+        studentSentiment:     insight.studentSentiment
+      } : null
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/sessions/between/:userA/:userB — find last session between two users and return transcript
+// Admin only (for support/review purposes)
+router.get('/between/:userA/:userB', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ ok: false, error: 'Admin only' });
+    }
+
+    const { userA, userB } = req.params;
+
+    // Find users by username or ID
+    const [a, b] = await Promise.all([
+      User.findOne({ $or: [{ username: userA }, { _id: userA.match(/^[a-f\d]{24}$/i) ? userA : null }] })
+        .select('_id name username').lean(),
+      User.findOne({ $or: [{ username: userB }, { _id: userB.match(/^[a-f\d]{24}$/i) ? userB : null }] })
+        .select('_id name username').lean()
+    ]);
+
+    if (!a) return res.status(404).json({ ok: false, error: `User "${userA}" not found` });
+    if (!b) return res.status(404).json({ ok: false, error: `User "${userB}" not found` });
+
+    // Find most recent session between them (either as student/mentor)
+    const session = await Session.findOne({
+      $or: [
+        { userId: a._id, mentorId: b._id },
+        { userId: b._id, mentorId: a._id }
+      ],
+      status: 'completed'
+    }).sort({ scheduledAt: -1 }).lean();
+
+    if (!session) {
+      return res.status(404).json({
+        ok: false,
+        error: `No completed session found between ${a.name || a.username} and ${b.name || b.username}`
+      });
+    }
+
+    const [transcript, insight] = await Promise.all([
+      SessionTranscript.findOne({ sessionId: session._id }).lean(),
+      SessionInsight.findOne({ sessionId: session._id }).lean()
+    ]);
+
+    res.json({
+      ok: true,
+      session: {
+        id:          session._id,
+        topic:       session.topic,
+        scheduledAt: session.scheduledAt,
+        student:     { id: String(a._id), name: a.name || a.username },
+        mentor:      { id: String(b._id), name: b.name || b.username }
+      },
+      transcript: transcript ? {
+        rawText:  transcript.rawText,
+        segments: transcript.segments || [],
+        language: transcript.language,
+        duration: transcript.duration
+      } : null,
+      insight: insight ? {
+        summary:             insight.summary,
+        detailedSummary:     insight.detailedSummary,
+        topics:              insight.topics,
+        actionItems:         insight.actionItems,
+        studentPainPoints:   insight.studentPainPoints,
+        keyDiscussionPoints: insight.keyDiscussionPoints,
+        areasToImprove:      insight.areasToImprove,
+        nextSessionFocus:    insight.nextSessionFocus
+      } : null
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/sessions/:id/diagnostic (admin only)
+// Check if transcript and audio file exist for a session
+router.get('/:id/diagnostic', protect, async (req, res) => {
+  try {
+    const session = await Session.findById(req.params.id).lean();
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Only admin, student, or mentor can view
+    const isAdmin = req.user.role === 'admin';
+    const isStudent = session.userId?.toString() === req.user.userId;
+    const isMentor = session.mentorId?.toString() === req.user.userId;
+
+    if (!isAdmin && !isStudent && !isMentor) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    const transcript = await SessionTranscript.findOne({ sessionId: req.params.id }).lean();
+    
+    const diagnostic = {
+      sessionId: session._id,
+      status: session.status,
+      pipelineStatus: session.pipelineStatus,
+      pipelineError: session.pipelineError,
+      egressId: session.egressId,
+      egressAttempts: session.egressAttempts,
+      livekitRoomName: session.livekitRoomName,
+      scheduledAt: session.scheduledAt,
+      transcript: {
+        exists: !!transcript,
+        length: transcript?.rawText?.length || 0,
+        preview: transcript?.rawText?.slice(0, 200) || null,
+        segments: transcript?.segments?.length || 0,
+        language: transcript?.language || null,
+        duration: transcript?.duration || null,
+      },
+      audio: {
+        expectedPath: `${process.env.RECORDINGS_PATH || '/tmp/recordings'}/${req.params.id}.ogg`,
+        note: 'Audio files are stored on VPS and auto-deleted after 48h. Check VPS directly.',
+      },
+      diagnosis: null,
+    };
+
+    // Auto-diagnose common issues
+    if (session.pipelineStatus === 'no_audio') {
+      diagnostic.diagnosis = 'Microphone was muted or not capturing audio during the call. Transcript contains only silence-filler words from Whisper hallucination.';
+    } else if (session.pipelineStatus === 'failed') {
+      diagnostic.diagnosis = session.pipelineError || 'Pipeline failed - check error message';
+    } else if (!transcript) {
+      diagnostic.diagnosis = 'No transcript found - session may not have completed or pipeline pending';
+    } else if (transcript.rawText?.length < 500) {
+      diagnostic.diagnosis = 'Very short transcript - possible connection issue or brief call';
+    } else {
+      diagnostic.diagnosis = 'Session processed successfully';
+    }
+
+    // Calculate filler word ratio for audio quality assessment
+    if (transcript?.rawText) {
+      const text = transcript.rawText.toLowerCase();
+      const fillerWords = ['you', 'thank', 'thanks', 'hello', 'hi', 'yeah', 'um', 'hmm'];
+      const totalWords = transcript.rawText.split(/\s+/).filter(Boolean).length;
+      const fillerCount = fillerWords.reduce((count, word) => {
+        const regex = new RegExp(`\\b${word}\\b`, 'g');
+        return count + (text.match(regex) || []).length;
+      }, 0);
+      
+      diagnostic.transcript.totalWords = totalWords;
+      diagnostic.transcript.fillerWords = fillerCount;
+      diagnostic.transcript.fillerRatio = totalWords > 0 ? (fillerCount / totalWords * 100).toFixed(1) + '%' : '0%';
+      
+      if (fillerCount / totalWords > 0.3) {
+        diagnostic.diagnosis += ' [HIGH FILLER RATIO - likely mic was not capturing real speech]';
+      }
+    }
+
+    res.json(diagnostic);
+  } catch (err) {
+    console.error('Session diagnostic error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
