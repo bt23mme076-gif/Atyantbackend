@@ -94,36 +94,41 @@ class SessionPipelineService {
         
         // Create a basic "no audio" insight so user knows what happened
         const sessionDoc = await Session.findById(sessionId).lean();
+        const noAudioInsight = {
+          sessionId,
+          summary: '⚠️ Audio recording issue - microphone did not capture speech',
+          detailedSummary: `This session was completed but the audio recording did not contain any real speech. This typically happens when:\n• Microphone was muted or blocked\n• Audio device not properly connected\n• Browser permission not granted\n\nThe session was ${Math.round((transcript.duration || 0) / 60)} minutes long. Please ensure your microphone is working before your next session.`,
+          topics: ['Technical Issue'],
+          keyDiscussionPoints: ['Audio recording failed - no speech detected'],
+          studentPainPoints: [],
+          strengths: [],
+          areasToImprove: ['Test microphone before joining sessions'],
+          actionItems: {
+            student: [
+              'Test your microphone before the next session',
+              'Check browser permissions for microphone access',
+              'Ensure audio device is properly connected'
+            ],
+            mentor: sessionDoc.mentorId ? ['Schedule a follow-up session'] : []
+          },
+          recommendedResources: [],
+          nextSessionFocus: ['Continue the discussion that was interrupted by technical issues'],
+          mentorQualityScore: null,
+          mentorQualityReason: 'Cannot evaluate - no audio was recorded',
+          studentSentiment: 'neutral',
+          careerContext: 'other',
+        };
+        
         await SessionInsight.findOneAndUpdate(
           { sessionId },
-          {
-            sessionId,
-            summary: '⚠️ Audio recording issue - microphone did not capture speech',
-            detailedSummary: `This session was completed but the audio recording did not contain any real speech. This typically happens when:\n• Microphone was muted or blocked\n• Audio device not properly connected\n• Browser permission not granted\n\nThe session was ${Math.round((transcript.duration || 0) / 60)} minutes long. Please ensure your microphone is working before your next session.`,
-            topics: ['Technical Issue'],
-            keyDiscussionPoints: ['Audio recording failed - no speech detected'],
-            studentPainPoints: [],
-            strengths: [],
-            areasToImprove: ['Test microphone before joining sessions'],
-            actionItems: {
-              student: [
-                'Test your microphone before the next session',
-                'Check browser permissions for microphone access',
-                'Ensure audio device is properly connected'
-              ],
-              mentor: sessionDoc.mentorId ? ['Schedule a follow-up session'] : []
-            },
-            recommendedResources: [],
-            nextSessionFocus: ['Continue the discussion that was interrupted by technical issues'],
-            mentorQualityScore: null,
-            mentorQualityReason: 'Cannot evaluate - no audio was recorded',
-            studentSentiment: 'neutral',
-            careerContext: 'other',
-          },
+          noAudioInsight,
           { upsert: true, new: true }
         );
         
-        console.warn(`⚠️ Session ${sessionId}: transcript is near-empty — marked no_audio, basic insight saved for user visibility.`);
+        // IMPORTANT: Still save to dashboard so user sees the session with error message
+        await this._saveToUserDashboard(sessionDoc, noAudioInsight);
+        
+        console.warn(`⚠️ Session ${sessionId}: transcript is near-empty — marked no_audio, insight + dashboard items saved.`);
         return;
       }
 
