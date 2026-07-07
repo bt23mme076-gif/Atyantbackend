@@ -15,14 +15,14 @@ const WHISPER_MODEL   = process.env.GROQ_WHISPER_MODEL  || 'whisper-large-v3';
 // breakdown. Override with GROQ_PIPELINE_MODEL if needed.
 const PIPELINE_MODEL  = process.env.GROQ_PIPELINE_MODEL || 'llama-3.3-70b-versatile';
 
-// ── Long-session (up to ~1.5–2 h) handling ──
+// ── Long-session (up to ~3+ hours) handling ──
 // A single insight request is capped at SINGLE_LIMIT chars (~6k input tokens),
 // which stays under Groq's free-tier tokens-per-minute budget. Longer
 // transcripts are map-reduced: per-chunk condensed notes → one merge call.
 // Chunks are spaced CHUNK_SPACING_MS apart so a 90-min session never 429s.
 const SINGLE_LIMIT     = 24000;
 const CHUNK_SIZE       = 20000;
-const MAX_CHUNKS       = 8;        // ~160k chars ≈ 2.5+ h of speech; beyond that we truncate
+const MAX_CHUNKS       = 12;       // ~240k chars ≈ 4+ hours of speech; covers even longest sessions
 const CHUNK_SPACING_MS = 15000;
 // Groq free-tier rejects audio files over 25 MB. At our 24 kbps voice encoding
 // that's >2 h of audio, so real sessions never hit it — but fail with a clear
@@ -84,24 +84,86 @@ class SessionPipelineService {
       // Whisper hallucinates filler ("Thank you… you you you") over silence, and
       // the insight prompt is required to produce a summary — so a dead-mic
       // session used to get a FABRICATED summary on the student's dashboard.
-      // Flag it honestly instead and skip insights entirely.
+      // Flag it honestly but STILL save a basic insight so the session doesn't
+      // disappear from the dashboard — user can see what went wrong.
       if (this._isLowContent(transcript)) {
         await Session.findByIdAndUpdate(sessionId, {
           pipelineStatus: 'no_audio',
           pipelineError: `Recording contains almost no real speech (${(transcript.text || '').trim().length} chars) — likely a mic/connection failure during the call.`,
         });
-        console.warn(`⚠️ Session ${sessionId}: transcript is near-empty — marked no_audio, insights skipped.`);
+        
+        // Create a basic "no audio" insight so user knows what happened
+        const sessionDoc = await Session.findById(sessionId).lean();
+        await SessionInsight.findOneAndUpdate(
+          { sessionId },
+          {
+            sessionId,
+            summary: '⚠️ Audio recording issue - microphone did not capture speech',
+            detailedSummary: `This session was completed but the audio recording did not contain any real speech. This typically happens when:\n• Microphone was muted or blocked\n• Audio device not properly connected\n• Browser permission not granted\n\nThe session was ${Math.round((transcript.duration || 0) / 60)} minutes long. Please ensure your microphone is working before your next session.`,
+            topics: ['Technical Issue'],
+            keyDiscussionPoints: ['Audio recording failed - no speech detected'],
+            studentPainPoints: [],
+            strengths: [],
+            areasToImprove: ['Test microphone before joining sessions'],
+            actionItems: {
+              student: [
+                'Test your microphone before the next session',
+                'Check browser permissions for microphone access',
+                'Ensure audio device is properly connected'
+              ],
+              mentor: sessionDoc.mentorId ? ['Schedule a follow-up session'] : []
+            },
+            recommendedResources: [],
+            nextSessionFocus: ['Continue the discussion that was interrupted by technical issues'],
+            mentorQualityScore: null,
+            mentorQualityReason: 'Cannot evaluate - no audio was recorded',
+            studentSentiment: 'neutral',
+            careerContext: 'other',
+          },
+          { upsert: true, new: true }
+        );
+        
+        console.warn(`⚠️ Session ${sessionId}: transcript is near-empty — marked no_audio, basic insight saved for user visibility.`);
         return;
       }
 
       const sessionDoc = await Session.findById(sessionId).lean();
-      const insights = this._normalizeInsights(await this._extractInsightsSmart(transcript.text, sessionDoc));
-
-      // groqJSON returns {} on JSON-parse failure — treat a fully empty result
-      // as an error (retryable via /reprocess) rather than storing a blank
-      // insight that would render as an empty dashboard card.
-      if (!insights.summary && !insights.detailedSummary && !insights.keyDiscussionPoints.length) {
-        throw new Error('Insight extraction returned empty JSON');
+      
+      let insights;
+      try {
+        insights = this._normalizeInsights(await this._extractInsightsSmart(transcript.text, sessionDoc));
+        
+        // groqJSON returns {} on JSON-parse failure — treat a fully empty result
+        // as an error (retryable via /reprocess) rather than storing a blank
+        // insight that would render as an empty dashboard card.
+        if (!insights.summary && !insights.detailedSummary && !insights.keyDiscussionPoints.length) {
+          throw new Error('Insight extraction returned empty JSON');
+        }
+      } catch (insightErr) {
+        // Insight extraction failed BUT transcript is already saved above.
+        // Create a fallback "processing failed" insight so the session is visible.
+        console.error(`Insight extraction failed for session ${sessionId}:`, insightErr.message);
+        insights = {
+          summary: '⚠️ Insight generation failed',
+          detailedSummary: `This session was completed and recorded, but automatic insight generation encountered an error. The full transcript is available. Error: ${insightErr.message}`,
+          topics: ['Processing Error'],
+          keyDiscussionPoints: [`Session duration: ${Math.round((transcript.duration || 0) / 60)} minutes`],
+          studentPainPoints: [],
+          strengths: [],
+          areasToImprove: [],
+          actionItems: { student: [], mentor: [] },
+          recommendedResources: [],
+          nextSessionFocus: [],
+          mentorQualityScore: null,
+          mentorQualityReason: 'Insight generation failed',
+          studentSentiment: 'neutral',
+          careerContext: 'other',
+        };
+        // Mark as failed but keep going to save the fallback insight
+        await Session.findByIdAndUpdate(sessionId, {
+          pipelineStatus: 'failed',
+          pipelineError: `Insight extraction failed: ${insightErr.message}`.slice(0, 500),
+        });
       }
 
       await SessionInsight.findOneAndUpdate(
@@ -109,7 +171,12 @@ class SessionPipelineService {
         { sessionId, ...insights },
         { upsert: true, new: true }
       );
-      await Session.findByIdAndUpdate(sessionId, { pipelineStatus: 'completed', pipelineError: null });
+      
+      // Only mark as completed if insights were successful
+      if (session.pipelineStatus !== 'failed') {
+        await Session.findByIdAndUpdate(sessionId, { pipelineStatus: 'completed', pipelineError: null });
+      }
+      
       await this._saveToUserDashboard(sessionDoc, insights);
 
       console.log(`✅ Pipeline completed for session ${sessionId}`);

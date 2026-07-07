@@ -1,0 +1,36 @@
+=== COPY-PASTE SNIPPET FOR MeetPage.jsx ===
+
+Step 1: Open C:\Atyantfrontend\src\pages\MeetPage.jsx
+
+Step 2: Find the imports section (line 1-13) and ADD these 2 lines at the end:
+
+import AdvancedMicrophoneCheck from '../components/LiveKit/AdvancedMicrophoneCheck';
+import '../components/LiveKit/MicrophoneCheck.css';
+
+
+Step 3: Find the MeetTools function (around line 21-35) 
+
+REPLACE this:
+
+function MeetTools({ hasVideo }) {
+    const state = useConnectionState();
+    if (state !== ConnectionState.Connected) return null;
+    return (
+        <>
+            <SessionTimer />
+
+
+WITH this:
+
+function MeetTools({ hasVideo }) {
+    const state = useConnectionState();
+    if (state !== ConnectionState.Connected) return null;
+    return (
+        <>
+            <AdvancedMicrophoneCheck />
+            <SessionTimer />
+
+
+That's it! Just 2 edits.
+
+Save file and run: npm run dev
