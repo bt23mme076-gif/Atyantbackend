@@ -960,13 +960,24 @@ export const sendSessionConfirmationEmails = async ({
   const when = new Date(scheduledAt).toLocaleString('en-IN', {
     dateStyle: 'full', timeStyle: 'short', timeZone: 'Asia/Kolkata',
   });
+
+  const startDt = new Date(scheduledAt);
+  const endDt = new Date(startDt.getTime() + (durationMin || 30) * 60000);
+  const fmt = d => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+  const calUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE`
+    + `&text=${encodeURIComponent(`Atyant Session: ${topic || 'Mentorship Session'}`)}`
+    + `&dates=${fmt(startDt)}/${fmt(endDt)}`
+    + `&details=${encodeURIComponent(`Join your Atyant session: ${meetLink || ''}`)}`
+    + `&location=${encodeURIComponent(meetLink || 'https://atyantproduct.vercel.app')}`;
+
   const meetBlock = meetLink
     ? `<div style="text-align:center;margin:28px 0;">
-         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Google Meet</a>
+         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Atyant Meet</a>
          <p style="color:#9ca3af;font-size:12px;margin-top:10px;">Link: <a href="${meetLink}" style="color:#4F46E5;">${meetLink}</a></p>
+         <a href="${calUrl}" style="display:inline-block;margin-top:14px;padding:9px 22px;border:2px solid #4F46E5;border-radius:6px;color:#4F46E5;text-decoration:none;font-weight:600;font-size:14px;">📅 Add to Google Calendar</a>
        </div>`
     : `<p style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:12px;border-radius:8px;line-height:1.5;">
-         Your Google Meet link will be shared shortly before the session. We'll email it to you.
+         Your session link will be shared shortly before the session. We'll email it to you.
        </p>`;
 
   const card = (heading, intro) => `
@@ -1033,13 +1044,24 @@ export const sendSessionReminderEmails = async ({
   const when = new Date(scheduledAt).toLocaleString('en-IN', {
     dateStyle: 'full', timeStyle: 'short', timeZone: 'Asia/Kolkata',
   });
+
+  const startDt = new Date(scheduledAt);
+  const endDt = new Date(startDt.getTime() + (durationMin || 30) * 60000);
+  const fmt = d => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+  const calUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE`
+    + `&text=${encodeURIComponent(`Atyant Session: ${topic || 'Mentorship Session'}`)}`
+    + `&dates=${fmt(startDt)}/${fmt(endDt)}`
+    + `&details=${encodeURIComponent(`Join your Atyant session: ${meetLink || ''}`)}`
+    + `&location=${encodeURIComponent(meetLink || 'https://atyantproduct.vercel.app')}`;
+
   const meetBlock = meetLink
     ? `<div style="text-align:center;margin:28px 0;">
-         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Google Meet</a>
+         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Atyant Meet</a>
          <p style="color:#9ca3af;font-size:12px;margin-top:10px;">Link: <a href="${meetLink}" style="color:#4F46E5;">${meetLink}</a></p>
+         <a href="${calUrl}" style="display:inline-block;margin-top:14px;padding:9px 22px;border:2px solid #4F46E5;border-radius:6px;color:#4F46E5;text-decoration:none;font-weight:600;font-size:14px;">📅 Add to Google Calendar</a>
        </div>`
     : `<p style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:12px;border-radius:8px;line-height:1.5;">
-         The Google Meet link will be shared shortly before the session.
+         Your session link will be shared shortly before the session.
        </p>`;
 
   const card = (heading, intro) => `
