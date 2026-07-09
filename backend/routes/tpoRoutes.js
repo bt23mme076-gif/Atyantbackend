@@ -61,15 +61,20 @@ router.get('/students', protect, tpoOnly, async (req, res) => {
 router.get('/mentors', protect, tpoOnly, async (req, res) => {
   try {
     const users = await User.find({ role: 'mentor', mentorListed: { $ne: false } })
-      .select('name username currentRole currentCompany topCompanies companyDomain')
+      .select('name username currentRole currentCompany topCompanies companyDomain education expertise')
       .lean();
 
-    const mentors = users.map(m => ({
-      _id: m._id,
-      name: m.name || m.username,
-      currentRole: m.currentRole || m.companyDomain || 'Mentor',
-      currentCompany: m.currentCompany || m.topCompanies?.[0] || '',
-    }));
+    const mentors = users.map(m => {
+      const edu = m.education?.[0] || {};
+      return {
+        _id: m._id,
+        name: m.name || m.username,
+        currentRole: m.currentRole || m.companyDomain || 'Mentor',
+        currentCompany: m.currentCompany || m.topCompanies?.[0] || '',
+        // Branch signal for TPO matching: education field/degree or expertise tags
+        branch: edu.field || edu.degree || (m.expertise || []).join(' '),
+      };
+    });
 
     res.json({ ok: true, mentors });
   } catch (err) {
