@@ -24,7 +24,10 @@ async function tpoOnly(req, res, next) {
 // Returns all non-mentor users with VNIT education (or all users as fallback).
 router.get('/students', protect, tpoOnly, async (req, res) => {
   try {
-    const users = await User.find({ role: 'user' })
+    const users = await User.find({
+      role: 'user',
+      email: { $regex: /@(students\.)?vnit\.ac\.in$/i },
+    })
       .select('name username email education skills interests')
       .lean();
 
