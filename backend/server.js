@@ -55,6 +55,7 @@ import mentorRoutes from './routes/mentorRoutes.js';
 import shareRoutes from './routes/shareRoutes.js';
 import feedbackRoutes from './routes/feedbackRoutes.js';
 import livekitRoutes from './routes/livekitRoutes.js';
+import tpoRoutes from './routes/tpoRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message from './models/Message.js';
@@ -93,6 +94,7 @@ const allowedOrigins = Array.from(new Set([
   'https://atyantfrontend.vercel.app',
   'https://atyantproduct.vercel.app',
   'https://www.atyant.in',
+  'https://vnit.atyant.in',
   'http://localhost:5173',
   process.env.FRONTEND_URL,
   process.env.FRONTEND_URL_WWW,
@@ -247,6 +249,7 @@ app.use('/api/mentor', mentorRoutes); // mentor onboarding (LinkedIn-PDF flow)
 app.use('/api/share', shareRoutes);  // mentor profile sharing + referral tracking
 app.use('/api/feedback', feedbackRoutes); // answer feedback + 30/60/90-day outcome reporting
 app.use('/api/livekit', livekitRoutes);   // in-house meet: join token + webhook
+app.use('/api/tpo', tpoRoutes);           // TPO dashboard — VNIT T&P cell
 app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────

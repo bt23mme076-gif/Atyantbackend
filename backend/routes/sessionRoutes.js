@@ -92,6 +92,53 @@ router.get('/user/:userId/diagnostic', protect, async (req, res) => {
   }
 });
 
+// GET /api/sessions/mentor/:mentorId/stats — dashboard stats for the mentor overview page
+router.get('/mentor/:mentorId/stats', protect, async (req, res) => {
+  try {
+    const { mentorId } = req.params;
+
+    // Only the mentor themselves (or admin) can view their stats
+    if (req.user.userId !== mentorId && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const allSessions = await Session.find({ mentorId }).select('status serviceId scheduledAt amount paymentStatus userId').lean();
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+
+    const completed  = allSessions.filter(s => s.status === 'completed');
+    const pending    = allSessions.filter(s => s.status === 'upcoming' || s.status === 'pending');
+    const bookedToday = allSessions.filter(s => {
+      const d = new Date(s.scheduledAt);
+      return d >= today && d < tomorrow;
+    });
+
+    const totalEarnings = completed
+      .filter(s => s.paymentStatus === 'paid')
+      .reduce((sum, s) => sum + (s.amount || 0), 0);
+
+    const uniqueStudents = new Set(allSessions.map(s => s.userId?.toString())).size;
+
+    res.json({
+      totalEarnings,
+      bookedToday: bookedToday.length,
+      pending: pending.length,
+      completed: completed.length,
+      totalStudents: uniqueStudents,
+      chatSessions:   allSessions.filter(s => s.serviceId === 'text-qa').length,
+      audioSessions:  allSessions.filter(s => s.serviceId === 'audio-call').length,
+      videoSessions:  allSessions.filter(s => s.serviceId === 'video-call').length,
+      resumeReviews:  allSessions.filter(s => s.serviceId === 'resume-review').length,
+    });
+  } catch (err) {
+    console.error('Mentor stats error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/sessions/my — returns empty list for guests, real data for logged-in users
 router.get('/my', optionalAuth, async (req, res) => {
   try {
