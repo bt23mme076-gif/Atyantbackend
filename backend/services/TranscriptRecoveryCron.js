@@ -7,7 +7,9 @@ import sessionPipelineService from './SessionPipelineService.js';
 const RECORDINGS_PATH = process.env.RECORDINGS_PATH || '/tmp/recordings';
 
 // Sessions stuck in 'processing' for longer than this are assumed crashed.
-const STUCK_PROCESSING_MS = 30 * 60 * 1000; // 30 min
+// A 30-min session takes ~5-10 min through the pipeline — 45 min gives enough
+// headroom for Groq retries without waiting ages to recover a crashed run.
+const STUCK_PROCESSING_MS = 45 * 60 * 1000; // 45 min
 
 // Sessions completed but never entered the pipeline (egress_ended webhook missed).
 // We wait 10 min after completion before attempting recovery so a slow-but-running
@@ -30,11 +32,16 @@ class TranscriptRecoveryCron {
   async _recover() {
     const now = Date.now();
 
-    // Case 1: completed sessions that never got a pipelineStatus at all —
+    // Case 1: completed sessions that never entered the pipeline —
     // egress_ended webhook was missed (backend was restarting / network blip).
+    // NOTE: the Session schema defaults pipelineStatus to the STRING 'none', so a
+    // never-processed session sits at 'none', NOT null/undefined. Matching only
+    // null/undefined here silently skipped every missed-webhook session (they
+    // stayed 'none' forever and their transcript was never recovered). 'none'
+    // MUST be in this list for the safety net to work.
     const neverProcessed = await Session.find({
       status: 'completed',
-      pipelineStatus: { $in: [null, undefined] },
+      pipelineStatus: { $in: [null, undefined, 'none'] },
       updatedAt: { $lt: new Date(now - WEBHOOK_GRACE_MS) },
     }).lean();
 

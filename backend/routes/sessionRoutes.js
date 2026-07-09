@@ -275,11 +275,17 @@ router.post('/:id/reprocess', protect, async (req, res) => {
     if (req.user?.role !== 'admin') {
       return res.status(403).json({ ok: false, error: 'Admin only' });
     }
-    const session = await Session.findById(req.params.id).select('_id').lean();
+    const session = await Session.findById(req.params.id).select('_id pipelineStatus').lean();
     if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
 
+    // Reset no_audio status so _isLowContent doesn't short-circuit on a second
+    // attempt after the student re-records or admin wants to force insight re-gen
+    // from the stored transcript.
+    if (session.pipelineStatus === 'no_audio') {
+      await Session.findByIdAndUpdate(session._id, { pipelineStatus: 'none', pipelineError: null });
+    }
+
     const audioPath = `${process.env.RECORDINGS_PATH || '/tmp/recordings'}/${session._id}.ogg`;
-    // Run async — don't block the response on a potentially long transcription.
     sessionPipelineService.processSession(session._id, audioPath).catch(err =>
       console.error('Manual reprocess error:', err.message)
     );
@@ -369,6 +375,54 @@ router.get('/:id/transcript', protect, async (req, res) => {
   }
 });
 
+// PATCH /api/sessions/:id/manual-transcript — admin manually enters transcript when audio failed
+// Body: { text: "full conversation text..." }
+// Re-runs insight extraction from the provided text and marks session completed.
+router.patch('/:id/manual-transcript', protect, async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ ok: false, error: 'Admin only' });
+    }
+
+    const { text } = req.body;
+    if (!text || typeof text !== 'string' || text.trim().length < 10) {
+      return res.status(400).json({ ok: false, error: 'text is required (min 10 chars)' });
+    }
+
+    const session = await Session.findById(req.params.id).lean();
+    if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
+
+    // Save the manually entered transcript
+    await SessionTranscript.findOneAndUpdate(
+      { sessionId: session._id },
+      {
+        sessionId:  session._id,
+        rawText:    text.trim(),
+        segments:   [],
+        language:   'en',
+        duration:   null,
+      },
+      { upsert: true, new: true }
+    );
+
+    // Reset pipeline status so processSession runs insights extraction
+    await Session.findByIdAndUpdate(session._id, {
+      pipelineStatus: 'none',
+      pipelineError:  null,
+    });
+
+    // Run pipeline with null audioPath — it will find the saved transcript and
+    // generate insights from it (the "stored transcript fallback" path in _process)
+    sessionPipelineService.processSession(session._id, null).catch(err =>
+      console.error('Manual transcript pipeline error:', err.message)
+    );
+
+    res.json({ ok: true, message: 'Transcript saved and insight extraction started' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET /api/sessions/between/:userA/:userB — find last session between two users and return transcript
 // Admin only (for support/review purposes)
 router.get('/between/:userA/:userB', protect, async (req, res) => {
@@ -379,12 +433,10 @@ router.get('/between/:userA/:userB', protect, async (req, res) => {
 
     const { userA, userB } = req.params;
 
-    // Find users by username or ID
+    const isObjectId = (s) => /^[a-f\d]{24}$/i.test(s);
     const [a, b] = await Promise.all([
-      User.findOne({ $or: [{ username: userA }, { _id: userA.match(/^[a-f\d]{24}$/i) ? userA : null }] })
-        .select('_id name username').lean(),
-      User.findOne({ $or: [{ username: userB }, { _id: userB.match(/^[a-f\d]{24}$/i) ? userB : null }] })
-        .select('_id name username').lean()
+      User.findOne(isObjectId(userA) ? { _id: userA } : { username: userA }).select('_id name username').lean(),
+      User.findOne(isObjectId(userB) ? { _id: userB } : { username: userB }).select('_id name username').lean(),
     ]);
 
     if (!a) return res.status(404).json({ ok: false, error: `User "${userA}" not found` });

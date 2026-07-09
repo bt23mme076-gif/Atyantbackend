@@ -12,6 +12,28 @@ const router = express.Router();
 // mid-call restart after an abort.
 const MAX_EGRESS_ATTEMPTS = 3;
 
+// After the LiveKit server ACCEPTS an egress (returns an egressId), the egress
+// WORKER still has to boot its pipeline and report "started". Under CPU pressure
+// that signal never arrives ("Start signal not received") and the job dies
+// ABORTED — the single biggest cause of real sessions ending with no recording
+// (23% of sessions in the July pilot). Waiting for the egress_ended webhook to
+// tell us is too slow and unreliable (a dead worker may never send it), so we
+// proactively confirm the egress reaches ACTIVE within this window. If it
+// doesn't, we kill the dead job and free the slot so a fresh recording starts
+// while the call is still live — partial audio beats losing the whole session.
+const EGRESS_VERIFY_DELAY_MS = 20000;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Grace period after the LAST real participant leaves before we force-close the
+// room. A weak-network drop fires participant_left even though the student is
+// about to reconnect; closing instantly destroyed the room and orphaned the
+// egress, which fragmented recordings (only the first ~30 s survived). We now
+// wait this out and re-check — a reconnecting user rejoins the SAME room instance
+// so egress keeps recording. Matches the room's departureTimeout (LiveKitService)
+// so both agree on 5 min. roomHasParticipants excludes the hidden egress, so this
+// is still the reliable closer for a genuinely-abandoned room (no stuck egress).
+const EMPTY_ROOM_GRACE_MS = 5 * 60 * 1000;
+
 // Start (or retry) the audio recording for a session — safe to call from every
 // join/webhook event. The findOneAndUpdate filter makes the claim atomic: when
 // join + track_published race, exactly one caller wins; the rest no-op because
@@ -38,11 +60,48 @@ async function ensureEgress(sessionId) {
     session.egressId = egressId;
     await session.save();
     console.log(`🎙️ Egress started for session ${session._id} (attempt ${session.egressAttempts}): ${egressId}`);
+    // Detached — never blocks the join response. Confirms the worker actually
+    // starts recording and self-heals (fresh attempt) if it died on start.
+    const roomName = session.livekitRoomName || `session_${session._id}`;
+    verifyEgressStarted(session._id, roomName, egressId).catch(err =>
+      console.error(`Egress verification error for session ${session._id}:`, err.message)
+    );
     return egressId;
   } catch (err) {
     // Non-fatal — the session still works; the next join/publish event retries.
     console.error(`Egress start failed for session ${session._id} (attempt ${session.egressAttempts}):`, err.message);
     return null;
+  }
+}
+
+// Confirm a freshly-started egress actually reaches ACTIVE; if it silently died
+// on start (the "Start signal not received" failure), kill the dead job and let
+// the capped attempt budget start a fresh recording while the call is still
+// live. Detached and bounded: each restart re-enters ensureEgress, which stops
+// claiming once egressAttempts hits MAX_EGRESS_ATTEMPTS — so this can retry at
+// most a few times per session, never in an unbounded loop.
+async function verifyEgressStarted(sessionId, roomName, egressId) {
+  await sleep(EGRESS_VERIFY_DELAY_MS);
+  let status = await liveKitService.getEgressStatus(egressId);
+
+  // Still STARTING (0) → a slow, not necessarily dead, worker. Give it one more
+  // window before giving up so we don't kill a recording that's about to run.
+  if (status === 0) {
+    await sleep(EGRESS_VERIFY_DELAY_MS);
+    status = await liveKitService.getEgressStatus(egressId);
+  }
+
+  // ACTIVE (1) / ENDING (2) / COMPLETE (3) → the recording ran. Nothing to do.
+  if (status === 1 || status === 2 || status === 3) return;
+
+  // FAILED (4) / ABORTED (5) / LIMIT_REACHED (6) / stuck-STARTING / gone (null):
+  // this egress will never produce audio. Kill it, free the slot, and — only if
+  // someone is still on the call — start a fresh one (bounded by the cap).
+  console.error(`⚠️ Egress ${egressId} for session ${sessionId} never went ACTIVE (status=${status}) — restarting recording`);
+  await liveKitService.stopEgress(egressId).catch(() => {});
+  await Session.findByIdAndUpdate(sessionId, { egressId: null });
+  if (await liveKitService.roomHasParticipants(roomName)) {
+    await ensureEgress(sessionId);
   }
 }
 
@@ -155,11 +214,25 @@ router.post('/webhook', express.raw({ type: () => true }), async (req, res) => {
       const roomName = event.room?.name;
       if (roomName?.startsWith('session_')) {
         // The departing participant is already gone from the roster by the time
-        // this fires, so a false result means the room is truly empty of humans.
-        const stillActive = await liveKitService.roomHasParticipants(roomName);
-        if (!stillActive) {
-          console.log(`👋 Last participant left ${roomName} → ending call`);
-          await liveKitService.deleteRoom(roomName);
+        // this fires, so a false result means the room is empty of humans RIGHT
+        // NOW — but on a weak network that's usually a drop, not a real leave, and
+        // the user is about to reconnect. Don't kill the room instantly (that
+        // orphaned the egress and fragmented the recording). Wait out the grace
+        // period, then force-close only if the room is STILL empty of real
+        // participants. Detached so it never blocks the webhook response.
+        if (!(await liveKitService.roomHasParticipants(roomName))) {
+          setTimeout(async () => {
+            try {
+              if (!(await liveKitService.roomHasParticipants(roomName))) {
+                console.log(`👋 ${roomName} still empty after grace → ending call`);
+                await liveKitService.deleteRoom(roomName);
+              } else {
+                console.log(`↩️ ${roomName} re-occupied within grace → keeping call alive`);
+              }
+            } catch (err) {
+              console.error('Delayed room-close error:', err.message);
+            }
+          }, EMPTY_ROOM_GRACE_MS);
         }
       }
     }

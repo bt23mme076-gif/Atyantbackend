@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { spawnSync } from 'child_process';
 import axios from 'axios';
 import FormData from 'form-data';
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
@@ -16,19 +17,20 @@ const WHISPER_MODEL   = process.env.GROQ_WHISPER_MODEL  || 'whisper-large-v3';
 // breakdown. Override with GROQ_PIPELINE_MODEL if needed.
 const PIPELINE_MODEL  = process.env.GROQ_PIPELINE_MODEL || 'llama-3.3-70b-versatile';
 
-// ── Long-session (up to ~3+ hours) handling ──
+// ── Long-session handling ──
 // A single insight request is capped at SINGLE_LIMIT chars (~6k input tokens),
 // which stays under Groq's free-tier tokens-per-minute budget. Longer
 // transcripts are map-reduced: per-chunk condensed notes → one merge call.
 // Chunks are spaced CHUNK_SPACING_MS apart so a 90-min session never 429s.
 const SINGLE_LIMIT     = 24000;
 const CHUNK_SIZE       = 20000;
-const MAX_CHUNKS       = 12;       // ~240k chars ≈ 4+ hours of speech; covers even longest sessions
+const MAX_CHUNKS       = 12;       // 12 × 20k chars ≈ 4 h of speech; more than enough for 30-min sessions
 const CHUNK_SPACING_MS = 15000;
-// Groq free-tier rejects audio files over 25 MB. At our 24 kbps voice encoding
-// that's >2 h of audio, so real sessions never hit it — but fail with a clear
-// message instead of a cryptic 413 if one ever does.
-const MAX_AUDIO_BYTES  = 24 * 1024 * 1024;
+// Groq Whisper rejects audio files over 25 MB (≈2.3 h at 24 kbps Opus).
+// Files larger than this are split into AUDIO_CHUNK_SECS-long pieces by ffmpeg,
+// each transcribed separately, then stitched back together.
+const GROQ_MAX_BYTES   = 23 * 1024 * 1024; // stay 2 MB under Groq's 25 MB hard limit
+const AUDIO_CHUNK_SECS = 20 * 60;           // 20-minute audio segments
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -128,7 +130,7 @@ class SessionPipelineService {
         
         // IMPORTANT: Still save to dashboard so user sees the session with error message
         await this._saveToUserDashboard(sessionDoc, noAudioInsight);
-        
+
         console.warn(`⚠️ Session ${sessionId}: transcript is near-empty — marked no_audio, insight + dashboard items saved.`);
         return;
       }
@@ -214,8 +216,10 @@ class SessionPipelineService {
     }
     const { size } = fs.statSync(audioPath);
     if (size === 0) throw new Error('Recording file is empty (0 bytes) — egress aborted before capturing audio');
-    if (size > MAX_AUDIO_BYTES) {
-      throw new Error(`Recording is ${(size / 1048576).toFixed(1)} MB — over the ${MAX_AUDIO_BYTES / 1048576} MB transcription cap`);
+    // Large files (>GROQ_MAX_BYTES) are split into 20-min chunks by ffmpeg in
+    // _transcribeSplitAudio — no hard cap here.
+    if (size > GROQ_MAX_BYTES) {
+      console.log(`📦 Large recording: ${(size / 1048576).toFixed(1)} MB — will split into 20-min chunks for Groq`);
     }
   }
 
@@ -260,12 +264,17 @@ class SessionPipelineService {
     }
   }
 
+  // Route: small files go direct; large files are split first.
   async _transcribe(audioPath) {
     if (!GROQ_API_KEYS.length) throw new Error('GROQ_API_KEY not configured');
     if (!fs.existsSync(audioPath)) throw new Error(`Audio file not found: ${audioPath}`);
+    const { size } = fs.statSync(audioPath);
+    if (size <= GROQ_MAX_BYTES) return this._transcribeDirect(audioPath);
+    return this._transcribeSplitAudio(audioPath);
+  }
 
-    // Rotate keys / fail over on rate limits. A fresh FormData stream is built per
-    // attempt because a read stream can only be consumed once.
+  // Single-file transcription (file already within Groq's 25 MB limit).
+  async _transcribeDirect(audioPath) {
     const response = await groqRotate(async (apiKey) => {
       const form = new FormData();
       form.append('file', fs.createReadStream(audioPath), {
@@ -302,6 +311,74 @@ class SessionPipelineService {
       language: response.data.language,
       duration: response.data.duration,
     };
+  }
+
+  // Split a large audio file into AUDIO_CHUNK_SECS-long pieces using ffmpeg,
+  // transcribe each, then stitch the results back together with correct offsets.
+  async _transcribeSplitAudio(audioPath) {
+    // 1. Get total duration via ffprobe.
+    const probe = spawnSync(
+      'ffprobe',
+      ['-v', 'quiet', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', audioPath],
+      { encoding: 'utf8', timeout: 30000 }
+    );
+    if (probe.error) throw new Error(`ffprobe failed: ${probe.error.message} — is ffmpeg installed in the container?`);
+    const totalSecs = parseFloat((probe.stdout || '').trim());
+    if (!totalSecs || isNaN(totalSecs)) throw new Error('ffprobe returned no duration — corrupted audio file?');
+
+    const numChunks = Math.ceil(totalSecs / AUDIO_CHUNK_SECS);
+    console.log(`✂️  Splitting ${(totalSecs / 60).toFixed(0)}-min recording into ${numChunks} × 20-min chunks`);
+
+    // 2. Write chunks to a temp directory.
+    const tmpDir = `/tmp/atyant-split-${Date.now()}`;
+    fs.mkdirSync(tmpDir, { recursive: true });
+
+    try {
+      const chunks = [];
+      for (let i = 0; i < numChunks; i++) {
+        const start     = i * AUDIO_CHUNK_SECS;
+        const chunkPath = `${tmpDir}/chunk_${i}.ogg`;
+        const split = spawnSync(
+          'ffmpeg',
+          ['-i', audioPath, '-ss', String(start), '-t', String(AUDIO_CHUNK_SECS), '-c', 'copy', '-y', chunkPath],
+          { timeout: 120000 }
+        );
+        if (split.error) throw new Error(`ffmpeg split failed on chunk ${i}: ${split.error.message}`);
+        if (split.status !== 0) throw new Error(`ffmpeg exited ${split.status} on chunk ${i}`);
+        chunks.push({ path: chunkPath, startOffset: start });
+      }
+
+      // 3. Transcribe each chunk and stitch.
+      let allText     = '';
+      let allSegments = [];
+      let language    = 'en';
+
+      for (let i = 0; i < chunks.length; i++) {
+        const { path: chunkPath, startOffset } = chunks[i];
+        if (!fs.existsSync(chunkPath) || fs.statSync(chunkPath).size === 0) continue; // empty tail
+
+        const part = await this._withRetry(
+          () => this._transcribeDirect(chunkPath),
+          `audio chunk ${i + 1}/${chunks.length}`
+        );
+
+        if (part.text) allText += (allText ? ' ' : '') + part.text.trim();
+        if (part.language) language = part.language;
+        for (const seg of (part.segments || [])) {
+          allSegments.push({ text: seg.text, start: seg.start + startOffset, end: seg.end + startOffset });
+        }
+
+        // Brief pause between chunk uploads to avoid Groq rate-limit.
+        if (i < chunks.length - 1) await sleep(3000);
+      }
+
+      console.log(`✅ Split transcription complete: ${allText.length} chars from ${chunks.length} chunks`);
+      return { text: allText, segments: allSegments, language, duration: totalSecs };
+
+    } finally {
+      // Always clean up temp chunk files.
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* non-fatal */ }
+    }
   }
 
   // Download and parse the student's resume PDF from Cloudinary (if stored on the session).

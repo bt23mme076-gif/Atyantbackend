@@ -50,11 +50,16 @@ class LiveKitService {
       name: roomName,
       // Nobody ever joins (mentor/student no-show): close the room after 5 min.
       emptyTimeout: 300,
-      // Everyone LEFT: close 60 s later. This is the native auto-end — short
-      // enough that a stuck recording can't run for 88 min like the July-6
-      // session did, but long enough to survive a transient reconnect. The
-      // participant_left webhook also force-closes empty rooms as a backstop.
-      departureTimeout: 60,
+      // Everyone LEFT: keep the room alive 5 min before the native auto-end. A
+      // weak-network drop (common for Tier-2/3 students on college WiFi / mobile)
+      // makes LiveKit fire participant_left even though the user is mid-reconnect;
+      // a 60 s window closed the room under them, so on rejoin a NEW room instance
+      // was created and the audio egress — bound to the old instance — was orphaned,
+      // fragmenting the recording. 5 min lets a reconnecting user rejoin the SAME
+      // room instance so egress keeps recording. empty_timeout (300 s) bounds a
+      // genuinely-abandoned room, and the participant_left webhook now waits out
+      // the same grace before force-closing (see EMPTY_ROOM_GRACE_MS).
+      departureTimeout: 300,
       maxParticipants: 2,
     });
     return roomName;
@@ -143,6 +148,24 @@ class LiveKitService {
     } catch (err) {
       // "egress is not active" here is normal — it already stopped on its own.
       console.warn('stopEgress warning (non-fatal):', err.message);
+    }
+  }
+
+  // Current status of an egress job as a numeric EgressStatus:
+  //   0 STARTING · 1 ACTIVE · 2 ENDING · 3 COMPLETE · 4 FAILED · 5 ABORTED · 6 LIMIT_REACHED
+  // Returns null if the job can't be found or the API errors. Used right after
+  // starting a recording to confirm the worker actually came alive instead of
+  // silently dying ("Start signal not received") — so we can retry while the
+  // call is still in progress rather than discovering the loss hours later.
+  async getEgressStatus(egressId) {
+    this._init();
+    if (!egressId) return null;
+    try {
+      const list = await this.egressClient.listEgress({ egressId });
+      return list?.[0]?.status ?? null;
+    } catch (err) {
+      console.warn('getEgressStatus warning (non-fatal):', err.message);
+      return null;
     }
   }
 

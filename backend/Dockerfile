@@ -12,6 +12,10 @@ COPY . .
 FROM node:20-alpine
 WORKDIR /app
 
+# ffmpeg is needed to split large audio recordings (sessions >~2h) into
+# 20-min chunks before sending to Groq Whisper (25 MB per-file limit).
+RUN apk add --no-cache ffmpeg
+
 # Create app user for security
 RUN addgroup -S app && adduser -S app -G app
 
