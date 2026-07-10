@@ -59,7 +59,14 @@ router.post('/onboard', protect, async (req, res) => {
     const degree = clean(b.degree) || 'B.Tech';
     const cgpa = b.cgpa != null && b.cgpa !== '' ? Number(b.cgpa) : undefined;
 
-    const topCompanies = arr(b.topCompanies);
+    const workExperience = Array.isArray(b.workExperience)
+      ? b.workExperience
+          .map(w => ({ company: clean(w?.company), months: Number(w?.months) }))
+          .filter(w => w.company && Number.isFinite(w.months) && w.months >= 0)
+      : [];
+    const topCompanies = workExperience.length
+      ? workExperience.map(w => w.company)
+      : arr(b.topCompanies);
     const specialTags = arr(b.specialTags);
     const expertise = arr(b.expertise);
     const bio = clean(b.bio) || '';
@@ -115,6 +122,7 @@ router.post('/onboard', protect, async (req, res) => {
       ...(Number.isFinite(cgpa) ? { cgpa } : {}),
     }];
     user.topCompanies = topCompanies;
+    user.workExperience = workExperience;
     user.specialTags = specialTags;
     user.expertise = expertise;
     if (bio) user.bio = bio.slice(0, 500);
@@ -456,14 +464,19 @@ router.put('/availability', protect, async (req, res) => {
     if (req.user.role !== 'mentor') {
       return res.status(403).json({ ok: false, error: 'Only mentors can set availability' });
     }
-    const { weekly, timezone, advanceNoticeHours, maxWeeksAhead } = req.body || {};
+    const { weekly, exceptions, dateOverrides, timezone, advanceNoticeHours, maxWeeksAhead } = req.body || {};
     const user = await User.findById(req.user.userId);
     if (!user) return res.status(404).json({ ok: false, error: 'User not found' });
 
+    const isDateStr = s => /^\d{4}-\d{2}-\d{2}$/.test(s);
     user.availability = {
       weekly: (Array.isArray(weekly) ? weekly : [])
         .map(d => ({ day: Number(d.day), slots: (Array.isArray(d.slots) ? d.slots : []).filter(s => /^\d{2}:\d{2}$/.test(s)) }))
         .filter(d => d.day >= 0 && d.day <= 6),
+      exceptions: (Array.isArray(exceptions) ? exceptions : []).filter(isDateStr),
+      dateOverrides: (Array.isArray(dateOverrides) ? dateOverrides : [])
+        .map(d => ({ date: d.date, slots: (Array.isArray(d.slots) ? d.slots : []).filter(s => /^\d{2}:\d{2}$/.test(s)) }))
+        .filter(d => isDateStr(d.date)),
       timezone:           typeof timezone === 'string' ? timezone : 'Asia/Kolkata',
       advanceNoticeHours: Math.max(0, Number(advanceNoticeHours) || 2),
       maxWeeksAhead:      Math.min(8, Math.max(1, Number(maxWeeksAhead) || 3)),
@@ -487,7 +500,7 @@ router.get('/:id/availability', async (req, res) => {
     if (!mentor || mentor.role !== 'mentor') {
       return res.status(404).json({ ok: false, error: 'Mentor not found' });
     }
-    res.json({ ok: true, availability: mentor.availability || { weekly: [], timezone: 'Asia/Kolkata', advanceNoticeHours: 2, maxWeeksAhead: 3 } });
+    res.json({ ok: true, availability: mentor.availability || { weekly: [], exceptions: [], dateOverrides: [], timezone: 'Asia/Kolkata', advanceNoticeHours: 2, maxWeeksAhead: 3 } });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -507,9 +520,14 @@ router.get('/:id/slots', async (req, res) => {
     if (!mentor || mentor.role !== 'mentor') {
       return res.status(404).json({ ok: false, error: 'Mentor not found' });
     }
+    if ((mentor.availability?.exceptions || []).includes(date)) {
+      return res.json({ ok: true, slots: [], date });
+    }
+
+    const override = (mentor.availability?.dateOverrides || []).find(o => o.date === date);
     const [y, mo, d] = date.split('-').map(Number);
     const dayOfWeek = new Date(y, mo - 1, d).getDay();
-    const weekDay = (mentor.availability?.weekly || []).find(w => w.day === dayOfWeek);
+    const weekDay = override || (mentor.availability?.weekly || []).find(w => w.day === dayOfWeek);
     if (!weekDay?.slots?.length) return res.json({ ok: true, slots: [], date });
 
     // Booked sessions for this mentor on this local date (IST UTC+5:30)

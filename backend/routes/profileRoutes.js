@@ -208,6 +208,17 @@ router.put('/me', protect, async (req, res) => {
       }
     });
 
+    // Work experience — [{ company, months }], keeps topCompanies in sync for search/matching
+    if (updateData.workExperience !== undefined) {
+      const workExperience = Array.isArray(updateData.workExperience)
+        ? updateData.workExperience
+            .map(w => ({ company: typeof w?.company === 'string' ? w.company.trim() : '', months: Number(w?.months) }))
+            .filter(w => w.company && Number.isFinite(w.months) && w.months >= 0)
+        : [];
+      user.workExperience = workExperience;
+      user.topCompanies = workExperience.map(w => w.company);
+    }
+
     // Services offered — validate against the platform catalog (ignore unknown ids)
     if (updateData.servicesOffered !== undefined) {
       user.servicesOffered = sanitizeServiceIds(updateData.servicesOffered);

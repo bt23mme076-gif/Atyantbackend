@@ -433,6 +433,10 @@ const userSchema = new mongoose.Schema({
   },
 
   topCompanies: [{ type: String }],
+  workExperience: [{
+    company: { type: String, trim: true },
+    months: { type: Number, min: 0 },
+  }],
   milestones: [{ type: String }],
   specialTags: [{ type: String }],
 
@@ -528,6 +532,11 @@ const userSchema = new mongoose.Schema({
   // day: 0=Sun 1=Mon … 6=Sat, slots: ["09:00","10:00",...] in IST (HH:MM).
   availability: {
     weekly: [{ day: { type: Number, min: 0, max: 6 }, slots: [{ type: String }] }],
+    // Specific dates the mentor is NOT available, even if the weekday normally is
+    // (e.g. weekly Monday slots exist, but this one Monday is blocked off).
+    exceptions: [{ type: String }],
+    // "Only this date" bookings — a one-off day that isn't part of the weekly recurrence.
+    dateOverrides: [{ date: { type: String }, slots: [{ type: String }] }],
     timezone: { type: String, default: 'Asia/Kolkata' },
     advanceNoticeHours: { type: Number, default: 2 },
     maxWeeksAhead: { type: Number, default: 3 },
