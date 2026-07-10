@@ -1,6 +1,7 @@
 import express from 'express';
 import User from '../models/User.js';
 import Session from '../models/Session.js';
+import SessionInsight from '../models/SessionInsight.js';
 import protect from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -84,21 +85,65 @@ router.get('/mentors', protect, tpoOnly, async (req, res) => {
 });
 
 // ─── GET /api/tpo/sessions ────────────────────────────────────────────────────
-// Returns all upcoming/recent sessions booked via TPO dashboard.
+// Upcoming sessions are limited to the recent window; completed sessions are
+// always returned so the TPO's history never silently drops off.
 router.get('/sessions', protect, tpoOnly, async (req, res) => {
   try {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const sessions = await Session.find({
-      status: { $in: ['upcoming', 'pending', 'completed'] },
-      scheduledAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+      $or: [
+        { status: 'completed' },
+        { status: { $in: ['upcoming', 'pending'] }, scheduledAt: { $gte: since } },
+      ],
     })
-      .sort({ scheduledAt: 1 })
+      .sort({ scheduledAt: -1 })
       .populate('userId', 'name email')
-      .populate('mentorId', 'name username')
+      .populate('mentorId', 'name username currentCompany currentRole')
       .lean();
 
-    res.json({ ok: true, sessions });
+    // Which of these have an AI insight the TPO can open?
+    const insightIds = await SessionInsight
+      .find({ sessionId: { $in: sessions.map(s => s._id) } })
+      .select('sessionId')
+      .lean();
+    const withInsight = new Set(insightIds.map(i => String(i.sessionId)));
+
+    const enriched = sessions.map(s => ({
+      ...s,
+      mentorCompany: s.mentorId?.currentCompany || '',
+      mentorRole:    s.mentorId?.currentRole || '',
+      rating:        s.review?.rating || 0,
+      hasInsight:    withInsight.has(String(s._id)),
+    }));
+
+    res.json({ ok: true, sessions: enriched });
   } catch (err) {
     console.error('TPO /sessions error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── GET /api/tpo/sessions/:sessionId/insight ────────────────────────────────
+// What actually happened in the interview: AI summary + the mentor's notes.
+// Declared before '/sessions/book' so the literal path is never shadowed.
+router.get('/sessions/:sessionId/insight', protect, tpoOnly, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    const [session, insight] = await Promise.all([
+      Session.findById(sessionId)
+        .select('topic scheduledAt status notes review mentorName pipelineStatus')
+        .populate('userId', 'name email')
+        .populate('mentorId', 'name username currentCompany')
+        .lean(),
+      SessionInsight.findOne({ sessionId }).lean(),
+    ]);
+
+    if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
+
+    res.json({ ok: true, session, insight: insight || null });
+  } catch (err) {
+    console.error('TPO /sessions/:id/insight error:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
