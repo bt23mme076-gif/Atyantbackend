@@ -24,18 +24,25 @@ async function tpoOnly(req, res, next) {
   }
 }
 
+// Mongo $or fragment matching "this user looks VNIT-affiliated" — by
+// institutional email or by education.institution(Name) containing "vnit".
+// Shared by /students and /sessions so both agree on what counts as VNIT.
+const VNIT_REGEX = /vnit/i;
+const VNIT_MATCH = {
+  $or: [
+    { email: { $regex: /@(students\.)?vnit\.ac\.in$/i } },
+    { 'education.institutionName': VNIT_REGEX },
+    { 'education.institution': VNIT_REGEX },
+  ],
+};
+
 // ─── GET /api/tpo/students ────────────────────────────────────────────────────
 // Returns all non-mentor users with VNIT education (or all users as fallback).
 router.get('/students', protect, tpoOnly, async (req, res) => {
   try {
-    const VNIT_REGEX = /vnit/i;
     const users = await User.find({
       role: 'user',
-      $or: [
-        { email: { $regex: /@(students\.)?vnit\.ac\.in$/i } },
-        { 'education.institutionName': VNIT_REGEX },
-        { 'education.institution': VNIT_REGEX },
-      ],
+      ...VNIT_MATCH,
     })
       .select('name username email education skills interests')
       .lean();
@@ -92,15 +99,26 @@ router.get('/mentors', protect, tpoOnly, async (req, res) => {
 // always returned so the TPO's history never silently drops off.
 router.get('/sessions', protect, tpoOnly, async (req, res) => {
   try {
+    // Scope to sessions where EITHER side is VNIT-affiliated — a session with a
+    // VNIT mentor still matters even if the student's account isn't tagged VNIT
+    // (personal email, empty education), and vice versa. Without this, every
+    // completed session platform-wide (any mentor, any student, any service)
+    // showed up here, since Session has no notion of "this was TPO business."
+    const vnitUserIds = await User.find(VNIT_MATCH).select('_id').lean();
+    const vnitIdSet = vnitUserIds.map(u => u._id);
+
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const sessions = await Session.find({
-      $or: [
-        { status: 'completed' },
-        { status: { $in: ['upcoming', 'pending'] }, scheduledAt: { $gte: since } },
+      $and: [
+        { $or: [{ userId: { $in: vnitIdSet } }, { mentorId: { $in: vnitIdSet } }] },
+        { $or: [
+          { status: 'completed' },
+          { status: { $in: ['upcoming', 'pending'] }, scheduledAt: { $gte: since } },
+        ] },
       ],
     })
       .sort({ scheduledAt: -1 })
-      .populate('userId', 'name email')
+      .populate('userId', 'name username email')
       .populate('mentorId', 'name username currentCompany currentRole')
       .lean();
 
