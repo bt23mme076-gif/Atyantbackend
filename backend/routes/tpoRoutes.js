@@ -3,6 +3,9 @@ import User from '../models/User.js';
 import Session from '../models/Session.js';
 import SessionInsight from '../models/SessionInsight.js';
 import protect from '../middleware/authMiddleware.js';
+import liveKitService from '../services/LiveKitService.js';
+import { meetLinkFor } from '../utils/frontendUrl.js';
+import { sendSessionConfirmationEmails } from '../utils/emailService.js';
 
 const router = express.Router();
 
@@ -160,8 +163,8 @@ router.post('/sessions/book', protect, tpoOnly, async (req, res) => {
     }
 
     const [student, mentor] = await Promise.all([
-      User.findById(studentId).select('name').lean(),
-      User.findById(mentorId).select('name username').lean(),
+      User.findById(studentId).select('name username email').lean(),
+      User.findById(mentorId).select('name username email').lean(),
     ]);
 
     if (!student) return res.status(404).json({ ok: false, error: 'Student not found' });
@@ -187,6 +190,29 @@ router.post('/sessions/book', protect, tpoOnly, async (req, res) => {
       status: 'upcoming',
       paymentStatus: 'free',
     });
+
+    // Create the LiveKit room + meet link up front, same as the paid booking
+    // flow — otherwise the join button has nowhere to send mentor/student.
+    try {
+      if (liveKitService.isConfigured()) {
+        const roomName = await liveKitService.createRoom(session._id);
+        session.livekitRoomName = roomName;
+        session.meetingLink = meetLinkFor(session._id);
+        await session.save();
+      }
+    } catch (err) {
+      console.error('TPO booking: LiveKit room creation failed (non-fatal):', err.message);
+    }
+
+    // Confirmation emails to both sides (non-blocking) — this route used to
+    // create the Session and stop there, so TPO-booked sessions never sent a
+    // "you're booked" email like the regular paid-booking flow does.
+    sendSessionConfirmationEmails({
+      studentEmail: student.email, studentName: student.name || student.username,
+      mentorEmail:  mentor.email,  mentorName:  mentorName,
+      scheduledAt: session.scheduledAt, durationMin: session.durationMin,
+      topic: session.topic, meetLink: session.meetingLink, amount: 0,
+    }).catch(err => console.error('TPO booking: confirmation emails failed (non-fatal):', err.message));
 
     res.status(201).json({ ok: true, session });
   } catch (err) {
