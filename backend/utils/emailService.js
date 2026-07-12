@@ -221,7 +221,7 @@
 //         to: [mentorEmail],
 //         subject: `📅 New confirmed session with ${studentName || 'a student'}`,
 //         html: card('You have a new confirmed session 🎉',
-//           `Hi ${mentorName || 'there'}, <strong>${studentName || 'a student'}</strong> has booked and paid for a session with you. Join via the link below.`),
+//           `Hi ${mentorName || 'there'}, <strong>${studentName || 'a student'}</strong> has booked a mock interview session with you. Please join the session using the link below. You can also add this session to your calendar.`),
 //       }),
 //     ]);
 //     results.forEach((r, i) => {
@@ -1015,7 +1015,7 @@ export const sendSessionConfirmationEmails = async ({
         to: [mentorEmail],
         subject: `📅 New confirmed session with ${studentName || 'a student'}`,
         html: card('You have a new confirmed session 🎉',
-          `Hi ${mentorName || 'there'}, <strong>${studentName || 'a student'}</strong> has booked and paid for a session with you. Join via the link below.`),
+          `Hi ${mentorName || 'there'}, <strong>${studentName || 'a student'}</strong> has booked a mock interview session with you. Please join the session using the link below. You can also add this session to your calendar.`),
       }),
     ]);
     results.forEach((r, i) => {
