@@ -93,7 +93,10 @@ export async function groqRotate(attempt) {
       const headers = err.headers || err.response?.headers;
       if (status === 429)      { st.cooldownUntil = Date.now() + cooldownAfter429(headers); return { ok: false, err }; }
       else if (status >= 500)  { st.cooldownUntil = Date.now() + 5000; return { ok: false, err }; }
-      throw err; // non-retryable (bad key / bad request) — failover can't help
+      // A bad/revoked key (401) shouldn't take down every OTHER key's requests too —
+      // park it for the process lifetime and let rotation route around it.
+      else if (status === 401) { st.cooldownUntil = Infinity; return { ok: false, err }; }
+      throw err; // non-retryable (bad request) — failover can't help
     }
   };
 

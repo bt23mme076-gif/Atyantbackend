@@ -167,6 +167,30 @@ router.post('/join/:sessionId', protect, async (req, res) => {
   }
 });
 
+// GET /api/livekit/session/:sessionId/resume
+// Returns the STUDENT's resume for a session — visible to both the student
+// and the mentor of that session (not "my own resume", which only ever
+// showed the viewer's own upload and left the mentor with nothing to see).
+router.get('/session/:sessionId/resume', protect, async (req, res) => {
+  try {
+    const session = await Session.findById(req.params.sessionId);
+    if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
+
+    const userId = req.user.userId;
+    const isStudent = session.userId.toString() === userId;
+    const isMentor  = session.mentorId?.toString() === userId;
+    if (!isStudent && !isMentor) {
+      return res.status(403).json({ ok: false, error: 'Not a participant of this session' });
+    }
+
+    const student = await User.findById(session.userId).select('resumeUrl').lean();
+    res.json({ ok: true, resumeUrl: student?.resumeUrl || null });
+  } catch (err) {
+    console.error('GET /livekit/session/:sessionId/resume error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // POST /api/livekit/webhook
 // LiveKit server → this endpoint on room_finished / egress_ended events
 // Raw body required for signature verification. LiveKit sends these with
