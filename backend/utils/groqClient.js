@@ -16,6 +16,9 @@ export const GROQ_API_KEYS = [
   process.env.GROQ_API_KEY,
   process.env.GROQ_API_KEY_2,
   process.env.GROQ_API_KEY_3,
+  process.env.GROQ_API_KEY_4,
+  process.env.GROQ_API_KEY_5,
+  process.env.GROQ_API_KEY_6,
 ].filter(Boolean);
 
 const keyState = GROQ_API_KEYS.map(() => ({ cooldownUntil: 0 }));

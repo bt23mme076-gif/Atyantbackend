@@ -154,6 +154,7 @@ const cspDirectives = {
   fontSrc: ["'self'", 'https://fonts.gstatic.com'],
   imgSrc: ["'self'", 'data:', 'https://res.cloudinary.com'],
   objectSrc: ["'none'"],
+  frameSrc: ["'self'", 'https://res.cloudinary.com'],
 };
 
 app.use(helmet({
