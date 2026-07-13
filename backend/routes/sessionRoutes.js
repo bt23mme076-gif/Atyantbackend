@@ -150,7 +150,14 @@ router.get('/my', optionalAuth, async (req, res) => {
     const now = new Date();
     // Return sessions where the viewer is EITHER the student (userId) or the
     // mentor (mentorId) — so mentors see their booked sessions + meet links too.
-    const sessions = await Session.find({ $or: [{ userId }, { mentorId: userId }] })
+    const sessions = await Session.find({
+      $or: [{ userId }, { mentorId: userId }],
+      // Hide bookings that are still awaiting payment. A session row is created
+      // when the Razorpay order is created (status 'pending'/paymentStatus
+      // 'created'); until the payment is verified it is NOT a real booking, so
+      // it must not appear in "My Sessions" or mark the calendar slot as taken.
+      $nor: [{ status: 'pending', paymentStatus: 'created' }],
+    })
       .sort({ scheduledAt: -1 })
       .populate('userId', 'name username profilePicture')
       .lean();

@@ -65,6 +65,7 @@ import { globalRateLimit } from './middleware/globalRateLimiter.js';
 import { sendAutoReply } from './controllers/messageController.js';
 import ReminderCron from './services/ReminderCron.js';
 import TranscriptRecoveryCron from './services/TranscriptRecoveryCron.js';
+import StalePendingCron from './services/StalePendingCron.js';
 
 // ─── Passport Configuration ────────────────────────────────────────────────
 import './config/passport.js';
@@ -201,6 +202,7 @@ mongoose.connect(MONGO_URI, {
     console.log('✅ MongoDB connected');
     ReminderCron.start();
     TranscriptRecoveryCron.start();
+    StalePendingCron.start();
   })
   .catch(err => {
     console.error('❌ MongoDB connection error:', err.message);

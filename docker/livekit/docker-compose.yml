@@ -16,9 +16,24 @@ services:
       - ./livekit.yaml:/etc/livekit.yaml
     command: --config /etc/livekit.yaml
 
+  # ── Why network_mode: host (2026-07-13 fix) ──
+  # Egress joins the room as a hidden WebRTC participant to record. On the Docker
+  # bridge it could only reach LiveKit via the host's PUBLIC IP (livekit advertises
+  # only 187.x because rtc.use_external_ip=true maps its single NIC to the external
+  # IP) — i.e. a NAT hairpin (egress 172.x -> own public IP -> back in). That path
+  # depends on bridge MASQUERADE/conntrack and is fragile: on 2026-07-13 it collapsed
+  # (egress recording success 63% -> 9%, "Start signal not received" aborts) even
+  # though nothing in the config changed. TURN relay is the only fallback and it has
+  # been permanently broken (allocation timeouts), so once the hairpin degraded, all
+  # recordings failed. Host networking puts egress in the host netns so it reaches
+  # LiveKit directly (verified: egress_active + valid audio .ogg), off the broken
+  # hairpin. Do NOT touch rtc.use_external_ip — that changes ICE for every browser
+  # client and can break live calls. host mode requires egress to reach redis+livekit
+  # on the host, so egress.yaml uses 127.0.0.1 and redis must publish 127.0.0.1:6379.
   egress:
     image: livekit/egress:latest
     restart: unless-stopped
+    network_mode: host                    # off the fragile bridge NAT hairpin (see note above)
     environment:
       - EGRESS_CONFIG_FILE=/etc/egress.yaml
     volumes:

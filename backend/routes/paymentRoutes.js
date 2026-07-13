@@ -44,9 +44,20 @@ function verifySignature(orderId, paymentId, signature) {
   }
 }
 
-// Parse "May 26, 2026" + "9:00 AM" (or ISO) into a Date.
+// Parse the booking date/time into a Date anchored to IST, regardless of the
+// server's timezone. Preferred shape: "YYYY-MM-DD" + "HH:MM" (what the booking
+// modal sends). Legacy "May 26, 2026" + "9:00 AM" is also pinned to +05:30 —
+// slots are defined in the mentor's IST availability, so parsing them in the
+// server's local zone would shift every session on a non-IST host.
 const parseSchedule = (date, time) => {
-  const d = new Date(`${date} ${time}`);
+  let d;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date) && /^\d{1,2}:\d{2}$/.test(time)) {
+    d = new Date(`${date}T${time.padStart(5, '0')}:00+05:30`);
+  } else {
+    // Validate the legacy format first, then re-anchor it to IST
+    if (isNaN(new Date(`${date} ${time}`).getTime())) return null;
+    d = new Date(`${date} ${time} GMT+0530`);
+  }
   return isNaN(d.getTime()) ? null : d;
 };
 
@@ -112,6 +123,19 @@ router.post('/order', protect, async (req, res) => {
     if (!scheduledAt) return res.status(400).json({ ok: false, error: 'Invalid date/time' });
     if (scheduledAt < new Date()) return res.status(400).json({ ok: false, error: 'Cannot book a session in the past' });
 
+    // Reject if this slot is already taken (same filter the slots endpoint uses),
+    // so two students can't pay for the same time.
+    const clash = await Session.findOne({
+      mentorId, scheduledAt, status: { $nin: ['cancelled'] },
+    }).select('_id userId').lean();
+    if (clash) {
+      const mine = String(clash.userId) === String(req.user.userId);
+      return res.status(409).json({
+        ok: false,
+        error: mine ? 'You already have a session booked at this time' : 'This slot was just booked — please pick another time',
+      });
+    }
+
     const mentor = await User.findById(mentorId).select('name username email price servicesOffered').lean();
     if (!mentor) return res.status(404).json({ ok: false, error: 'Mentor not found' });
 
@@ -129,6 +153,14 @@ router.post('/order', protect, async (req, res) => {
     const baseAmount = service ? Math.max(0, service.price) : Math.max(0, Number(mentor.price) || 0); // rupees
     const dur        = service ? service.durationMin : (Number(durationMin) || 30);
     const sessTopic  = topic || service?.label || 'Career Guidance Session';
+
+    // A ₹0 base price means this mentor/service isn't configured for paid
+    // sessions (no price set, no service selected). Reject instead of silently
+    // confirming a free booking — otherwise every unconfigured mentor hands out
+    // free sessions and the user sees "Session booked" without ever paying.
+    if (baseAmount <= 0) {
+      return res.status(400).json({ ok: false, error: 'This mentor hasn’t set up paid sessions yet. Please pick another mentor or service.' });
+    }
 
     // Apply coupon server-side
     const coupon   = applyCoupon(baseAmount, couponCode);

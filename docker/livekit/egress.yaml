@@ -1,6 +1,10 @@
 api_key: YOUR_LIVEKIT_API_KEY
 api_secret: YOUR_LIVEKIT_API_SECRET
-ws_url: ws://livekit:7880
+# Egress runs with network_mode: host (see docker-compose.yml note), so the Docker
+# DNS aliases `livekit`/`redis` don't resolve — reach them on the host's published
+# ports instead. Requires livekit to publish 7880 and redis to publish 127.0.0.1:6379.
+ws_url: ws://127.0.0.1:7880
+# redis.address must also be 127.0.0.1:6379 under host networking (set in the redis block).
 
 # Health check port
 health_port: 9090
