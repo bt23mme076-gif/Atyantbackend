@@ -72,7 +72,7 @@ export function buildTrackedUrl(username, { via } = {}) {
 }
 
 /** A short, ready-to-post message a mentor can use as a caption. */
-export function buildShareText(user) {
+function buildMentorShareText(user) {
   const company =
     Array.isArray(user.topCompanies) && user.topCompanies.length
       ? user.topCompanies[0]
@@ -94,6 +94,23 @@ export function buildShareText(user) {
     return `I've shared my exact path from ${from} on Atyant — verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
   }
   return `I'm mentoring students on Atyant — verified answers for students walking the same journey. Ask me anything or book a session. 👇`;
+}
+
+/** A short, ready-to-post message a student can use as a caption. */
+function buildStudentShareText(user) {
+  const edu =
+    Array.isArray(user.education) && user.education.length ? user.education[0] : null;
+  const school = edu ? (edu.institutionName || edu.institution || null) : null;
+
+  if (school) {
+    return `I'm on Atyant, connecting with verified seniors from ${school} and beyond for real career guidance. Check out my profile 👇`;
+  }
+  return `I'm on Atyant, connecting with verified seniors for real career guidance. Check out my profile 👇`;
+}
+
+/** A short, ready-to-post message a user can use as a caption — copy depends on role. */
+export function buildShareText(user) {
+  return user.role === 'mentor' ? buildMentorShareText(user) : buildStudentShareText(user);
 }
 
 /**

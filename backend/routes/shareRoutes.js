@@ -27,7 +27,7 @@ const normalizeSource = (v) => {
 router.get('/me', protect, async (req, res) => {
   try {
     const user = await User.findById(req.user.userId)
-      .select('username name bio topCompanies profilePicture picture profileShares referralClicks referralSignups referralBySource')
+      .select('username name bio topCompanies profilePicture picture role education profileShares referralClicks referralSignups referralBySource')
       .lean();
 
     if (!user) return res.status(404).json({ message: 'User not found' });
@@ -57,7 +57,7 @@ router.get('/u/:username', async (req, res) => {
     const user = await User.findOne({
       username: new RegExp(`^${req.params.username}$`, 'i'),
     })
-      .select('username name bio topCompanies profilePicture picture')
+      .select('username name bio topCompanies profilePicture picture role education')
       .lean();
 
     if (!user) return res.status(404).json({ message: 'Profile not found' });
@@ -93,7 +93,7 @@ router.get('/r/:username', async (req, res) => {
     const user = await User.findOne({
       username: new RegExp(`^${username}$`, 'i'),
     })
-      .select('username name bio topCompanies profilePicture picture')
+      .select('username name bio topCompanies profilePicture picture role education')
       .lean();
 
     if (!user) {
