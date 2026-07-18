@@ -16,7 +16,7 @@ const backendBase = () =>
 
 // Frontend path under which a profile page is served. Override with PROFILE_PATH.
 const profilePath = () =>
-  (process.env.PROFILE_PATH || '/profile').replace(/\/+$/, '');
+  (process.env.PROFILE_PATH || (process.env.NODE_ENV === 'production' ? '/atyantEngine/profile' : '/profile')).replace(/\/+$/, '');
 
 // Default preview image used when a user has no avatar, or when their avatar is
 // hosted somewhere social crawlers can't reliably fetch (e.g. Google avatars,
@@ -56,7 +56,8 @@ export function buildLandingUrl(username, { via } = {}) {
 
   const params = new URLSearchParams({ ref: 'share' });
   if (via) params.set('via', via);
-  return `${frontendBase()}/?${params.toString()}`;
+  const suffix = process.env.NODE_ENV === 'production' ? '/atyantEngine' : '';
+  return `${frontendBase()}${suffix}/?${params.toString()}`;
 }
 
 /**

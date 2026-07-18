@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import Session from '../models/Session.js';
 import User from '../models/User.js';
 import { sendSessionReminderEmails } from '../utils/emailService.js';
+import { localizeMeetLink } from '../utils/frontendUrl.js';
 
 class ReminderCron {
   start() {
@@ -62,7 +63,7 @@ class ReminderCron {
         scheduledAt:  session.scheduledAt,
         durationMin:  session.durationMin,
         topic:        session.topic,
-        meetLink:     session.meetingLink,
+        meetLink:     localizeMeetLink(session.meetingLink),
         label,
       });
 

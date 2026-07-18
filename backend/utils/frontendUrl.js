@@ -24,7 +24,8 @@ export function frontendBase() {
 // would fall through to the marketing site. Root + query keeps it same-origin
 // so the user's localStorage auth token is available on the meet page.
 export function meetLinkFor(sessionId) {
-  return `${frontendBase()}/?meet=${sessionId}`;
+  const suffix = process.env.NODE_ENV === 'production' ? '/atyantEngine' : '';
+  return `${frontendBase()}${suffix}/?meet=${sessionId}`;
 }
 
 // Re-point a stored (possibly cross-environment) meet link at the current
@@ -32,9 +33,10 @@ export function meetLinkFor(sessionId) {
 // /session/meet/<id> path. Returns the input unchanged if it isn't a meet link.
 export function localizeMeetLink(meetingLink) {
   if (!meetingLink) return meetingLink;
+  const suffix = process.env.NODE_ENV === 'production' ? '/atyantEngine' : '';
   const q = meetingLink.match(/[?&]meet=([^&#]+)/);
-  if (q) return `${frontendBase()}/?meet=${q[1]}`;
+  if (q) return `${frontendBase()}${suffix}/?meet=${q[1]}`;
   const m = meetingLink.match(/\/session\/meet\/([^/?#]+)/);
-  if (m) return `${frontendBase()}/?meet=${m[1]}`;
+  if (m) return `${frontendBase()}${suffix}/?meet=${m[1]}`;
   return meetingLink;
 }

@@ -813,7 +813,7 @@ export const sendUserWelcomeEmail = async (email, username) => {
     return { success: false, error: 'Email service not configured' };
   }
 
-  const appUrl = process.env.FRONTEND_URL || 'https://atyant.in';
+  const appUrl = (process.env.FRONTEND_URL || 'https://atyant.in').replace(/\/+$/, '') + (process.env.NODE_ENV === 'production' ? '/atyantEngine' : '');
   const name = username || 'there';
 
   try {
@@ -880,7 +880,7 @@ export const sendMentorWelcomeEmail = async (email, mentorName) => {
     return { success: false, error: 'Email service not configured' };
   }
 
-  const appUrl = process.env.FRONTEND_URL || 'https://atyant.in';
+  const appUrl = (process.env.FRONTEND_URL || 'https://atyant.in').replace(/\/+$/, '') + (process.env.NODE_ENV === 'production' ? '/atyantEngine' : '');
   const name = mentorName || 'there';
 
   try {
@@ -968,7 +968,7 @@ export const sendSessionConfirmationEmails = async ({
     + `&text=${encodeURIComponent(`Atyant Session: ${topic || 'Mentorship Session'}`)}`
     + `&dates=${fmt(startDt)}/${fmt(endDt)}`
     + `&details=${encodeURIComponent(`Join your Atyant session: ${meetLink || ''}`)}`
-    + `&location=${encodeURIComponent(meetLink || 'https://atyantproduct.vercel.app')}`;
+    + `&location=${encodeURIComponent(meetLink || 'https://atyant.in/atyantEngine')}`;
 
   const meetBlock = meetLink
     ? `<div style="text-align:center;margin:28px 0;">
@@ -1052,7 +1052,7 @@ export const sendSessionReminderEmails = async ({
     + `&text=${encodeURIComponent(`Atyant Session: ${topic || 'Mentorship Session'}`)}`
     + `&dates=${fmt(startDt)}/${fmt(endDt)}`
     + `&details=${encodeURIComponent(`Join your Atyant session: ${meetLink || ''}`)}`
-    + `&location=${encodeURIComponent(meetLink || 'https://atyantproduct.vercel.app')}`;
+    + `&location=${encodeURIComponent(meetLink || 'https://atyant.in/atyantEngine')}`;
 
   const meetBlock = meetLink
     ? `<div style="text-align:center;margin:28px 0;">

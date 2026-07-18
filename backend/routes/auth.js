@@ -1083,7 +1083,7 @@ router.get('/google',
 // OAuth callback
 router.get('/google/callback',
   passport.authenticate('google', {
-    failureRedirect: `${getFrontendUrl()}/login?error=auth_failed`
+    failureRedirect: `${getFrontendUrl()}${process.env.NODE_ENV === 'production' ? '/atyantEngine' : ''}/login?error=auth_failed`
   }),
   (req, res) => {
     try {
@@ -1107,7 +1107,7 @@ router.get('/google/callback',
     } catch (error) {
       console.error('OAuth callback error:', error);
       const frontendUrl = getFrontendUrl();
-      res.redirect(`${frontendUrl}/login?error=auth_failed`);
+      res.redirect(`${frontendUrl}${process.env.NODE_ENV === 'production' ? '/atyantEngine' : ''}/login?error=auth_failed`);
     }
   }
 );
