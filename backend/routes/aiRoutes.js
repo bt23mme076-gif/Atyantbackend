@@ -1,14 +1,31 @@
 import express from 'express';
+import multer from 'multer';
+import { createRequire } from 'module';
 import { optionalAuth } from '../middleware/auth.js';
 import { groqChat as sharedGroqChat } from '../utils/groqClient.js';
 import {
   processAtyantMessage,
+  processResumeUpload,
+  extractContextFromResumeText,
+  extractContextFromResumeImage,
   getAtyantSession,
   clearAtyantSession,
   recordAtyantChatFeedback
 } from '../services/AtyantEngineService.js';
 
+const require = createRequire(import.meta.url);
+const pdfParse = require('pdf-parse');
+
 const router = express.Router();
+
+// Résumé upload — PDF (text-extracted) or a photo (Groq has no vision model on
+// this account; Gemini reads the image directly — see utils/geminiVision.js).
+const RESUME_MIME_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+const resumeUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(null, RESUME_MIME_TYPES.includes(file.mimetype)),
+});
 
 // All Groq calls go through the shared rotating client (multi-key round-robin +
 // failover). It already strips reasoning traces and honours the env model.
@@ -135,6 +152,56 @@ router.post('/atyant-chat', optionalAuth, async (req, res) => {
       status: rateLimited ? 429 : 500,
       error: rateLimited ? 'Too many requests. Please wait a moment.' : 'Engine error. Please try again.',
     });
+  } finally {
+    res.end();
+  }
+});
+
+// POST /api/ai/atyant-chat/resume
+// Body: multipart/form-data { resume: <file>, sessionId: <string>, message?: <string> }
+// Same SSE progress shape as the text endpoint above, but the turn's context
+// comes from a parsed résumé (PDF text or a scanned photo), optionally combined
+// with a typed message sent alongside it.
+router.post('/atyant-chat/resume', optionalAuth, resumeUpload.single('resume'), async (req, res) => {
+  const { sessionId, message } = req.body;
+  const file = req.file;
+
+  if (!file) {
+    return res.status(400).json({ ok: false, error: 'A résumé file (PDF, JPG, PNG or WEBP, under 8MB) is required.' });
+  }
+  if (!sessionId || typeof sessionId !== 'string' || sessionId.length < 8) {
+    return res.status(400).json({ ok: false, error: 'Valid sessionId is required' });
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+
+  try {
+    send({ type: 'progress', stage: 'reading_resume' });
+
+    let extractedContext = null;
+    if (file.mimetype === 'application/pdf') {
+      const pdfData = await pdfParse(file.buffer);
+      if (!pdfData.text || pdfData.text.trim().length < 50) {
+        throw new Error('Could not read text from that PDF — try a different file or a clear photo instead.');
+      }
+      extractedContext = await extractContextFromResumeText(pdfData.text);
+    } else {
+      extractedContext = await extractContextFromResumeImage(file.buffer.toString('base64'), file.mimetype);
+    }
+
+    const userId = req.user?._id?.toString() || null;
+    const userText = typeof message === 'string' ? message.trim().slice(0, 2000) : '';
+    const result = await processResumeUpload(sessionId, extractedContext, file.originalname || 'résumé', userId, send, userText);
+    send({ type: 'done', ok: true, ...result });
+  } catch (error) {
+    console.error('Résumé upload error:', error.message);
+    send({ type: 'error', status: 500, error: error.message || 'Could not process that file. Try again?' });
   } finally {
     res.end();
   }

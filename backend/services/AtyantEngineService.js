@@ -5,6 +5,7 @@ import User from '../models/User.js';
 // multi-key round-robin + cooldown failover (see that file). Add GROQ_API_KEY_2
 // / _3 from SEPARATE Groq accounts in .env to multiply throughput.
 import { groqChat, groqJSON } from '../utils/groqClient.js';
+import { extractResumeFromImage } from '../utils/geminiVision.js';
 
 // Chat reply. A touch of warmth without rambling — too high and it produces
 // run-on, broken sentences instead of one clean question.
@@ -91,6 +92,54 @@ async function extractStudentContext(messages) {
   } catch (err) {
     console.error('extractStudentContext failed (non-fatal):', err.message);
     return null; // fall back to whatever context we already had
+  }
+}
+
+const RESUME_EXTRACTION_PROMPT = `You extract structured profile data from an Indian engineering student's résumé/CV text for a career-matching platform.
+
+CRITICAL RULES — follow exactly:
+- Use ONLY facts explicitly present in the résumé text.
+- If a field isn't stated, its value MUST be null (or [] for arrays). NEVER guess, infer, or invent a college, CGPA, or number.
+- Most résumés do NOT state a career goal, timeline, or constraints directly — leave those null/[] unless genuinely present (e.g. an explicit "Objective" line).
+
+Return ONLY a JSON object with these keys:
+{
+  "college": null,        // their current/most recent college or institute name; else null
+  "collegeType": null,    // one of IIT, NIT-top, NIT-other, IIIT, BITS, Tier-2, Tier-3, private; else null
+  "branch": null,         // their branch/department; else null
+  "year": null,           // "1","2","3","4" or "final" if inferable from graduation year; else null
+  "cgpa": null,           // their stated CGPA/GPA as a string; else null
+  "target": null,         // an explicit stated career goal/objective, if present; else null
+  "timeline": null,       // an explicit stated timeframe, if present; else null
+  "gap": [],               // explicit stated blockers, if any
+  "constraint": []         // explicit stated hard limits, if any
+}
+Output ONLY the JSON object, nothing else.`;
+
+// Résumé (PDF text) → same context shape as extractStudentContext, so it can
+// merge straight into the conversation and drive the same routing/reply logic.
+export async function extractContextFromResumeText(resumeText) {
+  try {
+    const parsed = await callGroqJSON([
+      { role: 'system', content: RESUME_EXTRACTION_PROMPT },
+      { role: 'user', content: `Résumé text:\n${String(resumeText).slice(0, 9000)}\n\nExtract the JSON now.` },
+    ]);
+    return extractionToContext(parsed);
+  } catch (err) {
+    console.error('extractContextFromResumeText failed (non-fatal):', err.message);
+    return null;
+  }
+}
+
+// Photo of a résumé — Gemini reads it directly (no separate OCR step) and
+// returns the same flat shape, mapped through the same context schema.
+export async function extractContextFromResumeImage(base64Data, mimeType) {
+  try {
+    const parsed = await extractResumeFromImage(base64Data, mimeType);
+    return parsed ? extractionToContext(parsed) : null;
+  } catch (err) {
+    console.error('extractContextFromResumeImage failed (non-fatal):', err.message);
+    return null;
   }
 }
 
@@ -423,104 +472,44 @@ const GREETING_QUICK_REPLIES = [
 
 // ─── Core Engine ────────────────────────────────────────────────────────────
 
-// `onProgress`, if given, is called synchronously with real checkpoints as each
-// stage of the turn actually completes — used to drive a live "thinking" UI
-// instead of a canned one. Never throws from onProgress errors into the engine.
-export async function processAtyantMessage(sessionId, userMessage, userId = null, onProgress = null) {
-  const emit = onProgress ? (event) => { try { onProgress(event); } catch { /* UI-only, non-fatal */ } } : () => {};
-
-  emit({ type: 'progress', stage: 'reading' });
-
+// Fetch (or create) the conversation, seeding identity from the user's saved
+// profile on a brand-new conversation only — an existing one already has
+// whatever context prior turns built up.
+async function getOrCreateConversation(sessionId, userId) {
   let conv = await AtyantConversation.findOne({ sessionId });
-  let userProfile = null;
+  if (conv) return conv;
 
-  // Fetch user profile once — used for greeting + context seeding
+  conv = new AtyantConversation({ sessionId, userId: userId || null });
   if (userId) {
     try {
-      userProfile = await User.findById(userId)
+      const userProfile = await User.findById(userId)
         .select('name username education interests')
         .lean();
+      if (userProfile) {
+        const edu = userProfile.education?.[0] || {};
+        conv.context = mergeContext(conv.context, {
+          identity: {
+            college: edu.institutionName || edu.institution || null,
+            branch:  edu.field || null,
+            year:    edu.year  || null,
+            cgpa:    edu.cgpa != null ? String(edu.cgpa) : null,
+          },
+          target: userProfile.interests?.[0] || null,
+        });
+        conv.contextLayers = countLayers(conv.context);
+      }
     } catch (err) {
       console.error('Profile fetch failed (non-fatal):', err.message);
     }
   }
+  return conv;
+}
 
-  if (!conv) {
-    conv = new AtyantConversation({ sessionId, userId: userId || null });
-    // Seed identity from profile so intake never re-asks what it already knows
-    if (userProfile) {
-      const edu = userProfile.education?.[0] || {};
-      conv.context = mergeContext(conv.context, {
-        identity: {
-          college: edu.institutionName || edu.institution || null,
-          branch:  edu.field || null,
-          year:    edu.year  || null,
-          cgpa:    edu.cgpa != null ? String(edu.cgpa) : null,
-        },
-        target: userProfile.interests?.[0] || null,
-      });
-      conv.contextLayers = countLayers(conv.context);
-    }
-  }
-
-  // ── Greeting shortcut — problem-first opener + quick replies, no AI call ──
-  if (isGreeting(userMessage)) {
-    const reply = buildGreeting();
-    conv.messages.push({ role: 'user', content: userMessage });
-    conv.messages.push({ role: 'assistant', content: reply });
-    if (conv.messages.length > 30) conv.messages = conv.messages.slice(-30);
-    await conv.save();
-    return {
-      reply,
-      phase: conv.phase,
-      contextLayers: conv.contextLayers,
-      context: conv.context,
-      problemStatement: conv.problemStatement,
-      outputMode: null,
-      matchedMentors: [],
-      quickReplies: GREETING_QUICK_REPLIES,
-      sessionId
-    };
-  }
-
-  // ── Unintelligible input — don't force the intake script forward or extract
-  //    a fake profile from key-mash. Ask the student to rephrase. ──
-  if (looksLikeNoise(userMessage)) {
-    const reply = buildNoiseReply(conv);
-    conv.messages.push({ role: 'user', content: userMessage });
-    conv.messages.push({ role: 'assistant', content: reply });
-    if (conv.messages.length > 30) conv.messages = conv.messages.slice(-30);
-    await conv.save();
-    return {
-      reply,
-      phase: conv.phase,
-      contextLayers: conv.contextLayers,
-      context: conv.context,
-      problemStatement: conv.problemStatement,
-      outputMode: null,
-      matchedMentors: [],
-      quickReplies: [],
-      sessionId
-    };
-  }
-
-  conv.messages.push({ role: 'user', content: userMessage });
-
-  // ── Reliable context extraction (runs EVERY turn, before we reply) ────────
-  // Dedicated JSON-mode model reads the whole conversation and returns the 5
-  // layers. This is the source of truth — the chat model no longer has to emit
-  // tags, so context is captured even when the reply is purely conversational.
-  const extracted = await extractStudentContext(conv.messages);
-  if (extracted) {
-    conv.context = mergeContext(conv.context, extracted);
-    conv.contextLayers = countLayers(conv.context);
-  }
-  emit({ type: 'progress', stage: 'context', context: conv.context, contextLayers: conv.contextLayers });
-
-  // ── Decide the phase BEFORE replying ─────────────────────────────────────
-  // Using the freshly-extracted context. This kills the old bug where the turn
-  // that crossed the threshold still asked an intake question AND showed the
-  // clarity button at the same time. Once we have 3+ layers, we stop asking.
+// Shared turn tail: decide phase, generate the reply, match mentors if routed,
+// persist, and return the standard response shape. `conv.context` must already
+// reflect this turn's extraction and `conv.messages` must already include the
+// user's turn (chat text or a resume-upload placeholder) before calling this.
+async function finishTurn(conv, userMessage, emit, sessionId) {
   conv.problemStatement = generateProblemStatement(conv.context);
 
   // ── Routing gate ─────────────────────────────────────────────────────────
@@ -637,6 +626,154 @@ ${conv.problemStatement}
     outputMode: conv.outputMode,
     matchedMentors,
     sessionId
+  };
+}
+
+// `onProgress`, if given, is called synchronously with real checkpoints as each
+// stage of the turn actually completes — used to drive a live "thinking" UI
+// instead of a canned one. Never throws from onProgress errors into the engine.
+export async function processAtyantMessage(sessionId, userMessage, userId = null, onProgress = null) {
+  const emit = onProgress ? (event) => { try { onProgress(event); } catch { /* UI-only, non-fatal */ } } : () => {};
+
+  emit({ type: 'progress', stage: 'reading' });
+
+  const conv = await getOrCreateConversation(sessionId, userId);
+
+  // ── Greeting shortcut — problem-first opener + quick replies, no AI call ──
+  if (isGreeting(userMessage)) {
+    const reply = buildGreeting();
+    conv.messages.push({ role: 'user', content: userMessage });
+    conv.messages.push({ role: 'assistant', content: reply });
+    if (conv.messages.length > 30) conv.messages = conv.messages.slice(-30);
+    await conv.save();
+    return {
+      reply,
+      phase: conv.phase,
+      contextLayers: conv.contextLayers,
+      context: conv.context,
+      problemStatement: conv.problemStatement,
+      outputMode: null,
+      matchedMentors: [],
+      quickReplies: GREETING_QUICK_REPLIES,
+      sessionId
+    };
+  }
+
+  // ── Unintelligible input — don't force the intake script forward or extract
+  //    a fake profile from key-mash. Ask the student to rephrase. ──
+  if (looksLikeNoise(userMessage)) {
+    const reply = buildNoiseReply(conv);
+    conv.messages.push({ role: 'user', content: userMessage });
+    conv.messages.push({ role: 'assistant', content: reply });
+    if (conv.messages.length > 30) conv.messages = conv.messages.slice(-30);
+    await conv.save();
+    return {
+      reply,
+      phase: conv.phase,
+      contextLayers: conv.contextLayers,
+      context: conv.context,
+      problemStatement: conv.problemStatement,
+      outputMode: null,
+      matchedMentors: [],
+      quickReplies: [],
+      sessionId
+    };
+  }
+
+  conv.messages.push({ role: 'user', content: userMessage });
+
+  // ── Reliable context extraction (runs EVERY turn, before we reply) ────────
+  // Dedicated JSON-mode model reads the whole conversation and returns the 5
+  // layers. This is the source of truth — the chat model no longer has to emit
+  // tags, so context is captured even when the reply is purely conversational.
+  const extracted = await extractStudentContext(conv.messages);
+  if (extracted) {
+    conv.context = mergeContext(conv.context, extracted);
+    conv.contextLayers = countLayers(conv.context);
+  }
+  emit({ type: 'progress', stage: 'context', context: conv.context, contextLayers: conv.contextLayers });
+
+  return finishTurn(conv, userMessage, emit, sessionId);
+}
+
+// ─── Résumé upload ──────────────────────────────────────────────────────────
+// A bare upload (no typed message alongside it) deliberately does NOT run the
+// routing gate or mentor search — it only enriches context, then acknowledges
+// + asks one short question, so the student gets a chance to add or confirm
+// something before anything is searched.
+//
+// If the student DID type something alongside the file, that's a real turn —
+// it's merged into context same as the file, and the normal routing gate
+// applies via finishTurn(), so it CAN route straight to mentor matching if
+// there's now enough signal (exactly like typing that same message alone would).
+export async function processResumeUpload(sessionId, extractedContext, fileLabel, userId = null, onProgress = null, userText = '') {
+  const emit = onProgress ? (event) => { try { onProgress(event); } catch { /* UI-only, non-fatal */ } } : () => {};
+
+  const conv = await getOrCreateConversation(sessionId, userId);
+  const attachmentNote = `[Uploaded résumé: ${fileLabel}]`;
+  const userMessage = userText ? `${userText}\n${attachmentNote}` : attachmentNote;
+  conv.messages.push({ role: 'user', content: userMessage });
+
+  if (extractedContext) {
+    conv.context = mergeContext(conv.context, extractedContext);
+    conv.contextLayers = countLayers(conv.context);
+  }
+
+  if (userText) {
+    // Capture whatever the typed note adds (goal, constraint, correction) the
+    // same way a normal chat turn would — the résumé extractor only reads the
+    // file, not this note.
+    const textExtracted = await extractStudentContext(conv.messages);
+    if (textExtracted) {
+      conv.context = mergeContext(conv.context, textExtracted);
+      conv.contextLayers = countLayers(conv.context);
+    }
+  }
+  emit({ type: 'progress', stage: 'context', context: conv.context, contextLayers: conv.contextLayers });
+
+  if (userText) {
+    return finishTurn(conv, userMessage, emit, sessionId);
+  }
+
+  conv.problemStatement = generateProblemStatement(conv.context);
+  conv.phase = 'collecting';
+  conv.outputMode = null;
+
+  emit({ type: 'progress', stage: 'drafting' });
+  const ctx = conv.context || {};
+  const id = ctx.identity || {};
+  const known = [id.college, id.branch, ctx.target].filter(Boolean).join(', ');
+
+  const systemWithContext = `${COLLECTION_SYSTEM}
+
+---
+The student just uploaded their résumé. Here's what we now know about them:
+${JSON.stringify(ctx, null, 2)}
+
+Acknowledge the résumé naturally (mention ${known || "what you found in it"} if it's useful), then ask ONE short question — either confirm you've got their goal right, or ask the one thing still missing (branch, goal, or which field). Do NOT say you're matching them to a mentor yet — you still need to hear back from them first.
+---`;
+
+  const rawReply = await callGroq(toGroqMessages(systemWithContext, conv.messages));
+  let reply = stripTags(rawReply);
+  if (!reply || !reply.trim()) {
+    reply = known
+      ? `Got your résumé — ${known}. Anything else I should know before I find your match?`
+      : "Got your résumé. Tell me what you're aiming for and I'll find the right match.";
+  }
+
+  conv.messages.push({ role: 'assistant', content: reply });
+  if (conv.messages.length > 30) conv.messages = conv.messages.slice(-30);
+  await conv.save();
+
+  return {
+    reply,
+    phase: conv.phase,
+    contextLayers: conv.contextLayers,
+    context: conv.context,
+    problemStatement: conv.problemStatement,
+    outputMode: null,
+    matchedMentors: [],
+    sessionId,
   };
 }
 
