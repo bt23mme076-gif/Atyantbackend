@@ -97,35 +97,46 @@ router.delete('/chat/:sessionId', (req, res) => {
 
 // POST /api/ai/atyant-chat
 // Body: { message, sessionId }
-// Drives the 2-phase context-collection + execution engine
+// Drives the 2-phase context-collection + execution engine.
+// Streams as SSE: one `progress` event per real stage of the turn as it
+// actually completes (context extraction, mentor search), then one `done`
+// event with the full reply payload — so the frontend's "thinking" UI reflects
+// what the engine is really doing instead of a canned wait animation.
 router.post('/atyant-chat', optionalAuth, async (req, res) => {
+  const { message, sessionId } = req.body;
+
+  if (!message || !message.trim()) {
+    return res.status(400).json({ ok: false, error: 'Message is required' });
+  }
+  if (message.trim().length > 2000) {
+    return res.status(400).json({ ok: false, error: 'Message too long (max 2000 chars)' });
+  }
+  if (!sessionId || typeof sessionId !== 'string' || sessionId.length < 8) {
+    return res.status(400).json({ ok: false, error: 'Valid sessionId is required' });
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no', // nginx: don't buffer this proxied response
+  });
+  const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+
   try {
-    const { message, sessionId } = req.body;
-
-    if (!message || !message.trim()) {
-      return res.status(400).json({ ok: false, error: 'Message is required' });
-    }
-
-    if (message.trim().length > 2000) {
-      return res.status(400).json({ ok: false, error: 'Message too long (max 2000 chars)' });
-    }
-
-    if (!sessionId || typeof sessionId !== 'string' || sessionId.length < 8) {
-      return res.status(400).json({ ok: false, error: 'Valid sessionId is required' });
-    }
-
     const userId = req.user?._id?.toString() || null;
-    const result = await processAtyantMessage(sessionId, message.trim(), userId);
-
-    res.json({ ok: true, ...result });
+    const result = await processAtyantMessage(sessionId, message.trim(), userId, send);
+    send({ type: 'done', ok: true, ...result });
   } catch (error) {
     console.error('Atyant Engine error:', error.message);
-
-    if (error.message?.includes('429')) {
-      return res.status(429).json({ ok: false, error: 'Too many requests. Please wait a moment.' });
-    }
-
-    res.status(500).json({ ok: false, error: 'Engine error. Please try again.' });
+    const rateLimited = error.message?.includes('429');
+    send({
+      type: 'error',
+      status: rateLimited ? 429 : 500,
+      error: rateLimited ? 'Too many requests. Please wait a moment.' : 'Engine error. Please try again.',
+    });
+  } finally {
+    res.end();
   }
 });
 

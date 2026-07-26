@@ -82,9 +82,17 @@ app.set('trust proxy', 1);
 // Static uploads
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
-// Gzip
+// Gzip — skip the Atyant chat endpoint, which streams SSE progress checkpoints
+// that must flush immediately rather than sit in gzip's buffer.
 app.use(compression({
-  filter: (req, res) => req.headers['x-no-compression'] ? false : compression.filter(req, res),
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) return false;
+    // filter() runs lazily on first res.write, by which point Express's router
+    // has rewritten req.path relative to the mount point — use originalUrl,
+    // which stays the full request path throughout.
+    if (req.originalUrl === '/api/ai/atyant-chat' && req.method === 'POST') return false;
+    return compression.filter(req, res);
+  },
   level: 6,
   threshold: 1024
 }));

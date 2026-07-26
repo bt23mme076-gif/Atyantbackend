@@ -423,7 +423,14 @@ const GREETING_QUICK_REPLIES = [
 
 // ─── Core Engine ────────────────────────────────────────────────────────────
 
-export async function processAtyantMessage(sessionId, userMessage, userId = null) {
+// `onProgress`, if given, is called synchronously with real checkpoints as each
+// stage of the turn actually completes — used to drive a live "thinking" UI
+// instead of a canned one. Never throws from onProgress errors into the engine.
+export async function processAtyantMessage(sessionId, userMessage, userId = null, onProgress = null) {
+  const emit = onProgress ? (event) => { try { onProgress(event); } catch { /* UI-only, non-fatal */ } } : () => {};
+
+  emit({ type: 'progress', stage: 'reading' });
+
   let conv = await AtyantConversation.findOne({ sessionId });
   let userProfile = null;
 
@@ -508,6 +515,7 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
     conv.context = mergeContext(conv.context, extracted);
     conv.contextLayers = countLayers(conv.context);
   }
+  emit({ type: 'progress', stage: 'context', context: conv.context, contextLayers: conv.contextLayers });
 
   // ── Decide the phase BEFORE replying ─────────────────────────────────────
   // Using the freshly-extracted context. This kills the old bug where the turn
@@ -567,11 +575,14 @@ Still need (ask ONLY the first one that applies, nothing more): ${need.length ? 
 ${userWantsMentor ? "\nThe student JUST asked to be connected to a mentor. Acknowledge it in one line, ask ONLY the single thing above in one short sentence, and do NOT pile on extra questions." : ""}
 ---`;
 
+    emit({ type: 'progress', stage: 'drafting' });
     const rawReply = await callGroq(toGroqMessages(systemWithContext, conv.messages));
     reply = stripTags(rawReply);
 
   // ── Phase 2: Execution Engine — final wrap-up, NO questions ──────────────
   } else {
+    emit({ type: 'progress', stage: 'drafting' });
+
     const systemWithProblem = `${ENGINE_SYSTEM}
 
 ---
@@ -591,11 +602,13 @@ ${conv.problemStatement}
   // describes the type of mentor; the frontend renders these actual cards.
   let matchedMentors = [];
   if (outputMode === 'MENTOR_ROUTING') {
+    emit({ type: 'progress', stage: 'searching_mentors' });
     try {
       matchedMentors = await matchMentors(conv.context);
     } catch (err) {
       console.error('Mentor match failed (non-fatal):', err.message);
     }
+    emit({ type: 'progress', stage: 'mentors_found', count: matchedMentors.length });
   }
 
   // Safety net: never persist or return an empty bubble. If stripping removed
