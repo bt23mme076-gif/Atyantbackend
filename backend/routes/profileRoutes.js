@@ -201,7 +201,7 @@ router.put('/me', protect, async (req, res) => {
     }
 
     // Array fields
-    const arrayFields = ['interests', 'expertise', 'domainExperience', 'skills', 'topCompanies', 'milestones', 'specialTags'];
+    const arrayFields = ['interests', 'expertise', 'domainExperience', 'skills', 'topCompanies', 'milestones', 'specialTags', 'preferredRoles'];
     arrayFields.forEach(field => {
       if (updateData[field] !== undefined) {
         user[field] = Array.isArray(updateData[field]) ? updateData[field] : [];
@@ -236,6 +236,19 @@ router.put('/me', protect, async (req, res) => {
               field          : e.field  || '',
               year           : e.year   || '',
               cgpa           : e.cgpa && !isNaN(Number(e.cgpa)) ? Number(e.cgpa) : undefined
+            }))
+        : [];
+    }
+
+    // Projects — job-matching signal, [{ title, description, techStack }]
+    if (updateData.projects !== undefined) {
+      user.projects = Array.isArray(updateData.projects)
+        ? updateData.projects
+            .filter(p => p?.title)
+            .map(p => ({
+              title      : String(p.title).trim(),
+              description: p.description ? String(p.description).trim() : '',
+              techStack  : Array.isArray(p.techStack) ? p.techStack.map(String) : [],
             }))
         : [];
     }
@@ -371,6 +384,49 @@ Output ONLY the JSON object.`;
     return res.json({ success: true, data: parsedData, rawTextLength: resumeText.length });
   } catch (error) {
     console.error('POST /parse-linkedin error:', error);
+    res.status(500).json({ message: 'Failed to process resume', error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+//  POST /extract-skills  — Parse resume into a job-matching profile
+//  Returns skills/projects/education/experience for the frontend to review
+//  before saving via PUT /me (same convention as /parse-linkedin above).
+// ─────────────────────────────────────────────
+router.post('/extract-skills', protect, upload.single('resumePdf'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    if (req.file.mimetype !== 'application/pdf') {
+      return res.status(400).json({ message: 'Only PDF files are accepted' });
+    }
+
+    const pdfData = await pdfParse(req.file.buffer);
+    const resumeText = pdfData.text;
+
+    if (!resumeText || resumeText.length < 50) {
+      return res.status(400).json({ message: 'Could not read text from PDF.' });
+    }
+
+    const system = `You extract a structured career profile from an engineering student's resume for job-matching on an Indian placement platform.
+Return ONLY a JSON object with EXACTLY these keys (use "", [], 0, or null when unknown — never invent):
+{
+  "skills": ["concrete technical skills only, e.g. Python, React, SQL, Docker, AWS"],
+  "projects": [{ "title": "", "description": "one sentence, what it does and your role", "techStack": ["technologies actually used in this project"] }],
+  "education": [{ "institution": "", "degree": "B.Tech/M.Tech/B.E/etc", "field": "branch", "year": "grad year YYYY", "cgpa": number or null }],
+  "workExperience": [{ "company": "", "months": number }],
+  "yearsOfExperience": number (total professional experience, 0 if fresher/student),
+  "preferredRoles": ["job titles this resume is best suited for, e.g. Backend Developer, Data Analyst — inferred from projects/skills/objective, max 3"]
+}
+Output ONLY the JSON object.`;
+
+    const parsedData = await callGroqJSON([
+      { role: 'system', content: system },
+      { role: 'user', content: `RESUME TEXT:\n${resumeText.substring(0, 9000)}\n\nExtract the JSON now.` },
+    ]);
+
+    return res.json({ success: true, data: parsedData, rawTextLength: resumeText.length });
+  } catch (error) {
+    console.error('POST /extract-skills error:', error);
     res.status(500).json({ message: 'Failed to process resume', error: error.message });
   }
 });

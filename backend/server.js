@@ -56,6 +56,7 @@ import shareRoutes from './routes/shareRoutes.js';
 import feedbackRoutes from './routes/feedbackRoutes.js';
 import livekitRoutes from './routes/livekitRoutes.js';
 import tpoRoutes from './routes/tpoRoutes.js';
+import jobRoutes from './routes/jobRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message from './models/Message.js';
@@ -66,6 +67,8 @@ import { sendAutoReply } from './controllers/messageController.js';
 import ReminderCron from './services/ReminderCron.js';
 import TranscriptRecoveryCron from './services/TranscriptRecoveryCron.js';
 import StalePendingCron from './services/StalePendingCron.js';
+import JobSyncCron from './services/JobSyncCron.js';
+import AutoApplyCron from './services/AutoApplyCron.js';
 
 // ─── Passport Configuration ────────────────────────────────────────────────
 import './config/passport.js';
@@ -211,6 +214,8 @@ mongoose.connect(MONGO_URI, {
     ReminderCron.start();
     TranscriptRecoveryCron.start();
     StalePendingCron.start();
+    JobSyncCron.start();
+    AutoApplyCron.start();
   })
   .catch(err => {
     console.error('❌ MongoDB connection error:', err.message);
@@ -261,6 +266,7 @@ app.use('/api/share', shareRoutes);  // mentor profile sharing + referral tracki
 app.use('/api/feedback', feedbackRoutes); // answer feedback + 30/60/90-day outcome reporting
 app.use('/api/livekit', livekitRoutes);   // in-house meet: join token + webhook
 app.use('/api/tpo', tpoRoutes);           // TPO dashboard — VNIT T&P cell
+app.use('/api/jobs', jobRoutes);          // job aggregation — Greenhouse/Lever adapters
 app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────

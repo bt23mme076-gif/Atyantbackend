@@ -470,6 +470,23 @@ const userSchema = new mongoose.Schema({
     cgpa: { type: Number }
   }],
 
+  // ─── PROJECTS (job-matching signal) ────────
+  projects: [{
+    title: { type: String, trim: true },
+    description: { type: String, trim: true },
+    techStack: [{ type: String, trim: true }],
+  }],
+  preferredRoles: { type: [String], default: [] },
+
+  // ─── AUTO APPLY (opt-in, Greenhouse/Lever only) ─────────
+  autoApply: {
+    enabled: { type: Boolean, default: false },
+    minMatchScore: { type: Number, default: 70, min: 0, max: 100 },
+    excludedCompanies: { type: [String], default: [] },
+    phone: { type: String, default: '' }, // used to fill application forms; separate from account phone
+    consentedAt: { type: Date, default: null },
+  },
+
   // ─── SOCIAL ────────────────────────────────
   linkedinProfile: { type: String, default: '' },
   socialLinks: { type: Map, of: String, default: {} },
