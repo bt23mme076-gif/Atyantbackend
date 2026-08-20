@@ -24,12 +24,17 @@ const router = express.Router();
 // ─────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const { company, source, location, q, page = 1, limit = 20 } = req.query;
+    const { company, source, location, q, remote, page = 1, limit = 20 } = req.query;
 
     const filter = { status: 'open' };
     if (company) filter.company = company;
     if (source) filter.source = source;
-    if (location) filter.location = new RegExp(location, 'i');
+    // "Remote only" is a distinct signal from free-text location — most remote
+    // postings are tagged like "Remote - US"/"Remote, France" in the location
+    // field, so an explicit toggle just filters on that word rather than
+    // fighting with whatever the user typed in the location box.
+    if (remote === 'true') filter.location = /remote/i;
+    else if (location) filter.location = new RegExp(location, 'i');
     if (q) filter.title = new RegExp(q, 'i');
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
@@ -48,6 +53,24 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('GET /api/jobs error:', error);
     res.status(500).json({ message: 'Failed to fetch jobs', error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+//  GET /companies  — distinct companies with open postings, for the filter dropdown
+// ─────────────────────────────────────────────
+router.get('/companies', async (req, res) => {
+  try {
+    const companies = await Job.aggregate([
+      { $match: { status: 'open' } },
+      { $group: { _id: '$company', count: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+      { $project: { _id: 0, company: '$_id', count: 1 } },
+    ]);
+    res.json({ companies });
+  } catch (error) {
+    console.error('GET /api/jobs/companies error:', error);
+    res.status(500).json({ message: 'Failed to fetch companies', error: error.message });
   }
 });
 

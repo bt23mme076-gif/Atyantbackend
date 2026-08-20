@@ -2,7 +2,8 @@ import cron from 'node-cron';
 import Job from '../models/Job.js';
 import { fetchGreenhouseJobs } from './adapters/GreenhouseAdapter.js';
 import { fetchLeverJobs } from './adapters/LeverAdapter.js';
-import { GREENHOUSE_BOARD_TOKENS, LEVER_COMPANY_SLUGS } from '../config/atsCompanies.js';
+import { fetchFirecrawlJobs } from './adapters/FirecrawlAdapter.js';
+import { GREENHOUSE_BOARD_TOKENS, LEVER_COMPANY_SLUGS, FIRECRAWL_CAREER_PAGES } from '../config/atsCompanies.js';
 
 // Only ATS-hosted forms can be driven by the auto-apply adapters. A company
 // embedding Greenhouse behind careers.acme.com serves its own page there, so
@@ -35,6 +36,9 @@ class JobSyncCron {
     }
     for (const slug of LEVER_COMPANY_SLUGS) {
       await this.syncOne('lever', slug, () => fetchLeverJobs(slug), runStartedAt);
+    }
+    for (const { company, url } of FIRECRAWL_CAREER_PAGES) {
+      await this.syncOne('firecrawl', company, () => fetchFirecrawlJobs(company, url), runStartedAt);
     }
   }
 

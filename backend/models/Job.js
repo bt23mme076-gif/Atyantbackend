@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const jobSchema = new mongoose.Schema({
   source: {
     type: String,
-    enum: ['greenhouse', 'lever'],
+    enum: ['greenhouse', 'lever', 'firecrawl'],
     required: true,
     index: true,
   },

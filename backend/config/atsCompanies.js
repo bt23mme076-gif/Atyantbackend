@@ -42,6 +42,9 @@ export const GREENHOUSE_BOARD_TOKENS = [
   'webflow',
   'squarespace',
   'doximity',
+  // Not linked from razorpay.com/careers/ directly, but the board is live —
+  // found via the "SEE ALL JOBS" link on that page.
+  'razorpaysoftwareprivatelimited',
 ];
 
 export const LEVER_COMPANY_SLUGS = [
@@ -49,4 +52,20 @@ export const LEVER_COMPANY_SLUGS = [
   'veeva',
   'spotify',
   'mindtickle',
+];
+
+// Companies with no Greenhouse/Lever board — their career page gets scraped
+// via firecrawl instead (see JobSyncCron + services/adapters/FirecrawlAdapter).
+// autoApplySupported is always false for these: firecrawl only reads listings,
+// there's no form-driving adapter for arbitrary custom career sites.
+// Verify a URL actually renders job listings (not a "life at company" landing
+// page) before adding it — an unverified entry just burns a firecrawl scrape
+// every sync for nothing.
+export const FIRECRAWL_CAREER_PAGES = [
+  { company: 'zerodha', url: 'https://careers.zerodha.com/' },
+  { company: 'urbancompany', url: 'https://careers.urbancompany.com' },
+  { company: 'unacademy', url: 'https://unacademy.com/careers' },
+  // Root meesho.io only teases one CTA link — the actual 49-listing board is
+  // on /jobs specifically.
+  { company: 'meesho', url: 'https://www.meesho.io/jobs' },
 ];
