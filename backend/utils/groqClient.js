@@ -24,7 +24,7 @@ export const GROQ_API_KEYS = [
 const keyState = GROQ_API_KEYS.map(() => ({ cooldownUntil: 0 }));
 let cursor = 0;
 
-const REASONING_RE = /qwen|deepseek|r1/i;
+const REASONING_RE = /qwen|deepseek|r1|gpt-oss/i;
 const DEFAULT_CHAT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const DEFAULT_JSON_MODEL = process.env.GROQ_EXTRACT_MODEL || 'llama-3.1-8b-instant';
 
@@ -167,6 +167,7 @@ export async function groqJSON(messages, {
   model = DEFAULT_JSON_MODEL, maxTokens = 900, timeoutMs = 20000,
 } = {}) {
   const body = { model, messages, temperature: 0, max_tokens: maxTokens, response_format: { type: 'json_object' } };
+  if (REASONING_RE.test(model)) { body.reasoning_effort = 'none'; body.reasoning_format = 'hidden'; }
   const data = await postChat(body, timeoutMs);
   const raw = data?.choices?.[0]?.message?.content || '{}';
   try { return JSON.parse(raw); } catch { return {}; }
