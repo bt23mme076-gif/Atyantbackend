@@ -1,8 +1,15 @@
 import { chromium } from 'playwright';
 import axios from 'axios';
 
+// In production the browser runs in its own browserless container so a
+// stuck/crashed Chromium can't take the API process down with it — the auto
+// apply engine is exactly the kind of long-running, form-heavy automation
+// that occasionally hangs a tab. Falls back to a locally launched Chromium
+// when BROWSERLESS_WS_URL isn't set (local dev has no browserless running).
 export async function launchPage() {
-  const browser = await chromium.launch({ headless: true });
+  const browser = process.env.BROWSERLESS_WS_URL
+    ? await chromium.connectOverCDP(process.env.BROWSERLESS_WS_URL)
+    : await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
   return { browser, page };

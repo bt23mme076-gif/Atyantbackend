@@ -1,5 +1,26 @@
 import mongoose from 'mongoose';
 
+// Tick-chip vocab for mentor feedback — kept fixed so tags stay aggregatable
+// (e.g. "top gap across N mock interviews") instead of free-text mush.
+export const MENTOR_GAP_TAGS = [
+  'weak_fundamentals',
+  'unstructured_answers',
+  'low_confidence',
+  'poor_communication',
+  'lacks_domain_depth',
+  'time_management',
+  'needs_more_practice',
+];
+export const MENTOR_STRENGTH_TAGS = [
+  'strong_fundamentals',
+  'clear_communication',
+  'structured_answers',
+  'confident',
+  'good_problem_solving',
+  'quick_thinker',
+  'domain_expertise',
+];
+
 const sessionSchema = new mongoose.Schema({
   userId:         { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   mentorId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
@@ -57,6 +78,19 @@ const sessionSchema = new mongoose.Schema({
     rating:      { type: Number, min: 1, max: 5, default: null },
     comment:     { type: String, maxlength: 300, default: '' },
     submittedAt: { type: Date, default: null },
+  },
+
+  // ── Mentor feedback (submitted after session completes) ──
+  // hireDecision is the headline signal — feeds the student's readiness report
+  // and, aggregated, the "X% hire-ready" number for B2B/TPO pitches.
+  mentorFeedback: {
+    hireDecision:   { type: String, enum: ['strong_yes', 'yes', 'maybe', 'no'], default: null },
+    readinessScore: { type: Number, min: 1, max: 5, default: null },
+    gapTags:        [{ type: String, enum: MENTOR_GAP_TAGS }],
+    gapNote:        { type: String, maxlength: 300, default: '' },
+    strengthTags:   [{ type: String, enum: MENTOR_STRENGTH_TAGS }],
+    strengthNote:   { type: String, maxlength: 300, default: '' },
+    submittedAt:    { type: Date, default: null },
   },
 }, { timestamps: true });
 

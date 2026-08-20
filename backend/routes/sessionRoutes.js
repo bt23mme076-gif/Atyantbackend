@@ -1,5 +1,5 @@
 import express from 'express';
-import Session from '../models/Session.js';
+import Session, { MENTOR_GAP_TAGS, MENTOR_STRENGTH_TAGS } from '../models/Session.js';
 import SessionTranscript from '../models/SessionTranscript.js';
 import SessionInsight from '../models/SessionInsight.js';
 import User from '../models/User.js';
@@ -313,6 +313,51 @@ router.post('/:id/review', protect, async (req, res) => {
         await mentor.save();
       }
     }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/sessions/:id/mentor-feedback — mentor submits hire decision + readiness
+// score + gap/strength tick-tags after the session. hireDecision and readinessScore
+// are required (they drive the student's report); tags/notes are the detail layer.
+const HIRE_DECISIONS = ['strong_yes', 'yes', 'maybe', 'no'];
+
+router.post('/:id/mentor-feedback', protect, async (req, res) => {
+  try {
+    const { hireDecision, readinessScore, gapTags, gapNote, strengthTags, strengthNote } = req.body;
+
+    if (!HIRE_DECISIONS.includes(hireDecision)) {
+      return res.status(400).json({ ok: false, error: `hireDecision must be one of: ${HIRE_DECISIONS.join(', ')}` });
+    }
+    const numScore = Number(readinessScore);
+    if (!numScore || numScore < 1 || numScore > 5) {
+      return res.status(400).json({ ok: false, error: 'readinessScore must be 1–5' });
+    }
+    const cleanGapTags = Array.isArray(gapTags) ? gapTags.filter(t => MENTOR_GAP_TAGS.includes(t)) : [];
+    if (cleanGapTags.length === 0 && !(gapNote || '').trim()) {
+      return res.status(400).json({ ok: false, error: 'Pick at least one gap tag or add a note' });
+    }
+    const cleanStrengthTags = Array.isArray(strengthTags) ? strengthTags.filter(t => MENTOR_STRENGTH_TAGS.includes(t)) : [];
+
+    const session = await Session.findOne({ _id: req.params.id, mentorId: req.user.userId });
+    if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
+    if (session.mentorFeedback?.submittedAt) {
+      return res.status(409).json({ ok: false, error: 'Already submitted' });
+    }
+
+    session.mentorFeedback = {
+      hireDecision,
+      readinessScore: numScore,
+      gapTags: cleanGapTags,
+      gapNote: (gapNote || '').trim().slice(0, 300),
+      strengthTags: cleanStrengthTags,
+      strengthNote: (strengthNote || '').trim().slice(0, 300),
+      submittedAt: new Date(),
+    };
+    await session.save();
+
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
