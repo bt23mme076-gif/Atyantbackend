@@ -4,12 +4,20 @@ import User from '../models/User.js';
 // All Groq traffic in the backend flows through utils/groqClient.js, which does
 // multi-key round-robin + cooldown failover (see that file). Add GROQ_API_KEY_2
 // / _3 from SEPARATE Groq accounts in .env to multiply throughput.
-import { groqChat, groqJSON } from '../utils/groqClient.js';
+import { groqChat, groqChatStream, groqJSON } from '../utils/groqClient.js';
 import { extractResumeFromImage } from '../utils/geminiVision.js';
 
 // Chat reply. A touch of warmth without rambling — too high and it produces
 // run-on, broken sentences instead of one clean question.
 const callGroq = (messages, opts = {}) => groqChat(messages, { temperature: 0.75, ...opts });
+
+// Streaming variant — same call, but each token lands on the client as it's
+// generated instead of the whole reply arriving at once at the end. `emit` is
+// the same progress callback finishTurn/processResumeUpload already thread
+// through everywhere else, so a `token` event flows out over the existing SSE
+// connection with no route changes needed.
+const callGroqStream = (messages, emit, opts = {}) =>
+  groqChatStream(messages, { temperature: 0.75, ...opts, onToken: (text) => emit({ type: 'token', text }) });
 
 // ─── Dedicated context extractor ──────────────────────────────────────────────
 // A small, fast, deterministic model with JSON mode. This is the SOURCE OF TRUTH
@@ -609,7 +617,7 @@ ${userWantsMentor ? "\nThe student JUST asked to be connected to a mentor. Ackno
 ---`;
 
     emit({ type: 'progress', stage: 'drafting' });
-    const rawReply = await callGroq(toGroqMessages(systemWithContext, conv.messages));
+    const rawReply = await callGroqStream(toGroqMessages(systemWithContext, conv.messages), emit);
     reply = stripTags(rawReply);
 
   // ── Phase 2: Execution Engine — final wrap-up, NO questions ──────────────
@@ -623,7 +631,7 @@ Student's Problem Statement (fully mapped by intake system):
 ${conv.problemStatement}
 ---`;
 
-    const rawReply = await callGroq(toGroqMessages(systemWithProblem, conv.messages));
+    const rawReply = await callGroqStream(toGroqMessages(systemWithProblem, conv.messages), emit);
     reply = stripTags(rawReply);
 
     // Engine is ready → always route to the clarity page (verified seniors below).
@@ -797,7 +805,7 @@ ${JSON.stringify(ctx, null, 2)}
 Acknowledge the résumé naturally (mention ${known || "what you found in it"} if it's useful), then ask ONE short question — either confirm you've got their goal right, or ask the one thing still missing (branch, goal, or which field). Do NOT say you're matching them to a mentor yet — you still need to hear back from them first.
 ---`;
 
-  const rawReply = await callGroq(toGroqMessages(systemWithContext, conv.messages));
+  const rawReply = await callGroqStream(toGroqMessages(systemWithContext, conv.messages), emit);
   let reply = stripTags(rawReply);
   if (!reply || !reply.trim()) {
     reply = known

@@ -148,6 +148,78 @@ async function postChat(body, timeoutMs) {
   });
 }
 
+// Streaming chat completion — calls onToken(text) as each fragment arrives and
+// resolves with the full concatenated reply once the stream ends.
+//
+// Key rotation still applies, but only to the CONNECTION attempt: Groq returns
+// a normal HTTP status before any body streams, so a bad/rate-limited/dead key
+// fails exactly like the non-streaming path and groqRotate routes around it
+// with nothing yet shown to the user. Once a 200 with a readable body is in
+// hand we're committed to that key for the rest of the reply — a stream that
+// dies mid-way ends the turn with whatever text arrived rather than silently
+// retrying on another key, which would either duplicate text already on
+// screen or require the client to un-render it. Rare, and honest beats seamless.
+export async function groqChatStream(messages, {
+  model = DEFAULT_CHAT_MODEL, temperature = 0.75, maxTokens = 800, timeoutMs = 30000, onToken,
+} = {}) {
+  const body = { model, messages, temperature, max_tokens: maxTokens, stream: true };
+  if (REASONING_RE.test(model)) { body.reasoning_effort = 'low'; body.reasoning_format = 'hidden'; }
+
+  const res = await groqRotate(async (apiKey, ctx) => {
+    const r = await fetch(CHAT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      const err = new Error(`Groq ${r.status}: ${text.slice(0, 200)}`);
+      err.status = r.status;
+      err.headers = r.headers;
+      throw err;
+    }
+    ctx.onHeaders(r.headers);
+    return r;
+  });
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let full = '';
+  let buf = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let sep;
+    while ((sep = buf.indexOf('\n\n')) !== -1) {
+      const frame = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      const line = frame.split('\n').find(l => l.startsWith('data:'));
+      if (!line) continue;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') continue;
+
+      let json;
+      try { json = JSON.parse(payload); } catch { continue; }
+      const delta = json.choices?.[0]?.delta?.content;
+      if (delta) {
+        full += delta;
+        onToken?.(delta);
+      }
+    }
+  }
+
+  // Defense in depth, not a load-bearing filter: with reasoning_format:'hidden'
+  // Groq never streams reasoning into content for the model this backend uses
+  // (verified directly against the live API), and nothing in the current
+  // prompts asks for inline tags either — see stripTags' own comment. This
+  // just protects the persisted text if either of those ever changes.
+  return stripThink(full);
+}
+
 function stripThink(text) {
   return String(text || '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')  // closed reasoning blocks
