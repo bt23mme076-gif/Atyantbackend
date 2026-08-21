@@ -342,44 +342,79 @@ function mergeContext(existing = {}, update) {
   return merged;
 }
 
+const MENTOR_FIELDS = 'name username profilePicture bio expertise interests topCompanies companyDomain education lastActive';
+
+// Words that carry no matching signal but, unanchored, match inside half the
+// corpus — "and" hits "Brand Building", "Pandas", "handling". Dropping them is
+// what stops a metallurgy student being matched to a brand-building mentor.
+const MATCH_STOPWORDS = new Set([
+  'and', 'or', 'the', 'a', 'an', 'of', 'in', 'for', 'to', 'with', 'at', 'on',
+  'my', 'me', 'i', 'is', 'am', 'are', 'be', 'get', 'got', 'want', 'need',
+  'engineering', 'engineer', 'branch', 'year', 'student', 'role', 'roles', 'job', 'jobs',
+]);
+
+// Build search tokens from a free-text phrase: lowercase, split, drop stopwords
+// and 1-2 char noise. Returns [] when nothing meaningful survives, so callers
+// can tell "no signal" apart from "searched and found nothing".
+function matchTokens(phrase) {
+  return String(phrase || '')
+    .toLowerCase()
+    .split(/[^a-z0-9+#.]+/)          // keep c++, c#, node.js intact
+    .filter(t => t.length > 2 && !MATCH_STOPWORDS.has(t));
+}
+
+// Whole-token, regex-safe matcher. Escaping matters: an unescaped "c++" makes
+// `new RegExp` throw ("Nothing to repeat"), which used to bubble out of
+// matchMentors and leave the student with NO mentors at all.
+function tokenRegex(token) {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
+}
+
 // Find REAL mentors from the DB to back a MENTOR_ROUTING decision. The LLM must
 // never invent mentors — this is the only source of truth the frontend renders.
+//
+// Each result carries `matchedOn`: the fields that genuinely matched, empty for
+// a fallback pick. Nothing downstream should claim relevance a mentor doesn't
+// have, and this is what makes that checkable rather than assumed.
 async function matchMentors(context = {}, limit = 3) {
-  const { identity = {}, target, gap = [] } = context;
-  const terms = [target, identity.branch, ...(gap || [])]
-    .filter(Boolean)
-    .map(t => String(t).toLowerCase());
+  const { identity = {}, target } = context;
 
-  const base = { role: 'mentor' };
+  // `gap` is deliberately excluded — blockers read like "not prepared" / "no
+  // coding experience", which describe the student's problem, not a skill any
+  // mentor lists. As search terms they only ever added noise.
+  const tokens = [...new Set([...matchTokens(target), ...matchTokens(identity.branch)])];
+
   let mentors = [];
-
-  // Loose relevance match on expertise / interests / domain when we have signals.
-  if (terms.length) {
-    const rx = terms.map(t => new RegExp(t.split(/\s+/).slice(0, 2).join('|'), 'i'));
+  if (tokens.length) {
+    const rx = tokens.map(tokenRegex);
     mentors = await User.find({
-      ...base,
+      role: 'mentor',
       $or: [
         { expertise: { $in: rx } },
         { interests: { $in: rx } },
         { domainExperience: { $in: rx } },
         { topCompanies: { $in: rx } },
       ],
-    })
-      .select('name username profilePicture bio expertise interests topCompanies companyDomain education')
-      .limit(limit)
-      .lean();
+    }).select(MENTOR_FIELDS).limit(limit).lean();
   }
+
+  const relevantIds = new Set(mentors.map(m => String(m._id)));
 
   // Fallback: most recently active mentors so the user is never shown nothing.
   if (mentors.length < limit) {
-    const existing = new Set(mentors.map(m => String(m._id)));
-    const fill = await User.find({ ...base, _id: { $nin: [...existing] } })
-      .select('name username profilePicture bio expertise interests topCompanies companyDomain education')
+    const fill = await User.find({ role: 'mentor', _id: { $nin: [...relevantIds] } })
+      .select(MENTOR_FIELDS)
       .sort({ lastActive: -1 })
       .limit(limit - mentors.length)
       .lean();
     mentors = [...mentors, ...fill];
   }
+
+  const rx = tokens.map(tokenRegex);
+  const hitsIn = (values = []) => [
+    ...new Set(values.filter(v => rx.some(r => r.test(String(v))))),
+  ];
 
   return mentors.map(m => ({
     id: String(m._id),
@@ -392,6 +427,15 @@ async function matchMentors(context = {}, limit = 3) {
     topCompanies: m.topCompanies || [],
     companyDomain: m.companyDomain,
     college: m.education?.[0]?.institutionName || m.education?.[0]?.institution || null,
+    isRelevanceMatch: relevantIds.has(String(m._id)),
+    matchedOn: relevantIds.has(String(m._id))
+      ? {
+          expertise: hitsIn(m.expertise),
+          interests: hitsIn(m.interests),
+          domainExperience: hitsIn(m.domainExperience),
+          topCompanies: hitsIn(m.topCompanies),
+        }
+      : null,
   }));
 }
 
