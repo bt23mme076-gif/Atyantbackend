@@ -26,7 +26,11 @@ let cursor = 0;
 
 const REASONING_RE = /qwen|deepseek|r1|gpt-oss/i;
 const DEFAULT_CHAT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-const DEFAULT_JSON_MODEL = process.env.GROQ_EXTRACT_MODEL || 'llama-3.1-8b-instant';
+// llama-3.1-8b-instant was removed from Groq's lineup — every extraction call
+// was 404ing (caught as non-fatal, so it silently returned empty context
+// instead of crashing, which is worse: it looked like the extractor just
+// wasn't picking anything up).
+const DEFAULT_JSON_MODEL = process.env.GROQ_EXTRACT_MODEL || 'openai/gpt-oss-20b';
 
 // Parse Groq's duration strings ("7.66s", "2m59.56s", "500ms") → milliseconds.
 function parseDurationMs(s) {
@@ -157,7 +161,7 @@ export async function groqChat(messages, {
   model = DEFAULT_CHAT_MODEL, temperature = 0.7, maxTokens = 800, timeoutMs = 20000,
 } = {}) {
   const body = { model, messages, temperature, max_tokens: maxTokens };
-  if (REASONING_RE.test(model)) { body.reasoning_effort = 'none'; body.reasoning_format = 'hidden'; }
+  if (REASONING_RE.test(model)) { body.reasoning_effort = 'low'; body.reasoning_format = 'hidden'; }
   const data = await postChat(body, timeoutMs);
   return stripThink(data?.choices?.[0]?.message?.content || '');
 }
@@ -167,7 +171,7 @@ export async function groqJSON(messages, {
   model = DEFAULT_JSON_MODEL, maxTokens = 900, timeoutMs = 20000,
 } = {}) {
   const body = { model, messages, temperature: 0, max_tokens: maxTokens, response_format: { type: 'json_object' } };
-  if (REASONING_RE.test(model)) { body.reasoning_effort = 'none'; body.reasoning_format = 'hidden'; }
+  if (REASONING_RE.test(model)) { body.reasoning_effort = 'low'; body.reasoning_format = 'hidden'; }
   const data = await postChat(body, timeoutMs);
   const raw = data?.choices?.[0]?.message?.content || '{}';
   try { return JSON.parse(raw); } catch { return {}; }
