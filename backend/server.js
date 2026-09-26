@@ -57,6 +57,7 @@ import feedbackRoutes from './routes/feedbackRoutes.js';
 import livekitRoutes from './routes/livekitRoutes.js';
 import tpoRoutes from './routes/tpoRoutes.js';
 import jobRoutes from './routes/jobRoutes.js';
+import mockInterviewRoutes from './routes/mockInterviewRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message from './models/Message.js';
@@ -66,6 +67,7 @@ import { globalRateLimit } from './middleware/globalRateLimiter.js';
 import { sendAutoReply } from './controllers/messageController.js';
 import ReminderCron from './services/ReminderCron.js';
 import TranscriptRecoveryCron from './services/TranscriptRecoveryCron.js';
+import MockEvaluationCron from './services/mockInterview/EvaluationCron.js';
 import StalePendingCron from './services/StalePendingCron.js';
 import JobSyncCron from './services/JobSyncCron.js';
 import AutoApplyCron from './services/AutoApplyCron.js';
@@ -213,6 +215,7 @@ mongoose.connect(MONGO_URI, {
     console.log('✅ MongoDB connected');
     ReminderCron.start();
     TranscriptRecoveryCron.start();
+    MockEvaluationCron.start();
     StalePendingCron.start();
     JobSyncCron.start();
     AutoApplyCron.start();
@@ -267,6 +270,7 @@ app.use('/api/feedback', feedbackRoutes); // answer feedback + 30/60/90-day outc
 app.use('/api/livekit', livekitRoutes);   // in-house meet: join token + webhook
 app.use('/api/tpo', tpoRoutes);           // TPO dashboard — VNIT T&P cell
 app.use('/api/jobs', jobRoutes);          // job aggregation — Greenhouse/Lever adapters
+app.use('/api/mock-interviews', mockInterviewRoutes); // AI mock interview: join + agent dispatch
 app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────

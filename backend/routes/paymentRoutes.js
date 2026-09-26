@@ -9,6 +9,7 @@ import { sendSessionConfirmationEmails } from '../utils/emailService.js';
 import { sendServicePurchaseNotification } from '../utils/emailNotifications.js';
 import { getService } from '../config/serviceCatalog.js';
 import { meetLinkFor } from '../utils/frontendUrl.js';
+import { confirmFromWebhook as confirmMockReportFromWebhook } from '../services/mockInterview/MockPaymentService.js';
 
 const router = express.Router();
 
@@ -333,6 +334,10 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
 
     if (body.event === 'payment.captured' && entity) {
       const session = await Session.findOne({ razorpayOrderId: entity.order_id });
+      // Not a mentor session: it may be a mock interview report unlock.
+      if (!session && await confirmMockReportFromWebhook(entity.order_id, entity.id)) {
+        console.log(`✅ Webhook confirmed mock interview report order ${entity.order_id}`);
+      }
       if (session && session.paymentStatus !== 'paid') {
         session.paymentStatus = 'paid';
         session.status = 'upcoming';

@@ -4,14 +4,48 @@
     {
       "name": "atyant-frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "C:/Atyantfrontend", "run", "dev", "--", "--port", "5173"],
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Atyantfrontend",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5173"
+      ],
       "port": 5173
+    },
+    {
+      "name": "atyant-backend-local",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/jatin/AppData/Local/Temp/claude/C--Atyantbackend/91010c60-085d-4db1-ad98-9e0dd4f5956e/scratchpad/memdb/local_backend.mjs"
+      ],
+      "port": 5001
     },
     {
       "name": "atyant-backend",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["--env-file=C:/Atyantbackend/backend/.env", "C:/Atyantbackend/backend/server.js"],
+      "runtimeArgs": [
+        "--env-file=C:/Atyantbackend/backend/.env",
+        "C:/Atyantbackend/backend/server.js"
+      ],
       "port": 5000
+    },
+    {
+      "name": "atyant-frontend-local",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--env-file=C:/Users/jatin/AppData/Local/Temp/claude/C--Atyantbackend/91010c60-085d-4db1-ad98-9e0dd4f5956e/scratchpad/memdb/local_frontend.env",
+        "C:/Atyantfrontend/node_modules/vite/bin/vite.js",
+        "C:/Atyantfrontend",
+        "--host",
+        "localhost",
+        "--port",
+        "5174",
+        "--strictPort"
+      ],
+      "port": 5174
     }
   ]
 }

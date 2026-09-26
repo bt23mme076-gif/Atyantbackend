@@ -1,8 +1,11 @@
 import {
-  AccessToken, RoomServiceClient, EgressClient, WebhookReceiver,
+  AccessToken, RoomServiceClient, EgressClient, WebhookReceiver, AgentDispatchClient,
   EncodedFileOutput, EncodedFileType, S3Upload,
   EncodingOptions, AudioCodec,
 } from 'livekit-server-sdk';
+
+// ParticipantInfo.Kind.AGENT in @livekit/protocol (not re-exported by the SDK).
+const PARTICIPANT_KIND_AGENT = 4;
 
 // Egress default (128 kbps OPUS) produced a 49.7 MB file for a 57-min session —
 // well past Groq Whisper's per-file size limit, which is why that pipeline run
@@ -27,6 +30,7 @@ class LiveKitService {
     }
     this.roomService  = new RoomServiceClient(host, key, secret);
     this.egressClient = new EgressClient(host, key, secret);
+    this.dispatchClient = new AgentDispatchClient(host, key, secret);
     this.receiver     = new WebhookReceiver(key, secret);
     this._key    = key;
     this._secret = secret;
@@ -180,6 +184,34 @@ class LiveKitService {
     } catch {
       return false; // room already closed
     }
+  }
+
+  // Mock interview room: the student and the AI interviewer agent. No egress —
+  // the agent writes the transcript turn by turn.
+  async createMockRoom(roomName) {
+    this._init();
+    await this.roomService.createRoom({
+      name: roomName,
+      emptyTimeout: 300,
+      departureTimeout: 300,
+      maxParticipants: 2,
+    });
+    return roomName;
+  }
+
+  async roomHasAgent(roomName) {
+    this._init();
+    try {
+      const participants = await this.roomService.listParticipants(roomName);
+      return participants.some(p => p.kind === PARTICIPANT_KIND_AGENT);
+    } catch {
+      return false;
+    }
+  }
+
+  async dispatchAgent(roomName, agentName, metadata) {
+    this._init();
+    return this.dispatchClient.createDispatch(roomName, agentName, { metadata: JSON.stringify(metadata) });
   }
 
   receiveWebhook(rawBody, authHeader) {
