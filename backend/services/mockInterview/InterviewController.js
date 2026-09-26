@@ -15,7 +15,12 @@ const TRIGGER_BY_VERDICT = { strong: 'strongDeeper', shallow: 'shallow', wrong: 
 // Only used when the judge gives no reaction of its own.
 const ACKS      = ['Okay.', 'Right.', 'Mm-hm.', 'I see.', 'Okay, noted.'];
 const SKIP_ACKS = ['No worries.', 'Fair enough.', "That's fine."];
-const CONTINUES = ['Go on.', 'Take your time.', 'Mm-hmm, go ahead.'];
+const CONTINUES = ['Mm-hm, go on.', 'Take your time.', 'Okay, go ahead.'];
+
+// An answer that trails off ("It is a...", "so the first thing is") is a
+// thinking pause, not the end. A person would just nod and wait.
+const DANGLING = /(\.\.\.|…|\b(a|an|the|and|so|but|or|is|are|was|to|of|with|for|in|on|that|because|like|um+|uh+|actually|basically),?)$/i;
+const looksUnfinished = text => DANGLING.test(String(text || '').trim());
 
 const TRANSITIONS = {
   resume    : "Let's look at some of the work on your resume.",
@@ -93,8 +98,9 @@ export class InterviewController {
     const first = (this.candidateName || '').trim().split(/\s+/)[0];
     const forRole = this.role ? ` for the ${this.role} role${this.company ? ` at ${this.company}` : ''}` : '';
     const minutes = Math.round(this.durationMs / 60000);
-    const intro = `Hi${first ? ` ${first}` : ''}, thanks for joining. I'll be your interviewer for this practice round${forRole}. `
-      + `It will take about ${minutes} minutes. Answer out loud as you would in a real interview, and take your time. Let's begin.`;
+    const intro = `Hi${first ? ` ${first}` : ''}, thanks for making the time. I'll be your interviewer today${forRole}. `
+      + `We have about ${minutes} minutes. I'll ask about you, a few of your projects and some technical things. `
+      + `Keep it conversational, and feel free to think out loud. So, to start.`;
     return `${intro} ${this.#ask(0).text}`;
   }
 
@@ -127,6 +133,11 @@ export class InterviewController {
     this.asking.parts.push(clean);
 
     if (this.current.phase === 'closing') return this.#finishClosing();
+
+    if (looksUnfinished(clean) && this.asking.continues < MAX_CONTINUE) {
+      this.asking.continues++;
+      return { say: CONTINUES[this.continueCount++ % CONTINUES.length], end: false, turn: null };
+    }
 
     let d = await this.#direct(this.asking.continues < MAX_CONTINUE);
     if (WANTS_NEXT.test(clean)) {
@@ -285,7 +296,8 @@ export class InterviewController {
   #leaks(followUp) {
     const known = new Set([...words(this.asking.text), ...words(this.asking.parts.join(' '))]);
     const guard = new Set(words((this.current.expectedPoints || []).map(p => p.point).join(' ')));
-    return words(followUp).some(w => guard.has(w) && !known.has(w));
+    // One shared word ("model", "users") is normal; naming several is giving it away.
+    return new Set(words(followUp).filter(w => guard.has(w) && !known.has(w))).size >= 2;
   }
 
   #stockAck(verdict) {
@@ -318,8 +330,11 @@ export class InterviewController {
       if (d?.followUp) {
         // The judge wrote it from the candidate's own words. If it hints at the answer, fall back to the planned one.
         // An easier way in after "I don't know" naturally names the topic, so only real answers are checked.
-        text = verdict !== 'skip' && this.#leaks(d.followUp) ? (q.followUps?.[trigger] || null) : d.followUp;
+        text = verdict !== 'skip' && this.#leaks(d.followUp) ? null : d.followUp;
       }
+      // Planned follow-up only when the judge gave nothing usable, and never the same one twice.
+      if (!text && trigger && !this.asking.usedTriggers.has(trigger)) text = q.followUps?.[trigger] || null;
+      if (text && askedBefore.some(a => overlap(a, text) >= REPEAT_OVERLAP)) text = null;
       if (text && trigger) {
         this.asking.followUpsUsed++;
         this.asking.usedTriggers.add(trigger);

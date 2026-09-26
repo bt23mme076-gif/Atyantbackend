@@ -26,10 +26,10 @@ const SILENCE_MS      = 20 * 1000;       // no speech after the interviewer fini
 const REJOIN_GRACE_MS  = 3 * 60 * 1000;   // student dropped: wait this long before ending
 const TIME_UP_GRACE_MS = 2 * 60 * 1000;   // hard stop after the planned duration
 
-// End of answer = VAD silence + endpointing delay (~0.9 s, about a human's turn
-// gap). Longer thinking pauses are caught by the judge's "incomplete" verdict.
-const VAD_MIN_SILENCE_MS = 400;
-const ENDPOINTING = { minDelay: 500, maxDelay: 3000 };
+// End of answer = VAD silence + endpointing delay (~1.3 s). Shorter cut
+// students off mid-thought; trailing-off answers get a "go on" in the controller.
+const VAD_MIN_SILENCE_MS = 500;
+const ENDPOINTING = { minDelay: 800, maxDelay: 3000 };
 
 class InterviewerAgent extends voice.Agent {
   constructor({ openingText, onAnswer }) {

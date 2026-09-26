@@ -174,7 +174,16 @@ export class GroqTTS extends tts.TTS {
 
 const KOKORO_URL = (process.env.KOKORO_URL || '').replace(/\/+$/, '');
 const KOKORO_VOICE = process.env.KOKORO_VOICE || 'am_michael';
-const KOKORO_TIMEOUT_MS = 8000;
+const KOKORO_TIMEOUT_MS = 12000;
+
+// Kokoro on CPU fails and crawls when sentences arrive in parallel, so they go
+// through one at a time, in the order they were requested.
+let kokoroQueue = Promise.resolve();
+const kokoroSlot = task => {
+  const run = kokoroQueue.then(task);
+  kokoroQueue = run.catch(() => {});
+  return run;
+};
 
 // Self-hosted Kokoro (OpenAI-compatible). Fails fast so the fallback adapter can
 // hand the utterance to Orpheus.
@@ -191,17 +200,21 @@ export class KokoroTTS extends tts.TTS {
   get provider() { return 'kokoro'; }
 
   synthesize(text, connOptions, abortSignal) {
-    const signal = abortSignal
-      ? AbortSignal.any([abortSignal, AbortSignal.timeout(KOKORO_TIMEOUT_MS)])
-      : AbortSignal.timeout(KOKORO_TIMEOUT_MS);
-    const request = fetch(`${KOKORO_URL}/audio/speech`, {
-      method : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body   : JSON.stringify({ model: 'kokoro', voice: this.#voice, input: text, response_format: 'wav' }),
-      signal
-    }).then(async res => {
+    const request = kokoroSlot(async () => {
+      if (abortSignal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const signal = abortSignal
+        ? AbortSignal.any([abortSignal, AbortSignal.timeout(KOKORO_TIMEOUT_MS)])
+        : AbortSignal.timeout(KOKORO_TIMEOUT_MS);
+      const res = await fetch(`${KOKORO_URL}/audio/speech`, {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({ model: 'kokoro', voice: this.#voice, input: text, response_format: 'wav' }),
+        signal
+      });
       if (!res.ok) throw new Error(`Kokoro TTS ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      return res.arrayBuffer();
+      const audio = await res.arrayBuffer();
+      if (audio.byteLength < 2000) throw new Error('Kokoro returned no audio');
+      return audio;
     });
     return new GroqChunkedStream(this, text, request, connOptions, abortSignal);
   }
