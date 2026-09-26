@@ -33,7 +33,11 @@ const MAX_CLARIFY     = 2;
 const MAX_CONTINUE    = 2;
 const MAX_NOT_HEARD   = 2;
 const WRAP_UP_MS      = 3 * 60 * 1000;
-const MIN_PER_QUESTION_MS = 2 * 60 * 1000;
+const MIN_PER_QUESTION_MS = 90 * 1000;
+// How far the interviewer may dig into one topic. A real interview goes deep on
+// a few things rather than skimming many, so this is more than the plan's default.
+const DIG_DEPTH = { intro: 2, closing: 0 };
+const DEFAULT_DIG_DEPTH = 4;
 
 const STOPWORDS = new Set(['about', 'their', 'there', 'which', 'would', 'could', 'should', 'these', 'those', 'where', 'while', 'being', 'using', 'other', 'explains', 'explain', 'mentions', 'states', 'describes', 'covers', 'gives', 'names']);
 // Whisper "hears" these over silence or background noise. An utterance made of
@@ -230,8 +234,15 @@ export class InterviewController {
   // Which planned question comes next if the interview moves on now.
   #nextIndex() {
     const closing = this.#closingIndex();
-    if (this.#remainingMs() < WRAP_UP_MS && closing > this.index) return closing;
-    return this.index + 1;
+    const remaining = this.#remainingMs();
+    if (remaining < WRAP_UP_MS && closing > this.index) return closing;
+    // Behind schedule after digging: drop later questions of a phase that still has
+    // another question left, so every phase is still covered and the close isn't rushed.
+    let next = this.index + 1;
+    while (next < this.questions.length - 1
+      && remaining / (this.questions.length - next) < MIN_PER_QUESTION_MS
+      && this.questions[next + 1].phase === this.questions[next].phase) next++;
+    return next;
   }
 
   async #direct(allowIncomplete) {
@@ -284,11 +295,12 @@ export class InterviewController {
   // for the rest of the interview.
   #canFollowUp(q) {
     if (q.phase === 'closing') return false;
-    if (this.asking.followUpsUsed >= (q.maxFollowUps ?? 2)) return false;
+    if (this.asking.followUpsUsed >= (DIG_DEPTH[q.phase] ?? DEFAULT_DIG_DEPTH)) return false;
     const remaining = this.#remainingMs();
     if (remaining < WRAP_UP_MS) return false;
-    const questionsLeft = this.questions.length - this.index;
-    return remaining / questionsLeft >= MIN_PER_QUESTION_MS;
+    // Later questions can be dropped, so only the phases still ahead need time.
+    const phasesLeft = new Set(this.questions.slice(this.index + 1).map(x => x.phase)).size;
+    return remaining - phasesLeft * MIN_PER_QUESTION_MS >= MIN_PER_QUESTION_MS;
   }
 
   // A follow-up that already says the concepts a strong answer would contain
@@ -315,7 +327,8 @@ export class InterviewController {
     const verdict = d?.verdict ?? null;
     const turn = this.#record(verdict);
     const q = this.current;
-    const reaction = d?.reaction || '';
+    // The same "Got it." twice in a row sounds canned; asking straight away doesn't.
+    const reaction = d?.reaction && !this.recentReactions.slice(-3).some(r => r.toLowerCase() === d.reaction.toLowerCase()) ? d.reaction : '';
     if (verdict === 'skip') this.struggleStreak++;
     else if (verdict) this.struggleStreak = 0;
 
@@ -358,7 +371,9 @@ export class InterviewController {
     const planned = d && this.plannedNext === nextIndex;
     const bridge = planned && d.bridge ? tidyBridge(d.bridge) : (!planned && nextQ.phase !== q.phase ? TRANSITIONS[nextQ.phase] || '' : '');
     this.#remember(bridge);
-    const spoken = planned && keepsSpecifics(nextQ.text, d.nextQuestionSpoken) ? d.nextQuestionSpoken : nextQ.text;
+    // "Your resume says..." belongs only on questions that really come from the resume.
+    const inventsResume = nextQ.phase !== 'resume' && /resume/i.test(d?.nextQuestionSpoken || '') && !/resume/i.test(nextQ.text);
+    const spoken = planned && !inventsResume && keepsSpecifics(nextQ.text, d.nextQuestionSpoken) ? d.nextQuestionSpoken : nextQ.text;
     this.#ask(nextIndex);
     this.asking.text = spoken;
     return { say: `${lead} ${bridge} ${spoken}`.replace(/\s+/g, ' ').trim(), end: false, turn };
