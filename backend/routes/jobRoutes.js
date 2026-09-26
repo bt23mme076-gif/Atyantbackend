@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import Application from '../models/Application.js';
 import ApplicationAnswer, { normalizeQuestionKey, getAnswerMap } from '../models/ApplicationAnswer.js';
 import protect from '../middleware/authMiddleware.js';
+import { hasActivePlan } from '../middleware/subscriptionMiddleware.js';
 import JobSyncCron from '../services/JobSyncCron.js';
 import AutoApplyCron from '../services/AutoApplyCron.js';
 import { matchJobsForUser } from '../services/MatchingEngine.js';
@@ -13,6 +14,15 @@ import { applyGreenhouse } from '../services/autoapply/GreenhouseApplyAdapter.js
 import { applyLever } from '../services/autoapply/LeverApplyAdapter.js';
 
 const AUTO_APPLY_ADAPTERS = { greenhouse: applyGreenhouse, lever: applyLever };
+
+// Auto-apply is a paid feature: any active Clarity or Pro plan. `code` lets the
+// frontend show an upgrade prompt instead of a generic error.
+const AUTO_APPLY_PLAN = 'clarity';
+const planRequired = (res) => res.status(403).json({
+  code: 'PLAN_REQUIRED',
+  requiredPlan: AUTO_APPLY_PLAN,
+  message: 'Auto-apply is part of the Clarity and Pro plans. Upgrade to turn it on.',
+});
 
 const router = express.Router();
 
@@ -157,6 +167,9 @@ router.put('/auto-apply/settings', protect, async (req, res) => {
     const user = await User.findById(req.user.userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
+    // Turning it off or editing other settings stays open to everyone; only switching it on is paid.
+    if (enabled === true && !hasActivePlan(user, AUTO_APPLY_PLAN)) return planRequired(res);
+
     if (enabled === true) {
       if (confirm !== true) {
         return res.status(400).json({
@@ -221,6 +234,7 @@ router.post('/:jobId/auto-apply-now', protect, async (req, res) => {
     if (!job) return res.status(404).json({ message: 'Job not found' });
     if (!user) return res.status(404).json({ message: 'User not found' });
 
+    if (!hasActivePlan(user, AUTO_APPLY_PLAN)) return planRequired(res);
     if (!user.autoApply?.enabled) {
       return res.status(400).json({ message: 'Enable Auto-Apply in settings first — this authorizes Atyant to submit on your behalf.' });
     }

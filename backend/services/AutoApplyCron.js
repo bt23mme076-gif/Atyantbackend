@@ -8,6 +8,7 @@ import { applyGreenhouse } from './autoapply/GreenhouseApplyAdapter.js';
 import { applyLever } from './autoapply/LeverApplyAdapter.js';
 import { generateCoverLetter } from './CoverLetterService.js';
 import { getAnswerMap } from '../models/ApplicationAnswer.js';
+import { hasActivePlan } from '../middleware/subscriptionMiddleware.js';
 
 const MAX_NEW_APPLICATIONS_PER_USER_PER_RUN = 3;
 
@@ -36,6 +37,8 @@ class AutoApplyCron {
     const users = await User.find({ 'autoApply.enabled': true }).lean();
 
     for (const user of users) {
+      // Paid feature — a lapsed or free plan keeps the setting but stops applying.
+      if (!hasActivePlan(user, 'clarity')) continue;
       try {
         const jobs = await Job.find({
           status: 'open',
@@ -90,6 +93,10 @@ class AutoApplyCron {
       }
       if (!user.autoApply?.enabled) {
         await Application.updateOne({ _id: appDoc._id }, { status: 'failed', reason: 'Auto-apply disabled by user before processing' });
+        return;
+      }
+      if (!hasActivePlan(user, 'clarity')) {
+        await Application.updateOne({ _id: appDoc._id }, { status: 'failed', reason: 'Auto-apply needs an active Clarity or Pro plan' });
         return;
       }
 

@@ -1,5 +1,22 @@
 import User from '../models/User.js';
 
+const PLAN_LEVEL = { free: 0, clarity: 1, pro: 2 };
+
+/**
+ * Pure check (no DB writes, no response) for code that isn't an Express route —
+ * e.g. the auto-apply cron — or for a route that only gates part of its work.
+ * True when the user's plan is at least `requiredPlan`, active, and not past expiry.
+ */
+export const hasActivePlan = (user, requiredPlan = 'clarity') => {
+  if (!user) return false;
+  if ((PLAN_LEVEL[user.subscriptionPlan] || 0) < (PLAN_LEVEL[requiredPlan] || 0)) return false;
+  const expired = user.subscriptionExpiry && new Date() > new Date(user.subscriptionExpiry);
+  if (expired) return false;
+  // Cancelling stops renewal, not access — a cancelled plan works until its paid-up expiry.
+  if (user.subscriptionStatus === 'active') return true;
+  return user.subscriptionStatus === 'cancelled' && !!user.subscriptionExpiry;
+};
+
 /**
  * Middleware to enforce subscription plan requirements
  * 
