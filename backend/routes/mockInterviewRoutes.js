@@ -176,7 +176,7 @@ router.post('/:id/retake', protect, async (req, res) => {
   try {
     const userId = req.user.userId;
     const parent = await MockInterview.findById(req.params.id)
-      .select('userId status company role roleFamily seniority inputs parsed rootInterviewId')
+      .select('userId status company role roleFamily interviewCategory seniority inputs parsed rootInterviewId')
       .lean();
     if (!parent || parent.userId.toString() !== userId) {
       return res.status(404).json({ ok: false, error: 'Interview not found' });
@@ -197,6 +197,7 @@ router.post('/:id/retake', protect, async (req, res) => {
       company   : parent.company,
       role      : parent.role,
       roleFamily: parent.roleFamily,
+      interviewCategory: parent.interviewCategory,
       seniority : parent.seniority,
       inputs    : parent.inputs,
       parsed    : parent.parsed,

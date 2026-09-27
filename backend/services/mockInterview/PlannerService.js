@@ -127,6 +127,21 @@ export async function parseInterview(interviewId) {
       log.push(`Resume parse: only ${resume.resume.claims.length} claim(s) found (model returned ${resumeRaw?.claims?.length || 0}; dropped: ${resume.dropped.slice(0, 5).join(' | ') || 'none'}). Proceeding with available claims.`);
     }
 
+    // The candidate explicitly asked for a "tech"/"analytics" interview, but the
+    // JD didn't parse into a role family with a technical phase (unrelated JD
+    // wording, or 0 skills extracted). Force one so there's still a technical
+    // slot to put the mandatory DSA/SQL exercise into — the category the
+    // candidate picked should win over a JD that didn't say much.
+    if (!SUPPORTED_ROLE_FAMILIES.includes(jd.meta.roleFamily)) {
+      if (interview.interviewCategory === 'tech') {
+        log.push(`roleFamily was "${jd.meta.roleFamily}"; forced to "sde" because the candidate picked the Tech category`);
+        jd.meta.roleFamily = 'sde';
+      } else if (interview.interviewCategory === 'analytics') {
+        log.push(`roleFamily was "${jd.meta.roleFamily}"; forced to "data" because the candidate picked the Analytics category`);
+        jd.meta.roleFamily = 'data';
+      }
+    }
+
     interview.company    = jd.meta.company || interview.company;
     interview.role       = jd.meta.role || interview.role;
     interview.seniority  = jd.meta.seniority;
