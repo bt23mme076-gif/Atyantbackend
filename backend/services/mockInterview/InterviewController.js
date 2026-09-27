@@ -193,6 +193,27 @@ export class InterviewController {
     return this.#respond({ verdict: 'skip' }, "Let's move on for now.");
   }
 
+  // A coding/SQL exercise question was graded (or the candidate asked to move
+  // on) via the code panel, not spoken. Bypasses the judge entirely: pass/fail
+  // maps straight to a verdict and the interview advances the same way a
+  // spoken answer would.
+  onCodingResult({ passed, total, skipped }) {
+    if (this.finished) return { say: null, end: true, turn: null };
+    const allPassed = !skipped && total > 0 && passed === total;
+    const verdict = skipped ? 'skip' : allPassed ? 'strong' : passed > 0 ? 'shallow' : 'wrong';
+    this.asking.parts.push(skipped
+      ? 'Asked to move on without a working solution.'
+      : `Code submitted: ${passed}/${total} test cases passed.`);
+    const reaction = skipped
+      ? "No worries, let's keep moving."
+      : allPassed
+        ? 'Nice, that passes all the tests.'
+        : passed > 0
+          ? `That gets ${passed} out of ${total}. Let's move on for now.`
+          : "That's not passing yet, but let's move on for now.";
+    return this.#respond({ verdict, reaction }, null, skipped ? 'skipped' : 'captured');
+  }
+
   onTimeUp() {
     const turn = this.asking?.parts.length ? this.#record(null) : null;
     this.finished = true;
@@ -296,6 +317,7 @@ export class InterviewController {
   // for the rest of the interview.
   #canFollowUp(q) {
     if (q.phase === 'closing') return false;
+    if (q.ref?.type === 'coding' || q.ref?.type === 'sql_exercise') return false;
     if (this.asking.followUpsUsed >= (DIG_DEPTH[q.phase] ?? DEFAULT_DIG_DEPTH)) return false;
     const remaining = this.#remainingMs();
     if (remaining < WRAP_UP_MS) return false;

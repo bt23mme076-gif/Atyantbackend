@@ -95,6 +95,25 @@ export default defineAgent({
     const timers = {};
     let session;
     let finished = false;
+    let announcedQid = null;
+
+    // Tells the student's browser to show/hide the code panel for the
+    // question currently being asked. Sent over LiveKit's data channel so it
+    // arrives alongside (not instead of) the spoken question.
+    const CODE_TYPES = new Set(['coding', 'sql_exercise']);
+    const announceQuestionPanel = () => {
+      const q = controller.current;
+      if (!q || announcedQid === q.qid) return;
+      announcedQid = q.qid;
+      const payload = CODE_TYPES.has(q.ref?.type)
+        ? { type: 'coding_question', kind: q.ref.type, problemId: q.ref.id, qid: q.qid }
+        : { type: 'hide_coding_panel', qid: q.qid };
+      try {
+        ctx.room.localParticipant?.publishData(new TextEncoder().encode(JSON.stringify(payload)), { reliable: true });
+      } catch (err) {
+        logger.error({ err }, 'failed to publish question-panel data message');
+      }
+    };
 
     const finish = async reason => {
       if (finished) return;
@@ -122,6 +141,7 @@ export default defineAgent({
         const t0 = Date.now();
         const result = await fn();
         logger.info({ ms: Date.now() - t0 }, 'timing: director step');
+        announceQuestionPanel();
         if (result.turn) {
           lastSave = saveTurn(interviewId, result.turn).catch(err => logger.error({ err }, 'failed to save turn'));
         }
@@ -147,6 +167,7 @@ export default defineAgent({
     } else {
       openingText = controller.opening();
     }
+    announceQuestionPanel();
 
     session = new voice.AgentSession({
       vad: ctx.proc.userData.vad,
@@ -179,6 +200,24 @@ export default defineAgent({
       if (finished) return;
       logger.error({ reason: ev?.reason, error: ev?.error }, 'session closed unexpectedly');
       finish('error');
+    });
+
+    // The candidate's code panel reports a result (submit passed/failed some
+    // tests, or "move on without solving") over the data channel. Only acted
+    // on while the current question is actually the one it's about — a late
+    // message for a question already left behind is ignored.
+    ctx.room.on(RoomEvent.DataReceived, (payload, participant) => {
+      if (participant?.identity !== studentId) return;
+      let msg;
+      try {
+        msg = JSON.parse(new TextDecoder().decode(payload));
+      } catch {
+        return;
+      }
+      if (msg?.type !== 'code_result') return;
+      const q = controller.current;
+      if (!q || q.qid !== msg.qid || !CODE_TYPES.has(q.ref?.type)) return;
+      step(() => controller.onCodingResult({ passed: Number(msg.passed) || 0, total: Number(msg.total) || 0, skipped: !!msg.skipped }));
     });
 
     ctx.room.on(RoomEvent.ParticipantDisconnected, participant => {

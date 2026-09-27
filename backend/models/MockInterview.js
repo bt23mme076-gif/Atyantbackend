@@ -51,10 +51,12 @@ const plannedQuestionSchema = new Schema({
   order: { type: Number, required: true },
   phase: { type: String, enum: ['intro', 'resume', 'technical', 'behavioral', 'closing'], required: true },
 
-  // Set by planValidator from ref.type, never taken from LLM output.
-  source: { type: String, enum: ['bank', 'resume', 'jd', 'core'], required: true },
+  // Set by planValidator from ref.type, never taken from LLM output. 'coding'
+  // and 'sql_exercise' are injected in code from a curated bank (PlannerService),
+  // never produced by the planner LLM.
+  source: { type: String, enum: ['bank', 'resume', 'jd', 'core', 'coding', 'sql_exercise'], required: true },
   ref   : {
-    type: { type: String, enum: ['bank', 'claim', 'jd_skill', 'core'], required: true },
+    type: { type: String, enum: ['bank', 'claim', 'jd_skill', 'core', 'coding', 'sql_exercise'], required: true },
     id  : { type: String, required: true }
   },
   bankEntryId      : { type: Schema.Types.ObjectId, ref: 'InterviewBankEntry', default: null },

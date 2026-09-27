@@ -13,6 +13,10 @@ import {
 } from '../services/mockInterview/MockPaymentService.js';
 import { prepareInterview, planInterview } from '../services/mockInterview/PlannerService.js';
 import { pdfToText, fetchProfileResumeText, normalizeDocText } from '../services/mockInterview/documentText.js';
+import { getCodingProblem } from '../config/codingProblems.js';
+import { getSqlProblem } from '../config/sqlProblems.js';
+import { runTestCases, SUPPORTED_LANGUAGES } from '../services/mockInterview/pistonClient.js';
+import { gradeSqlSubmission } from '../services/mockInterview/sqlJudge.js';
 
 const router = express.Router();
 
@@ -207,6 +211,116 @@ router.post('/:id/retake', protect, async (req, res) => {
   } catch (err) {
     console.error('Mock interview retake error:', err);
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── Live coding / SQL exercise ──────────────────────────────────────────────
+// A "tech"/"analytics" category interview gets one question pulled from a
+// curated problem bank (see PlannerService), rather than an LLM-invented
+// coding question. These endpoints serve that problem's public data (never
+// hidden tests or the reference query) and grade submissions server-side so
+// the "did they pass" signal that unblocks the interview can't be spoofed
+// from the client.
+
+async function ownedLiveInterview(req, res) {
+  const interview = await MockInterview.findById(req.params.id).select('userId status').lean();
+  if (!interview || interview.userId.toString() !== req.user.userId) {
+    res.status(404).json({ ok: false, error: 'Interview not found' });
+    return null;
+  }
+  if (!['ready', 'live'].includes(interview.status)) {
+    res.status(409).json({ ok: false, error: 'This interview is not in progress.' });
+    return null;
+  }
+  return interview;
+}
+
+// GET /api/mock-interviews/:id/code-problems/:problemId
+router.get('/:id/code-problems/:problemId', protect, async (req, res) => {
+  if (!(await ownedLiveInterview(req, res))) return;
+  const problem = getCodingProblem(req.params.problemId);
+  if (!problem) return res.status(404).json({ ok: false, error: 'Problem not found' });
+  res.json({
+    ok: true,
+    problem: {
+      id: problem.id, title: problem.title, prompt: problem.prompt, difficulty: problem.difficulty,
+      starter: problem.starter, languages: Object.keys(SUPPORTED_LANGUAGES),
+      sampleTests: problem.tests.filter(t => !t.hidden).map(t => ({ input: t.input, expected: t.expected }))
+    }
+  });
+});
+
+// GET /api/mock-interviews/:id/sql-problems/:problemId
+router.get('/:id/sql-problems/:problemId', protect, async (req, res) => {
+  if (!(await ownedLiveInterview(req, res))) return;
+  const problem = getSqlProblem(req.params.problemId);
+  if (!problem) return res.status(404).json({ ok: false, error: 'Problem not found' });
+  res.json({ ok: true, problem: { id: problem.id, title: problem.title, prompt: problem.prompt, schema: problem.schema } });
+});
+
+// POST /api/mock-interviews/:id/code-problems/:problemId/run   { language, source }
+// Runs against sample tests only, with full stdout/stderr for self-debugging.
+router.post('/:id/code-problems/:problemId/run', protect, async (req, res) => {
+  try {
+    if (!(await ownedLiveInterview(req, res))) return;
+    const problem = getCodingProblem(req.params.problemId);
+    if (!problem) return res.status(404).json({ ok: false, error: 'Problem not found' });
+    const { language, source } = req.body;
+    if (!SUPPORTED_LANGUAGES[language]) return res.status(400).json({ ok: false, error: 'Unsupported language' });
+    if (!source?.trim()) return res.status(400).json({ ok: false, error: 'Write some code first' });
+
+    const sampleTests = problem.tests.filter(t => !t.hidden);
+    const results = await runTestCases({ language, source, tests: sampleTests });
+    res.json({ ok: true, results });
+  } catch (err) {
+    console.error('Code run error:', err);
+    res.status(500).json({ ok: false, error: 'Could not run your code right now. Try again.' });
+  }
+});
+
+// POST /api/mock-interviews/:id/code-problems/:problemId/submit   { language, source }
+// Runs against every test, including hidden ones, but only reports pass/fail
+// counts for hidden tests (not their expected output) so it can't be gamed.
+router.post('/:id/code-problems/:problemId/submit', protect, async (req, res) => {
+  try {
+    if (!(await ownedLiveInterview(req, res))) return;
+    const problem = getCodingProblem(req.params.problemId);
+    if (!problem) return res.status(404).json({ ok: false, error: 'Problem not found' });
+    const { language, source } = req.body;
+    if (!SUPPORTED_LANGUAGES[language]) return res.status(400).json({ ok: false, error: 'Unsupported language' });
+    if (!source?.trim()) return res.status(400).json({ ok: false, error: 'Write some code first' });
+
+    const results = await runTestCases({ language, source, tests: problem.tests });
+    const passed = results.filter(r => r.passed).length;
+    res.json({
+      ok: true,
+      passed,
+      total: results.length,
+      allPassed: passed === results.length,
+      results: results.map(r => (r.hidden ? { hidden: true, passed: r.passed } : r))
+    });
+  } catch (err) {
+    console.error('Code submit error:', err);
+    res.status(500).json({ ok: false, error: 'Could not grade your code right now. Try again.' });
+  }
+});
+
+// POST /api/mock-interviews/:id/sql-problems/:problemId/submit   { query }
+router.post('/:id/sql-problems/:problemId/submit', protect, async (req, res) => {
+  try {
+    if (!(await ownedLiveInterview(req, res))) return;
+    const problem = getSqlProblem(req.params.problemId);
+    if (!problem) return res.status(404).json({ ok: false, error: 'Problem not found' });
+    const query = String(req.body.query || '');
+    if (!query.trim()) return res.status(400).json({ ok: false, error: 'Write a query first' });
+
+    const grade = gradeSqlSubmission({
+      schema: problem.schema, checkQuery: problem.checkQuery, candidateQuery: query, orderMatters: !!problem.orderMatters
+    });
+    res.json({ ok: true, ...grade });
+  } catch (err) {
+    console.error('SQL submit error:', err);
+    res.status(500).json({ ok: false, error: 'Could not grade your query right now. Try again.' });
   }
 });
 
