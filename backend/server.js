@@ -59,6 +59,7 @@ import tpoRoutes from './routes/tpoRoutes.js';
 import jobRoutes from './routes/jobRoutes.js';
 import mockInterviewRoutes from './routes/mockInterviewRoutes.js';
 import emailRoutes from './routes/emailRoutes.js';
+import reviewRoutes from './routes/reviewRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message from './models/Message.js';
@@ -275,6 +276,7 @@ app.use('/api/tpo', tpoRoutes);           // TPO dashboard — VNIT T&P cell
 app.use('/api/jobs', jobRoutes);          // job aggregation — Greenhouse/Lever adapters
 app.use('/api/mock-interviews', mockInterviewRoutes); // AI mock interview: join + agent dispatch
 app.use('/api/email', emailRoutes);        // lifecycle email: page-view beacon + unsubscribe
+app.use('/api/reviews', reviewRoutes);    // ratings: platform feedback + mock interview / session reviews
 app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────

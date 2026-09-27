@@ -7,6 +7,7 @@ import protect from '../middleware/authMiddleware.js';
 import { optionalAuth } from '../middleware/auth.js';
 import { localizeMeetLink } from '../utils/frontendUrl.js';
 import sessionPipelineService from '../services/SessionPipelineService.js';
+import { applySessionReview } from '../services/reviewService.js';
 
 const router = express.Router();
 
@@ -296,23 +297,7 @@ router.post('/:id/review', protect, async (req, res) => {
     if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
     if (session.review?.submittedAt) return res.status(409).json({ ok: false, error: 'Already reviewed' });
 
-    session.review = {
-      rating:      numRating,
-      comment:     (req.body.comment || '').trim().slice(0, 300),
-      submittedAt: new Date(),
-    };
-    await session.save();
-
-    if (session.mentorId) {
-      const mentor = await User.findById(session.mentorId);
-      if (mentor) {
-        const prev = mentor.feedbackCount || 0;
-        mentor.rating = ((mentor.rating || 0) * prev + numRating) / (prev + 1);
-        mentor.feedbackCount = prev + 1;
-        mentor.successfulMatches = (mentor.successfulMatches || 0) + 1;
-        await mentor.save();
-      }
-    }
+    await applySessionReview(session, numRating, req.body.comment);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });

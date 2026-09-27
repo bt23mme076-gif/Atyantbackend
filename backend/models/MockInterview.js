@@ -80,6 +80,7 @@ const turnSchema = new Schema({
   qid       : { type: String, required: true },
   kind      : { type: String, enum: ['planned', 'follow_up'], required: true },
   trigger   : { type: String, enum: ['shallow', 'wrong', 'strongDeeper', null], default: null },
+  capture   : { type: String, enum: ['captured', 'uncertain', 'not_heard'], default: 'captured' },
   text      : { type: String, required: true },
   answer    : { type: String, default: '' },
   verdict   : { type: String, enum: ['strong', 'shallow', 'wrong', 'skip', null], default: null },

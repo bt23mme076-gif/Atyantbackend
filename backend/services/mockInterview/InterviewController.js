@@ -15,11 +15,11 @@ const TRIGGER_BY_VERDICT = { strong: 'strongDeeper', shallow: 'shallow', wrong: 
 // Only used when the judge gives no reaction of its own.
 const ACKS      = ['Okay.', 'Right.', 'Mm-hm.', 'I see.', 'Okay, noted.'];
 const SKIP_ACKS = ['No worries.', 'Fair enough.', "That's fine."];
-const CONTINUES = ['Mm-hm, go on.', 'Take your time.', 'Okay, go ahead.'];
+const CONTINUES = ['Mm-hm, go on.', 'Take your time.', 'Okay, go ahead.', 'Sure, I\'m listening.', 'Go ahead, no rush.'];
 
 // An answer that trails off ("It is a...", "so the first thing is") is a
 // thinking pause, not the end. A person would just nod and wait.
-const DANGLING = /(\.\.\.|…|\b(a|an|the|and|so|but|or|is|are|was|to|of|with|for|in|on|that|because|like|um+|uh+|actually|basically),?)$/i;
+const DANGLING = /(\.\.\.|…|\b(a|an|the|and|so|but|or|is|are|was|to|of|with|for|in|on|that|because|since|although|however|like|um+|uh+|actually|basically|essentially|so\s+basically|i\s+think),?)$/i;
 const looksUnfinished = text => DANGLING.test(String(text || '').trim());
 
 const TRANSITIONS = {
@@ -30,8 +30,8 @@ const TRANSITIONS = {
 };
 
 const MAX_CLARIFY     = 2;
-const MAX_CONTINUE    = 2;
-const MAX_NOT_HEARD   = 2;
+const MAX_CONTINUE    = 3;
+const MAX_NOT_HEARD   = 3;
 const WRAP_UP_MS      = 3 * 60 * 1000;
 const MIN_PER_QUESTION_MS = 90 * 1000;
 // How far the interviewer may dig into one topic. A real interview goes deep on
@@ -129,7 +129,7 @@ export class InterviewController {
     // Noise transcribed as "thank you": say nothing and keep listening.
     if (isPhantom(clean)) return { say: null, end: false, turn: null };
 
-    if (clean.split(/\s+/).filter(Boolean).length < 2 && !/\b(no|skip|pass)\b/i.test(clean)) {
+    if (clean.split(/\s+/).filter(Boolean).length < 2 && !/\b(no|yes|nope|yep|skip|pass|never|agree|done|correct|right|sure|okay|fine)\b/i.test(clean)) {
       if (this.asking.notHeard++ < MAX_NOT_HEARD) {
         return { say: "Sorry, I didn't catch that. Could you say that again?", end: false, turn: null };
       }
@@ -173,7 +173,7 @@ export class InterviewController {
         const say = d.reaction ? `${d.reaction} Could you say it again?` : NOT_HEARD[this.continueCount++ % NOT_HEARD.length];
         return { say, end: false, turn: null };
       }
-      return this.#respond({ verdict: 'skip' });
+      return this.#respond({ verdict: 'skip' }, null, 'uncertain');
     }
     return this.#respond(d);
   }
@@ -274,11 +274,12 @@ export class InterviewController {
     }
   }
 
-  #record(verdict) {
+  #record(verdict, capture = 'captured') {
     return {
       qid       : this.current.qid,
       kind      : this.asking.kind,
       trigger   : this.asking.trigger,
+      capture,
       text      : this.asking.text,
       answer    : this.asking.parts.join(' '),
       verdict   : ['strong', 'shallow', 'wrong', 'skip'].includes(verdict) ? verdict : null,
@@ -323,9 +324,9 @@ export class InterviewController {
   }
 
   // The answer is done: follow up on it, or move to the next planned question.
-  #respond(d, leadIn = null) {
+  #respond(d, leadIn = null, capture = 'captured') {
     const verdict = d?.verdict ?? null;
-    const turn = this.#record(verdict);
+    const turn = this.#record(verdict, capture);
     const q = this.current;
     // The same "Got it." twice in a row sounds canned; asking straight away doesn't.
     const reaction = d?.reaction && !this.recentReactions.slice(-3).some(r => r.toLowerCase() === d.reaction.toLowerCase()) ? d.reaction : '';

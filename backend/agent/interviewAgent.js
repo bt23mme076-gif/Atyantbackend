@@ -22,14 +22,18 @@ import {
 import { MOCK_AGENT_NAME, INTERVIEW_DURATION_MS } from '../services/mockInterview/liveConfig.js';
 import { createGroqSTT, createInterviewTTS } from './groqAudio.js';
 
-const SILENCE_MS      = 20 * 1000;       // no speech after the interviewer finishes
+const SILENCE_MS      = 30 * 1000;       // no speech after the interviewer finishes
 const REJOIN_GRACE_MS  = 3 * 60 * 1000;   // student dropped: wait this long before ending
 const TIME_UP_GRACE_MS = 2 * 60 * 1000;   // hard stop after the planned duration
 
-// End of answer = VAD silence + endpointing delay (~1.3 s). Shorter cut
-// students off mid-thought; trailing-off answers get a "go on" in the controller.
-const VAD_MIN_SILENCE_MS = 500;
-const ENDPOINTING = { minDelay: 800, maxDelay: 3000 };
+// End of answer = VAD silence + endpointing delay. Candidates pause while thinking
+// — a real interviewer waits. These defaults are intentionally generous; cut them
+// only if the interview feels sluggish. MOCK_* env vars override all three.
+const VAD_MIN_SILENCE_MS = Number(process.env.MOCK_VAD_MIN_SILENCE_MS) || 1400;
+const ENDPOINTING = {
+  minDelay: Number(process.env.MOCK_ENDPOINT_MIN_DELAY_MS) || 2200,
+  maxDelay: Number(process.env.MOCK_ENDPOINT_MAX_DELAY_MS) || 7000
+};
 
 class InterviewerAgent extends voice.Agent {
   constructor({ openingText, onAnswer }) {

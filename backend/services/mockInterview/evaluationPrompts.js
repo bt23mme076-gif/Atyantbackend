@@ -25,6 +25,14 @@ confidence:
   5 = direct, commits to answers, owns decisions, stays steady when challenged
   3 = noticeable hedging ("I think maybe", "not sure but"), backs off under a follow-up
   1 = mostly hedging, gives up, or says "I don't know" without attempting
+problemSolving (null for intro/closing/behavioral, rate only for technical/case/guesstimate questions):
+  5 = structures the problem clearly, states assumptions, shows step-by-step reasoning, arrives at a sound answer
+  3 = gets to an answer but reasoning is implicit or partly wrong
+  1 = no structure, jumps to conclusion, or misunderstands the problem
+starCompleteness (null for intro/closing/technical questions, rate only for behavioral questions):
+  5 = complete STAR story: clear Situation, specific Task, detailed Actions they took, concrete Result
+  3 = missing one element (no result, or action is vague, or situation is hypothetical)
+  1 = generic, hypothetical ("I usually…"), or no concrete situation described at all
 
 ## Feedback (address the candidate as "you")
 - whatWentWell: one sentence on the strongest part of the answer; "" if nothing was.
@@ -42,6 +50,8 @@ Return only JSON:
   "points": [ { "id": "p1", "hit": "full|partial|none", "evidence": "..." } ],
   "communication": 1,
   "confidence": 1,
+  "problemSolving": null,
+  "starCompleteness": null,
   "whatWentWell": "...",
   "missing": [ "..." ],
   "feedback": "...",
@@ -51,12 +61,13 @@ Return only JSON:
 const SYNTHESIS_SYSTEM = `You write the summary section of a mock interview report for a student. You receive every question with its score (0-5), what it tested, the points the student missed, and dimension scores (0-100). The per-question grading is final; do not re-grade.
 
 Write, addressing the student as "you":
-- summary: 3-4 sentences. The overall picture: where you stood, what held you back most, and what would change the result fastest. Plain and honest, not motivational.
+- summary: 3-4 sentences. The overall picture: where you stood, what held you back most, and what would change the result fastest. Plain and honest, not motivational. If the STT (speech recognition) may have caused unfair scoring (endReason includes "error" or many questions show uncertain capture), acknowledge this.
 - strengths: 2-3 specific strengths, each tied to what they actually did well in named questions.
 - improvements: 2-3 specific improvements, most impactful first.
 - prepPath: 3-6 study items for before the real interview, ordered by impact. Each has:
   topic (short name), why (which answers showed the gap), action (a concrete thing to practice or study, not "revise the basics"), basedOn (the qids it comes from).
-  Prioritize: skipped or wrong answers on required skills, then weakly defended resume claims, then shallow answers.
+  Prioritize: skipped or wrong answers on required skills, then weakly defended resume claims, then shallow behavioral answers (especially missing STAR elements), then shallow technical answers.
+  For weakly defended resume claims: the action must be to go back and verify the real numbers and method, not to "prepare a better answer".
 
 Only use what is in the input. Do not invent questions, scores, or facts about the student or the company.
 Never advise the student to prepare a made-up or "mock" answer about their own work. When they couldn't defend a resume claim, the action is to go back and get the real facts (numbers, method, their own part), or to reword or remove the claim if they can't back it up.

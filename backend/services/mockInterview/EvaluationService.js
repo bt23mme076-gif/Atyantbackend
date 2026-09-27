@@ -69,13 +69,15 @@ function normalizeRun(raw, question, answerText, qid, log) {
   const rating = r => (Number.isFinite(r) ? Math.min(5, Math.max(1, Math.round(r))) : null);
   return {
     points,
-    score        : scoreFromPoints(question.expectedPoints, points),
-    communication: rating(raw?.communication),
-    confidence   : rating(raw?.confidence),
-    whatWentWell : clean(raw?.whatWentWell),
-    missing      : Array.isArray(raw?.missing) ? raw.missing.map(clean).filter(Boolean) : [],
-    feedback     : clean(raw?.feedback),
-    sampleAnswer : clean(raw?.sampleAnswer)
+    score          : scoreFromPoints(question.expectedPoints, points),
+    communication  : rating(raw?.communication),
+    confidence     : rating(raw?.confidence),
+    problemSolving : rating(raw?.problemSolving),
+    starCompleteness: rating(raw?.starCompleteness),
+    whatWentWell   : clean(raw?.whatWentWell),
+    missing        : Array.isArray(raw?.missing) ? raw.missing.map(clean).filter(Boolean) : [],
+    feedback       : clean(raw?.feedback),
+    sampleAnswer   : clean(raw?.sampleAnswer)
   };
 }
 
@@ -116,6 +118,23 @@ async function repairSampleAnswer(sampleAnswer, knownText, qid, log) {
 }
 
 async function evaluateQuestion(question, turns, { seniority, claim, log }) {
+  const uncertain = turns.length > 0 && turns.every(t => t.capture === 'uncertain' || t.capture === 'not_heard');
+  if (uncertain) {
+    log.push(`${question.qid}: answer capture was uncertain; excluded from scoring`);
+    return {
+      qid          : question.qid,
+      reached      : false,
+      pointsHit    : question.expectedPoints.map(p => ({ pointId: p.id, hit: 'none', evidence: '' })),
+      runScores    : [],
+      score        : null,
+      communication: null,
+      confidence   : null,
+      whatWentWell : '',
+      missing      : [],
+      feedback     : 'Your answer may not have been captured accurately, so it was excluded from your score.',
+      sampleAnswer : ''
+    };
+  }
   const exchange = turns.map(t => ({
     interviewer: t.text,
     candidate  : t.answer?.trim() || '(no answer)',
@@ -151,16 +170,18 @@ async function evaluateQuestion(question, turns, { seniority, claim, log }) {
     : chosen.sampleAnswer;
 
   return {
-    qid          : question.qid,
-    reached      : true,
-    pointsHit    : chosen.points,
-    runScores    : runs.map(r => r.score),
-    score        : chosen.score,
-    communication: ratings('communication'),
-    confidence   : ratings('confidence'),
-    whatWentWell : chosen.whatWentWell,
-    missing      : chosen.missing,
-    feedback     : chosen.feedback,
+    qid             : question.qid,
+    reached         : true,
+    pointsHit       : chosen.points,
+    runScores       : runs.map(r => r.score),
+    score           : chosen.score,
+    communication   : ratings('communication'),
+    confidence      : ratings('confidence'),
+    problemSolving  : ratings('problemSolving'),
+    starCompleteness: ratings('starCompleteness'),
+    whatWentWell    : chosen.whatWentWell,
+    missing         : chosen.missing,
+    feedback        : chosen.feedback,
     sampleAnswer
   };
 }
@@ -177,13 +198,18 @@ export function computeDimensions(questions, perAnswer) {
     .filter(x => x.weight > 0);
   const weightSum = weighted.reduce((s, x) => s + x.weight, 0);
 
+  const problemSolvingScores = reached.map(a => a.problemSolving).filter(v => v != null);
+  const starScores = reached.map(a => a.starCompleteness).filter(v => v != null);
+
   return {
     dimensions: {
       technicalDepth   : pct(phaseMean('technical')),
       resumeCredibility: pct(phaseMean('resume')),
       behavioral       : pct(phaseMean('behavioral')),
       communication    : ratingPct(mean(reached.map(a => a.communication).filter(v => v != null))),
-      confidence       : ratingPct(mean(reached.map(a => a.confidence).filter(v => v != null)))
+      confidence       : ratingPct(mean(reached.map(a => a.confidence).filter(v => v != null))),
+      problemSolving   : problemSolvingScores.length ? ratingPct(mean(problemSolvingScores)) : null,
+      starCompleteness : starScores.length ? ratingPct(mean(starScores)) : null
     },
     overall: weightSum ? pct(weighted.reduce((s, x) => s + x.score * x.weight, 0) / weightSum) : null
   };

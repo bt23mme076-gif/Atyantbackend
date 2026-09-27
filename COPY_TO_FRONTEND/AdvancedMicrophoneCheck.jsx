@@ -161,22 +161,23 @@ export default function AdvancedMicrophoneCheck({ room, localParticipant }) {
       setupAudioAnalysis();
     }, 3000);
 
+    const handleTrackPublished = () => {
+      lastUnmuteTimeRef.current = Date.now();
+      setupAudioAnalysis();
+    };
+    const handleTrackUnpublished = () => setupAudioAnalysis();
+    const handleTrackMuted = () => setupAudioAnalysis();
+    const handleTrackUnmuted = () => {
+      lastUnmuteTimeRef.current = Date.now();
+      setupAudioAnalysis();
+    };
+
     // Re-check when track changes
     if (localParticipant.on) {
-      localParticipant.on('trackPublished', () => {
-        lastUnmuteTimeRef.current = Date.now();
-        setupAudioAnalysis();
-      });
-      localParticipant.on('trackUnpublished', () => {
-        setupAudioAnalysis();
-      });
-      localParticipant.on('trackMuted', () => {
-        setupAudioAnalysis();
-      });
-      localParticipant.on('trackUnmuted', () => {
-        lastUnmuteTimeRef.current = Date.now();
-        setupAudioAnalysis();
-      });
+      localParticipant.on('trackPublished', handleTrackPublished);
+      localParticipant.on('trackUnpublished', handleTrackUnpublished);
+      localParticipant.on('trackMuted', handleTrackMuted);
+      localParticipant.on('trackUnmuted', handleTrackUnmuted);
     }
 
     return () => {
@@ -193,10 +194,10 @@ export default function AdvancedMicrophoneCheck({ room, localParticipant }) {
       }
       
       if (localParticipant.off) {
-        localParticipant.off('trackPublished', setupAudioAnalysis);
-        localParticipant.off('trackUnpublished', setupAudioAnalysis);
-        localParticipant.off('trackMuted', setupAudioAnalysis);
-        localParticipant.off('trackUnmuted', setupAudioAnalysis);
+        localParticipant.off('trackPublished', handleTrackPublished);
+        localParticipant.off('trackUnpublished', handleTrackUnpublished);
+        localParticipant.off('trackMuted', handleTrackMuted);
+        localParticipant.off('trackUnmuted', handleTrackUnmuted);
       }
     };
   }, [room, localParticipant]);
@@ -225,7 +226,7 @@ export default function AdvancedMicrophoneCheck({ room, localParticipant }) {
           </div>
           <button 
             className="fix-button"
-            onClick={() => {
+            onClick={async () => {
               let msg;
               if (micStatus === 'muted') {
                 msg = '🎤 To enable your microphone:\n\n' +
@@ -233,11 +234,15 @@ export default function AdvancedMicrophoneCheck({ room, localParticipant }) {
                       '2. Make sure it\'s NOT red/crossed out\n' +
                       '3. Speak and check if audio bars move';
               } else if (micStatus === 'blocked') {
-                msg = '🔒 To fix permissions:\n\n' +
-                      '1. Click the lock icon (🔒) in address bar\n' +
-                      '2. Find "Microphone" → Change to "Allow"\n' +
-                      '3. Refresh this page\n' +
-                      '4. Allow when browser asks';
+                try {
+                  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                  stream.getTracks().forEach(track => track.stop());
+                  setShowWarning(false);
+                  setMicStatus('listening');
+                  return;
+                } catch {
+                  msg = 'Allow microphone access in your browser settings, then try again.';
+                }
               } else {
                 msg = '🔇 Your mic is on but silent:\n\n' +
                       '1. Check if correct mic is selected\n' +

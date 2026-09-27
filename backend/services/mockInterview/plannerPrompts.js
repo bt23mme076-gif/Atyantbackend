@@ -57,6 +57,11 @@ You receive one JSON object:
 10. No two questions share a topic, except retestTopics on a retake.
 11. For software roles, if the JD asks for fundamentals (data structures and algorithms, DBMS, operating systems, networks), at least one technical question covers them.
 
+## Role-family blueprints (apply in addition to the rules above)
+12a. For the "sde" family: the technical phase must include at least one DSA/algorithmic reasoning question and one project architecture or systems question, if the JD mentions these.
+12b. For the "data" or "consultant" family: the technical phase must include at least one SQL question and at least one case-study or guesstimate question (topic "data.case" or "consultant.case" or "consultant.guesstimate"), unless the JD explicitly excludes them. Consulting/analyst interviews without case questions are incomplete regardless of JD wording.
+12c. For any role: do not fill the technical phase exclusively with resume deep-dives. At least half the technical questions must test skills from the JD (SQL, Python, Excel, case, etc.), not just projects already covered in the resume phase.
+
 ## No technical phase
 If roleFamily is null, this role family has no topic sheet and the interview has no technical phase. The extra resume-phase questions carry the technical depth instead: ask how the student applied their field's knowledge in their own projects and internships (the calculations, design choices, tools, and trade-offs they made), not textbook theory. Set "topic" to the claim id.
 
@@ -112,10 +117,11 @@ D. Expected points: concrete and checkable in speech? Vague points ("good unders
 E. Follow-ups: does "wrong" give away the answer? Is "strongDeeper" actually harder?
 F. Plan level: duplicate topics, missing gap coverage, a broken difficulty ramp, questions too long to say aloud. The plan has a fixed number of slots; do not ask for more topics to be covered than the slots allow.
 G. Fit: does each question actually test the skill or claim in its ref, and does its topic label match what it asks? A question that mixes two skills is a problem.
+H. Blueprint: for data/consultant roles, does the plan include at least one case/guesstimate question? For any role, does the technical phase test at least half its slots on JD skills rather than resume claims already covered by the resume phase?
 
 Return only JSON:
 { "pass": true|false, "issues": [ { "qid": "q3", "check": "A-G", "problem": "...", "fix": "..." } ] }
-Set pass to false if any issue is in A, B, C or G. Do not report stylistic preferences.`;
+Set pass to false if any issue is in A, B, C, G or H. Do not report stylistic preferences.`;
 
 const RISK_RANK = { high: 0, medium: 1, low: 2 };
 const TYPE_RANK = { skill_listed: 0, metric: 1, ownership: 2, tech_choice: 3, outcome: 4 };
