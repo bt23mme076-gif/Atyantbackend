@@ -299,23 +299,39 @@ export function injectCodingExercise(questions, { interviewCategory, seniority, 
   const technicalIdx = [...questions.keys()].filter(i => questions[i].phase === 'technical');
   if (!technicalIdx.length) return questions;
   const difficulty = SENIORITY_DIFFICULTY[seniority] ?? 2;
-  const out = [...questions];
+  let out = [...questions];
+  let injectedQid = null;
 
   if (wantsCoding && !out.some(q => q.ref?.type === 'coding')) {
     const problem = pickCodingProblem({ difficulty, excludeIds: excludeIds.coding });
     if (problem) {
-      const slotIdx = technicalIdx[technicalIdx.length - 1];
+      const slotIdx = technicalIdx[0];
       out[slotIdx] = toInjectedQuestion(out[slotIdx], { type: 'coding', problem });
+      injectedQid = out[slotIdx].qid;
     }
   }
   if (wantsSql && !out.some(q => q.ref?.type === 'sql_exercise')) {
     const problem = pickSqlProblem({ difficulty, excludeIds: excludeIds.sql });
     if (problem) {
-      const slotIdx = technicalIdx[technicalIdx.length - 1];
+      const slotIdx = technicalIdx[0];
       out[slotIdx] = toInjectedQuestion(out[slotIdx], { type: 'sql_exercise', problem });
+      injectedQid = out[slotIdx].qid;
     }
   }
+  // A "tech"/"analytics" candidate expects the coding challenge to show up
+  // early, not after a full resume deep-dive — move it to right after intro
+  // (before the resume phase) instead of leaving it at the end of technical.
+  if (injectedQid) out = moveRightAfterIntro(out, injectedQid);
   return out;
+}
+
+function moveRightAfterIntro(questions, qid) {
+  const idx = questions.findIndex(q => q.qid === qid);
+  if (idx === -1) return questions;
+  const [moved] = questions.splice(idx, 1);
+  const introEnd = questions.reduce((last, q, i) => (q.phase === 'intro' ? i + 1 : last), 0);
+  questions.splice(introEnd, 0, moved);
+  return questions.map((q, i) => ({ ...q, order: i + 1 }));
 }
 
 export async function planInterview(interviewId) {
