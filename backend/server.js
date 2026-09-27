@@ -58,6 +58,7 @@ import livekitRoutes from './routes/livekitRoutes.js';
 import tpoRoutes from './routes/tpoRoutes.js';
 import jobRoutes from './routes/jobRoutes.js';
 import mockInterviewRoutes from './routes/mockInterviewRoutes.js';
+import emailRoutes from './routes/emailRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message from './models/Message.js';
@@ -71,6 +72,7 @@ import MockEvaluationCron from './services/mockInterview/EvaluationCron.js';
 import StalePendingCron from './services/StalePendingCron.js';
 import JobSyncCron from './services/JobSyncCron.js';
 import AutoApplyCron from './services/AutoApplyCron.js';
+import EmailPipeline from './services/email/EmailPipeline.js';
 
 // ─── Passport Configuration ────────────────────────────────────────────────
 import './config/passport.js';
@@ -219,6 +221,7 @@ mongoose.connect(MONGO_URI, {
     StalePendingCron.start();
     JobSyncCron.start();
     AutoApplyCron.start();
+    EmailPipeline.start();
   })
   .catch(err => {
     console.error('❌ MongoDB connection error:', err.message);
@@ -271,6 +274,7 @@ app.use('/api/livekit', livekitRoutes);   // in-house meet: join token + webhook
 app.use('/api/tpo', tpoRoutes);           // TPO dashboard — VNIT T&P cell
 app.use('/api/jobs', jobRoutes);          // job aggregation — Greenhouse/Lever adapters
 app.use('/api/mock-interviews', mockInterviewRoutes); // AI mock interview: join + agent dispatch
+app.use('/api/email', emailRoutes);        // lifecycle email: page-view beacon + unsubscribe
 app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────

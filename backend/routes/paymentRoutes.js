@@ -10,8 +10,19 @@ import { sendServicePurchaseNotification } from '../utils/emailNotifications.js'
 import { getService } from '../config/serviceCatalog.js';
 import { meetLinkFor } from '../utils/frontendUrl.js';
 import { confirmFromWebhook as confirmMockReportFromWebhook } from '../services/mockInterview/MockPaymentService.js';
+import { trackEvent } from '../services/email/EmailPipeline.js';
 
 const router = express.Router();
+
+// Post-purchase lifecycle emails (feedback + cross-sell), timed from the session end.
+// refId makes verify + webhook both calling this safe.
+const trackSessionPurchase = (session, mentor) => trackEvent(session.userId, 'purchase', {
+  kind: 'session',
+  refId: String(session._id),
+  scheduledAt: session.scheduledAt,
+  durationMin: session.durationMin,
+  mentorName: mentor?.name || mentor?.username || session.mentorName,
+});
 
 const RZP_KEY_ID = process.env.RAZORPAY_KEY_ID;
 const RZP_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
@@ -304,6 +315,7 @@ router.post('/verify', protect, async (req, res) => {
         topic: session.topic,
       }
     ).catch(err => console.error('Failed to send service purchase notification:', err));
+    trackSessionPurchase(session, mentor);
 
     res.json({ ok: true, session });
   } catch (err) {
@@ -364,6 +376,7 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
             topic: session.topic,
           }
         ).catch(err => console.error('Failed to send service purchase notification via webhook:', err));
+        trackSessionPurchase(session, mentor);
 
         console.log(`✅ Webhook confirmed session ${session._id}`);
       }

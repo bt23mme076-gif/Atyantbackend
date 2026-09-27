@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import Razorpay from 'razorpay';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
+import { trackEvent } from '../services/email/EmailPipeline.js';
 
 const router = express.Router();
 
@@ -149,8 +150,9 @@ router.post('/verify', protect, async (req, res) => {
     user.subscriptionExpiry = expiry;
     user.razorpaySubscriptionId = razorpay_order_id;
     user.subscriptionCredits = (user.subscriptionCredits || 0) + credits;
-    
+
     await user.save();
+    trackEvent(user._id, 'purchase', { kind: 'subscription', plan, refId: razorpay_order_id });
 
     res.json({
       ok: true,

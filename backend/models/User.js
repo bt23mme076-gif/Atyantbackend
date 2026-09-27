@@ -676,6 +676,12 @@ const userSchema = new mongoose.Schema({
 
   lastLogin: { type: Date, default: null },
 
+  // Lifecycle/marketing email opt-out. Transactional mail (OTP, receipts) ignores this.
+  emailPrefs: {
+    marketing: { type: Boolean, default: true },
+    unsubscribedAt: { type: Date, default: null },
+  },
+
 }, {
   timestamps: true
 });

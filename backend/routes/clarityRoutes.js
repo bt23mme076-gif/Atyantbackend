@@ -4,6 +4,13 @@ import { optionalAuth } from '../middleware/auth.js';
 import atyantEngine from '../services/AtyantEngine.js';
 import { generateProblemStatement } from '../services/ProblemStatementGenerator.js';
 import { normalizeCollege, buildCollegeRegex, isSameBranch } from '../utils/collegeNormalizer.js';
+import { trackEvent } from '../services/email/EmailPipeline.js';
+
+// Search-intent flow: keep only what the email needs from the matched mentors.
+const trackSearch = (userId, query, mentors = []) => trackEvent(userId, 'search', {
+  query: query.trim().slice(0, 200),
+  mentors: mentors.slice(0, 3).map(m => ({ name: m.name, outcome: m.outcome, matchReason: m.matchReason })),
+});
 
 const router = express.Router();
 
@@ -50,13 +57,14 @@ router.post('/match', optionalAuth, async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Query too short' });
     }
 
+    const userId = req.user?.userId || req.user?._id || null;
+
     const cacheKey = getCacheKey(query, college, branch);
     const cached = clarityCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < CACHE_TTL) {
+      trackSearch(userId, query, cached.payload.mentors);
       return res.json({ ...cached.payload, fromCache: true });
     }
-
-    const userId = req.user?.userId || req.user?._id || null;
     const ctx = { college, branch };
 
     // 1. Build the structured problem statement from conversation context.
@@ -133,6 +141,7 @@ router.post('/match', optionalAuth, async (req, res) => {
       clarityCache.delete(oldest[0]);
     }
 
+    trackSearch(userId, query, mentors);
     res.json(payload);
   } catch (err) {
     console.error('Clarity match error:', err);

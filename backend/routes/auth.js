@@ -507,6 +507,7 @@ import User from '../models/User.js';
 import passport from 'passport';
 import { protect } from '../middleware/authMiddleware.js';
 import { sendUserWelcomeEmail, sendMentorWelcomeEmail, sendPasswordOTPEmail, sendSignupOTPEmail } from '../utils/emailService.js';
+import { trackEvent } from '../services/email/EmailPipeline.js';
 
 
 // Fire-and-forget welcome email — never blocks or breaks signup if email fails.
@@ -514,6 +515,7 @@ const sendWelcomeEmail = (user) => {
   const fn = user.role === 'mentor' ? sendMentorWelcomeEmail : sendUserWelcomeEmail;
   fn(user.email, user.name || user.username)
     .catch(err => console.error('Welcome email failed (non-fatal):', err.message));
+  trackEvent(user._id, 'signup'); // enrolls students in the onboarding drip (mentors are skipped)
 };
 
 // Helper: pick frontend URL based on environment

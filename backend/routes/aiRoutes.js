@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import { createRequire } from 'module';
 import { optionalAuth } from '../middleware/auth.js';
+import { trackEvent } from '../services/email/EmailPipeline.js';
 import { groqChat as sharedGroqChat } from '../utils/groqClient.js';
 import {
   processAtyantMessage,
@@ -144,6 +145,8 @@ router.post('/atyant-chat', optionalAuth, async (req, res) => {
     const userId = req.user?._id?.toString() || null;
     const result = await processAtyantMessage(sessionId, message.trim(), userId, send);
     send({ type: 'done', ok: true, ...result });
+    // Short follow-ups ("yes", "ok thanks") aren't real intent — don't let them overwrite the query.
+    if (message.trim().length >= 20) trackEvent(userId, 'search', { query: message.trim().slice(0, 200) });
   } catch (error) {
     console.error('Atyant Engine error:', error.message);
     const rateLimited = error.message?.includes('429');
