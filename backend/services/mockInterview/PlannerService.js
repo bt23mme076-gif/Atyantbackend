@@ -106,7 +106,11 @@ export async function parseInterview(interviewId) {
     const jd = validateJdParse(jdRaw, { jdText, supportedRoleFamilies: SUPPORTED_ROLE_FAMILIES });
     const jdSkills = [...jd.jd.requiredSkills, ...jd.jd.niceToHave];
     if (!jdSkills.length) {
-      throw new Error(`No skills could be extracted from the JD (model returned ${(jdRaw?.requiredSkills?.length || 0) + (jdRaw?.niceToHave?.length || 0)}; dropped: ${jd.dropped.slice(0, 5).join(' | ') || 'none'})`);
+      // No skills extracted — log it and continue. The planner falls back to a
+      // resume-only interview (same path as "unsupported" role family) rather
+      // than failing the whole interview.
+      log.push(`JD parse: 0 skills extracted (model returned ${(jdRaw?.requiredSkills?.length || 0) + (jdRaw?.niceToHave?.length || 0)}; dropped: ${jd.dropped.slice(0, 5).join(' | ') || 'none'}). Falling back to resume-only interview.`);
+      jd.meta.roleFamily = 'unsupported';
     }
 
     const resumeRaw = await withRateLimitRetry('resume parse', () => groqJSON(
@@ -115,7 +119,10 @@ export async function parseInterview(interviewId) {
     ), log);
     const resume = validateResumeParse(resumeRaw, { resumeText, jdSkills });
     if (resume.resume.claims.length < MIN_CLAIMS) {
-      throw new Error(`Only ${resume.resume.claims.length} checkable claims found in the resume (model returned ${resumeRaw?.claims?.length || 0}; resume ${resumeText.length} chars; dropped: ${resume.dropped.slice(0, 5).join(' | ') || 'none'})`);
+      // Fewer claims than ideal — log and continue rather than failing. The
+      // planner will use whatever claims exist; the interview may be shorter
+      // on the resume phase but will still run.
+      log.push(`Resume parse: only ${resume.resume.claims.length} claim(s) found (model returned ${resumeRaw?.claims?.length || 0}; dropped: ${resume.dropped.slice(0, 5).join(' | ') || 'none'}). Proceeding with available claims.`);
     }
 
     interview.company    = jd.meta.company || interview.company;
