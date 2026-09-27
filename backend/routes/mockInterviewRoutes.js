@@ -244,7 +244,8 @@ router.get('/:id/code-problems/:problemId', protect, async (req, res) => {
   res.json({
     ok: true,
     problem: {
-      id: problem.id, title: problem.title, prompt: problem.prompt, difficulty: problem.difficulty,
+      id: problem.id, title: problem.title, prompt: problem.prompt, ioNote: problem.ioNote, difficulty: problem.difficulty,
+      examples: problem.examples || [], constraints: problem.constraints || [],
       starter: problem.starter, languages: Object.keys(SUPPORTED_LANGUAGES),
       sampleTests: problem.tests.filter(t => !t.hidden).map(t => ({ input: t.input, expected: t.expected }))
     }
