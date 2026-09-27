@@ -122,6 +122,10 @@ const mockInterviewSchema = new Schema({
   seniority : { type: String, enum: ['intern', 'fresher', 'experienced'], default: 'fresher' },
   company   : { type: String, default: '' },
   role      : { type: String, default: '' },
+  // User-picked (or auto-detected) interview focus. Drives mandatory topics in
+  // the planner (e.g. DSA for tech, guesstimate+puzzle for analytics) on top of
+  // whatever roleFamily the JD parser infers.
+  interviewCategory: { type: String, enum: ['tech', 'analytics', 'core', 'business', 'product', 'hr', null], default: null },
 
   inputs: {
     jdText       : { type: String, default: '' },

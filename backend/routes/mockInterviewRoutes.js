@@ -138,10 +138,14 @@ router.post('/', protect, uploadMiddleware, async (req, res) => {
       });
     }
 
+    const CATEGORIES = ['tech', 'analytics', 'core', 'business', 'product', 'hr'];
+    const interviewCategory = CATEGORIES.includes(req.body.interviewCategory) ? req.body.interviewCategory : null;
+
     const interview = await MockInterview.create({
       userId,
       company: String(req.body.company || '').trim().slice(0, 120),
       role   : String(req.body.role || '').trim().slice(0, 120),
+      interviewCategory,
       inputs : {
         jdText,
         jdSource    : jdFile ? 'pdf' : 'text',

@@ -62,6 +62,15 @@ You receive one JSON object:
 12b. For the "data" or "consultant" family: the technical phase must include at least one SQL question and at least one case-study or guesstimate question (topic "data.case" or "consultant.case" or "consultant.guesstimate"), unless the JD explicitly excludes them. Consulting/analyst interviews without case questions are incomplete regardless of JD wording.
 12c. For any role: do not fill the technical phase exclusively with resume deep-dives. At least half the technical questions must test skills from the JD (SQL, Python, Excel, case, etc.), not just projects already covered in the resume phase.
 
+## Interview category (user-picked, overrides nothing but adds hard mandates)
+interview.category, when not null, is the type of interview the candidate asked for. Whenever the technical phase has at least one slot, apply on top of 12a-12c:
+12d. category "tech": at least one DSA/algorithmic reasoning question is mandatory (topic "sde.dsa" or the closest equivalent on the sheet), regardless of company or JD wording.
+12e. category "analytics": at least one SQL question AND at least one guesstimate/estimation question AND at least one analytical puzzle question (topic "data.puzzle" if available, else phrase a puzzle as a case question) are all mandatory, regardless of company or JD wording.
+12f. category "core": prioritize core-domain technical questions (the role family's own topics) over generic SQL/DSA; a guesstimate is welcome but not mandatory.
+12g. category "business" or "product": at least one case-study or guesstimate question is mandatory.
+12h. category "hr": no extra technical mandate; keep the technical phase (if any) light and favor behavioral depth.
+If applying a mandate would need a topic slot that doesn't exist in roleFamily's sheet, phrase the question against the closest jd_skill or core topic instead of skipping the mandate.
+
 ## No technical phase
 If roleFamily is null, this role family has no topic sheet and the interview has no technical phase. The extra resume-phase questions carry the technical depth instead: ask how the student applied their field's knowledge in their own projects and internships (the calculations, design choices, tools, and trade-offs they made), not textbook theory. Set "topic" to the claim id.
 
@@ -117,7 +126,7 @@ D. Expected points: concrete and checkable in speech? Vague points ("good unders
 E. Follow-ups: does "wrong" give away the answer? Is "strongDeeper" actually harder?
 F. Plan level: duplicate topics, missing gap coverage, a broken difficulty ramp, questions too long to say aloud. The plan has a fixed number of slots; do not ask for more topics to be covered than the slots allow.
 G. Fit: does each question actually test the skill or claim in its ref, and does its topic label match what it asks? A question that mixes two skills is a problem.
-H. Blueprint: for data/consultant roles, does the plan include at least one case/guesstimate question? For any role, does the technical phase test at least half its slots on JD skills rather than resume claims already covered by the resume phase?
+H. Blueprint: for data/consultant roles, does the plan include at least one case/guesstimate question? For any role, does the technical phase test at least half its slots on JD skills rather than resume claims already covered by the resume phase? If context.category is set, are its mandates met — "tech": a DSA question; "analytics": a SQL question, a guesstimate and a puzzle; "business"/"product": a case or guesstimate question?
 
 Return only JSON:
 { "pass": true|false, "issues": [ { "qid": "q3", "check": "A-G", "problem": "...", "fix": "..." } ] }
@@ -142,7 +151,7 @@ export function selectResumeClaims(claims, slots, priorityIds = []) {
 }
 
 export function buildPlannerInput({ interview, roleFamilySheet, coreTopics, bankCandidates, bankSlots, retake }) {
-  const { parsed, seniority, roleFamily } = interview;
+  const { parsed, seniority, roleFamily, interviewCategory } = interview;
   const supported = roleFamily && roleFamily !== 'unsupported';
   const perPhase = interviewComposition(roleFamily, parsed.resume.claims.length);
   // Spans, risk reasons and the raw skills list only matter for parsing; leaving
@@ -151,6 +160,7 @@ export function buildPlannerInput({ interview, roleFamilySheet, coreTopics, bank
   return {
     interview: {
       seniority,
+      category: interviewCategory || null,
       perPhase,
       resumeClaimIds: selectResumeClaims(parsed.resume.claims, perPhase.resume, retake?.retestClaimIds)
     },
@@ -204,6 +214,7 @@ export function buildCriticMessages(plannerInput, plan) {
   const skills = [...plannerInput.jd.requiredSkills, ...plannerInput.jd.niceToHave];
   const context = {
     seniority     : plannerInput.interview.seniority,
+    category      : plannerInput.interview.category,
     jdSkills      : skills.map(s => `${s.id} ${s.name}`),
     gapSkillIds   : plannerInput.gap.gaps,
     companyContext: plannerInput.jd.companyContext,

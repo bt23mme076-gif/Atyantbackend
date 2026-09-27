@@ -26,7 +26,8 @@ export const ROLE_FAMILIES = {
       { id: 'data.excel', name: 'Excel and spreadsheet analysis', mustKnow: ['lookups', 'pivot tables', 'error checks'] },
       { id: 'data.bi', name: 'Power BI and reporting', mustKnow: ['data model', 'measures', 'dashboard decisions'] },
       { id: 'data.statistics', name: 'Statistics and experimentation', mustKnow: ['distributions', 'sampling', 'hypothesis testing'] },
-      { id: 'data.case', name: 'Business cases and estimation', mustKnow: ['assumptions', 'decomposition', 'recommendation'] }
+      { id: 'data.case', name: 'Business cases and estimation', mustKnow: ['assumptions', 'decomposition', 'recommendation'] },
+      { id: 'data.puzzle', name: 'Analytical puzzles', mustKnow: ['logical decomposition', 'stating assumptions out loud', 'sanity-checking the answer'] }
     ]
   },
   consultant: {
