@@ -15,12 +15,10 @@ const esc = (s = '') => String(s)
 
 const clip = (s = '', n = 80) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
 
-// The product app is only reachable at the root (+ /atyantEngine on atyant.in),
-// so every CTA lands there with UTM tags for attribution.
+// The product app is served at the root of atyant.in, so every CTA lands there with UTM tags for attribution.
 export function appLink(campaign, content) {
-  const suffix = (process.env.FRONTEND_URL || '').includes('atyant.in') ? '/atyantEngine' : '';
   const qs = new URLSearchParams({ utm_source: 'email', utm_medium: 'lifecycle', utm_campaign: campaign, utm_content: content });
-  return `${frontendBase()}${suffix}/?${qs}`;
+  return `${frontendBase()}/?${qs}`;
 }
 
 const p = (html) => `<p style="color:#4b5563;line-height:1.6;margin:0 0 14px;">${html}</p>`;
