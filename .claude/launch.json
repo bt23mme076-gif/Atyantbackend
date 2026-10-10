@@ -33,6 +33,33 @@
       "port": 5000
     },
     {
+      "name": "atyant-ai-service",
+      "runtimeExecutable": "C:/Users/jatin/Documents/GitHub/atyant-ai-service/venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-X", "utf8", "-m", "uvicorn", "main:app",
+        "--app-dir", "C:/Users/jatin/Documents/GitHub/atyant-ai-service",
+        "--host", "127.0.0.1", "--port", "8000"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "atyant-marketing-preview",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/jatin/Documents/GitHub/atyant/frontend/node_modules/vite/bin/vite.js",
+        "preview", "C:/Users/jatin/Documents/GitHub/atyant/frontend",
+        "--outDir", "C:/Users/jatin/AppData/Local/Temp/claude/C--Atyantbackend/f10a50b2-9f1f-43c6-b27b-090ce3e77e22/scratchpad/mkt-dist",
+        "--port", "4173", "--strictPort"
+      ],
+      "port": 4173
+    },
+    {
+      "name": "atyant-marketing-dist",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["C:/Users/jatin/AppData/Local/Temp/claude/C--Atyantbackend/f10a50b2-9f1f-43c6-b27b-090ce3e77e22/scratchpad/serve-mkt.mjs"],
+      "port": 4174
+    },
+    {
       "name": "atyant-frontend-local",
       "runtimeExecutable": "node",
       "runtimeArgs": [

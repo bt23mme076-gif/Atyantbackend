@@ -824,6 +824,8 @@ Matched seniors: ${describeMatches(matchedMentors)}
     problemStatement: conv.problemStatement,
     outputMode: conv.outputMode,
     matchedMentors,
+    // No senior in our pool → frontend offers GET /api/invites/seniors (signed-in only).
+    canInviteSeniors: conv.phase === 'engine' && matchedMentors.length === 0 && !!conv.userId,
     sessionId
   };
 }
@@ -837,6 +839,7 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
   emit({ type: 'progress', stage: 'reading' });
 
   const conv = await getOrCreateConversation(sessionId, userId);
+  if (userId && !conv.userId) conv.userId = userId; // guest who signed in mid-chat
   if (!conv.messages.length) logFunnel('chat_started', { funnelId: sessionId, userId, props: { via: 'text' } });
 
   // ── Greeting shortcut — problem-first opener + quick replies, no AI call ──
@@ -910,6 +913,7 @@ export async function processResumeUpload(sessionId, extractedContext, fileLabel
   const emit = onProgress ? (event) => { try { onProgress(event); } catch { /* UI-only, non-fatal */ } } : () => {};
 
   const conv = await getOrCreateConversation(sessionId, userId);
+  if (userId && !conv.userId) conv.userId = userId;
   if (!conv.messages.length) logFunnel('chat_started', { funnelId: sessionId, userId, props: { via: 'resume' } });
   const attachmentNote = `[Uploaded résumé: ${fileLabel}]`;
   const userMessage = userText ? `${userText}\n${attachmentNote}` : attachmentNote;

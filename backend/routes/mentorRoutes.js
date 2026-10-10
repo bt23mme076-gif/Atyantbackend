@@ -10,6 +10,7 @@ import { normalizeCollege } from '../utils/collegeNormalizer.js';
 import { sendMentorWelcomeEmail } from '../utils/emailService.js';
 import { generateSlug, validateSlug } from '../utils/slugGenerator.js';
 import { extractLinkedInProfile } from '../services/LinkedInService.js';
+import { rewardInviteFor } from '../services/InviteRewardService.js';
 
 const router = express.Router();
 
@@ -138,6 +139,11 @@ router.post('/onboard', protect, async (req, res) => {
 
     // ── Make them visible to the engine right away ──
     try { atyantEngine.flushAllCaches(); } catch { /* noop */ }
+
+    // ── Credit the student who invited this senior, if any (non-blocking) ──
+    if (listed) {
+      rewardInviteFor(user).catch(err => console.error('Invite reward failed (non-fatal):', err.message));
+    }
 
     // ── Mentor welcome / how-Atyant-helps-you email (first onboard only, non-blocking) ──
     if (isNewMentor) {
