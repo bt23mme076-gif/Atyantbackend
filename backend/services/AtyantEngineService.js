@@ -4,7 +4,8 @@ import User from '../models/User.js';
 // All Groq traffic in the backend flows through utils/groqClient.js, which does
 // multi-key round-robin + cooldown failover (see that file). Add GROQ_API_KEY_2
 // / _3 from SEPARATE Groq accounts in .env to multiply throughput.
-import { groqChat, groqChatStream, groqJSON } from '../utils/groqClient.js';
+import { groqChat, groqJSON } from '../utils/groqClient.js';
+import { claudeChatStream } from '../utils/claudeClient.js';
 import { extractResumeFromImage } from '../utils/geminiVision.js';
 
 // Chat reply. A touch of warmth without rambling — too high and it produces
@@ -16,8 +17,10 @@ const callGroq = (messages, opts = {}) => groqChat(messages, { temperature: 0.75
 // the same progress callback finishTurn/processResumeUpload already thread
 // through everywhere else, so a `token` event flows out over the existing SSE
 // connection with no route changes needed.
+// Chat replies run on Claude Haiku 5.5 (utils/claudeClient.js); Groq still
+// handles extraction.
 const callGroqStream = (messages, emit, opts = {}) =>
-  groqChatStream(messages, { temperature: 0.75, ...opts, onToken: (text) => emit({ type: 'token', text }) });
+  claudeChatStream(messages, { ...opts, onToken: (text) => emit({ type: 'token', text }) });
 
 // ─── Dedicated context extractor ──────────────────────────────────────────────
 // A small, fast, deterministic model with JSON mode. This is the SOURCE OF TRUTH
