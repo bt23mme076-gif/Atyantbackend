@@ -11,18 +11,23 @@ import { getService } from '../config/serviceCatalog.js';
 import { meetLinkFor } from '../utils/frontendUrl.js';
 import { confirmFromWebhook as confirmMockReportFromWebhook } from '../services/mockInterview/MockPaymentService.js';
 import { trackEvent } from '../services/email/EmailPipeline.js';
+import { logFunnel } from '../utils/funnel.js';
 
 const router = express.Router();
 
 // Post-purchase lifecycle emails (feedback + cross-sell), timed from the session end.
 // refId makes verify + webhook both calling this safe.
-const trackSessionPurchase = (session, mentor) => trackEvent(session.userId, 'purchase', {
-  kind: 'session',
-  refId: String(session._id),
-  scheduledAt: session.scheduledAt,
-  durationMin: session.durationMin,
-  mentorName: mentor?.name || mentor?.username || session.mentorName,
-});
+const trackSessionPurchase = (session, mentor) => {
+  trackEvent(session.userId, 'purchase', {
+    kind: 'session',
+    refId: String(session._id),
+    scheduledAt: session.scheduledAt,
+    durationMin: session.durationMin,
+    mentorName: mentor?.name || mentor?.username || session.mentorName,
+  });
+  // verify + webhook can both fire for one payment — the report counts unique refIds.
+  logFunnel('purchase', { userId: session.userId, props: { kind: 'session', refId: String(session._id) } });
+};
 
 const RZP_KEY_ID = process.env.RAZORPAY_KEY_ID;
 const RZP_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;

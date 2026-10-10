@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import User from '../models/User.js';
 import { optionalAuth } from '../middleware/auth.js';
 import atyantEngine from '../services/AtyantEngine.js';
@@ -13,6 +14,12 @@ const trackSearch = (userId, query, mentors = []) => trackEvent(userId, 'search'
 });
 
 const router = express.Router();
+
+// Same fields the engine's mentor cache carries, for pinned mentors the scorer
+// didn't return this time.
+const PINNED_MENTOR_FIELDS =
+  'username education primaryDomain topCompanies milestones specialTags expertise bio ' +
+  'rating responseRate lastActive successfulMatches companyDomain';
 
 // Response cache by query+college+branch for 5 minutes
 const clarityCache = new Map();
@@ -44,14 +51,14 @@ function buildTags(mentor, ctx) {
   if (ctx.college && (mEdu.institutionName || '').toLowerCase().includes(ctx.college.toLowerCase().split(' ')[0])) tags.push('Same College');
   if (isSameBranch(ctx.branch, mEdu.field)) tags.push('Same Branch');
   (mentor.specialTags || []).slice(0, 3).forEach(t => tags.push(t));
-  if (tags.length === 0) tags.push('Verified Mentor');
+  if (tags.length === 0) tags.push('Atyant Mentor'); // no mentor is isVerified yet — don't claim it
   return [...new Set(tags)].slice(0, 5);
 }
 
 // POST /api/clarity/match — public, no login needed
 router.post('/match', optionalAuth, async (req, res) => {
   try {
-    const { query, college, branch, year, goal, cgpa, gap, timeline, constraints } = req.body;
+    const { query, college, branch, year, goal, cgpa, gap, timeline, constraints, mentorIds } = req.body;
 
     if (!query || query.trim().length < 5) {
       return res.status(400).json({ ok: false, error: 'Query too short' });
@@ -59,7 +66,12 @@ router.post('/match', optionalAuth, async (req, res) => {
 
     const userId = req.user?.userId || req.user?._id || null;
 
-    const cacheKey = getCacheKey(query, college, branch);
+    // Mentors the chat already showed this student. They're pinned first, in the
+    // same order, so this page extends the chat's list instead of replacing it.
+    const pinnedIds = (Array.isArray(mentorIds) ? mentorIds : [])
+      .map(String).filter(id => mongoose.isValidObjectId(id)).slice(0, 5);
+
+    const cacheKey = `${getCacheKey(query, college, branch)}|${pinnedIds.join(',')}`;
     const cached = clarityCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < CACHE_TTL) {
       trackSearch(userId, query, cached.payload.mentors);
@@ -84,8 +96,21 @@ router.post('/match', optionalAuth, async (req, res) => {
       studentContext: { college, branch, year, goal: goal || query },
     });
 
+    let ranked = clarity.mentors || [];
+    if (pinnedIds.length) {
+      const scoredById = new Map(ranked.map(m => [String(m._id), m]));
+      const missing = pinnedIds.filter(id => !scoredById.has(id));
+      const fetched = missing.length
+        ? await User.find({ _id: { $in: missing }, role: 'mentor' }).select(PINNED_MENTOR_FIELDS).lean()
+        : [];
+      const fetchedById = new Map(fetched.map(m => [String(m._id), m]));
+      const pinned = pinnedIds.map(id => scoredById.get(id) || fetchedById.get(id)).filter(Boolean);
+      ranked = [...pinned, ...ranked.filter(m => !pinnedIds.includes(String(m._id)))]
+        .slice(0, Math.max(5, pinned.length));
+    }
+
     // 3. Enrich mentors with display fields (name/photo not in the match cache).
-    const ids = (clarity.mentors || []).map(m => m._id);
+    const ids = ranked.map(m => m._id);
     const display = ids.length
       ? await User.find({ _id: { $in: ids } })
           .select('name username profilePicture yearsOfExperience primaryDomain companyDomain linkedinProfile successfulMatches rating isVerified')
@@ -93,7 +118,7 @@ router.post('/match', optionalAuth, async (req, res) => {
       : [];
     const dmap = new Map(display.map(d => [String(d._id), d]));
 
-    const mentors = (clarity.mentors || []).map(m => {
+    const mentors = ranked.map(m => {
       const d = dmap.get(String(m._id)) || {};
       const rawName = d.name || d.username || m.username || 'Mentor';
       const initials = rawName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);

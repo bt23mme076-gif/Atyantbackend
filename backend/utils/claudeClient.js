@@ -12,13 +12,18 @@ function getClient() {
 }
 
 // Accepts the same OpenAI-format array the Groq path used (system + turns),
-// streams text via onToken, and resolves with the full reply.
-export async function claudeChatStream(messages, { maxTokens = 2048, onToken } = {}) {
+// streams text via onToken, and resolves with the full reply. `reminder` is a
+// short per-turn instruction sent as a system message AFTER the latest user
+// turn, where the model weighs it most (used for reply-length rules).
+export async function claudeChatStream(messages, { maxTokens = 2048, onToken, reminder } = {}) {
   const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
   const turns = messages
     .filter(m => m.role !== 'system')
     .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
   while (turns.length && turns[0].role === 'assistant') turns.shift();
+  if (reminder && turns.length && turns[turns.length - 1].role === 'user') {
+    turns.push({ role: 'system', content: reminder });
+  }
 
   const stream = getClient().messages.stream({
     model: CHAT_MODEL,

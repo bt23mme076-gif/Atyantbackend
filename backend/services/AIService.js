@@ -113,7 +113,22 @@ RAW DATA: ${JSON.stringify(rawData)}`;
         console.warn('refineExperience: JSON parse failed, using raw:', parseErr.message);
         parsed = rawData;
       }
-    
+
+    // The model sometimes returns a text field as a list of points
+    // ("whatWorked": [...]). Cards store these as strings, and a list was either
+    // silently dropped (buildAnswerContent) or rejected by the schema cast —
+    // join it into lines instead.
+    for (const key of ['mainAnswer', 'situation', 'whatWorked', 'timeline', 'differentApproach']) {
+      const v = parsed[key];
+      if (Array.isArray(v)) {
+        parsed[key] = v
+          .map(x => (typeof x === 'string' ? x : x?.description || x?.text || ''))
+          .map(s => String(s).trim()).filter(Boolean).join('\n');
+      } else if (v && typeof v === 'object') {
+        parsed[key] = Object.values(v).filter(x => typeof x === 'string').join('\n');
+      }
+    }
+
     // 🔴 FIX: Validate and normalize actionableSteps format
     if (parsed.actionableSteps) {
       // If it's a string, convert to array of objects

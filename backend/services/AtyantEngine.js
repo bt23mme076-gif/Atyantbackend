@@ -705,21 +705,12 @@ async function getActiveMentors() {
     const mentors = await User.find({
       role: 'mentor',
       mentorListed: { $ne: false }, // exclude mentors still finishing onboarding
-      $and: [
-        {
-          $or: [
-            { activeQuestions: { $exists: false } },
-            { activeQuestions: null },
-            { activeQuestions: { $lt: CONFIG.MAX_LOAD + 2 } },
-          ],
-        },
-        {
-          $or: [
-            { lastActive: { $exists: false } },
-            { lastActive: null },
-            { lastActive: { $gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) } },
-          ],
-        },
+      // No lastActive cutoff: lastActive is only stamped at onboarding, so a
+      // 90-day window hid almost every mentor (3 of 405 listed were visible).
+      $or: [
+        { activeQuestions: { $exists: false } },
+        { activeQuestions: null },
+        { activeQuestions: { $lt: CONFIG.MAX_LOAD + 2 } },
       ],
     })
       .select(
@@ -766,14 +757,19 @@ let HAS_EMBEDDED_CARDS = false;
 let HAS_EMBEDDED_CARDS_CHECKED = 0;
 const EMBEDDED_CHECK_TTL = 10 * 60 * 1000;
 
+// Concurrent callers share one in-flight check — before, the timestamp was set
+// before the query resolved, so a second simultaneous request read the stale
+// `false` and skipped answer cards entirely.
+let HAS_EMBEDDED_CARDS_PENDING = null;
 async function hasEmbeddedAnswerCards() {
   if (HAS_EMBEDDED_CARDS) return true;
+  if (HAS_EMBEDDED_CARDS_PENDING) return HAS_EMBEDDED_CARDS_PENDING;
   const now = Date.now();
   if (now - HAS_EMBEDDED_CARDS_CHECKED < EMBEDDED_CHECK_TTL) return HAS_EMBEDDED_CARDS;
-  HAS_EMBEDDED_CARDS_CHECKED = now;
-  const one = await AnswerCard.exists({ embedding: { $exists: true, $ne: null, $not: { $size: 0 } } });
-  HAS_EMBEDDED_CARDS = !!one;
-  return HAS_EMBEDDED_CARDS;
+  HAS_EMBEDDED_CARDS_PENDING = AnswerCard.exists({ embedding: { $exists: true, $ne: null, $not: { $size: 0 } } })
+    .then(one => { HAS_EMBEDDED_CARDS = !!one; HAS_EMBEDDED_CARDS_CHECKED = Date.now(); return HAS_EMBEDDED_CARDS; })
+    .finally(() => { HAS_EMBEDDED_CARDS_PENDING = null; });
+  return HAS_EMBEDDED_CARDS_PENDING;
 }
 
 // ─────────────────────────────────────────────
@@ -1195,6 +1191,21 @@ class AtyantEngine {
       console.error('🔥 findTopMentors Error:', error);
       return null;
     }
+  }
+
+  // Mentor half of getClarity for the Atyant chat handoff: same domain
+  // classification + scoreMentor ranking, without the embedding/answer-card path.
+  async matchMentorsForChat(userId, queryText, studentContext = null, limit = 3) {
+    await Promise.all([getAllTargetCompanies(), getActiveMentors()]);
+    let targetDomain = null;
+    try {
+      targetDomain = await aiServiceInstance.classifyTargetDomain(studentContext?.goal || queryText);
+    } catch (e) {
+      dlog(`Chat domain classify failed: ${e.message}`);
+    }
+    const ctx = studentContext ? { ...studentContext, targetDomain } : (targetDomain ? { targetDomain } : null);
+    const mentors = await this.findTopMentors(userId, extractSmartKeywords(queryText), targetDomain, limit, ctx);
+    return { mentors: mentors || [], targetDomain };
   }
 
   /* =============================================
@@ -1830,4 +1841,5 @@ class AtyantEngine {
   }
 }
 
+export { isSameCollege };
 export default new AtyantEngine();

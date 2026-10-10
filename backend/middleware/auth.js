@@ -1,6 +1,15 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 
+// lastActive is what the mentor scorer reads as "recently active". Stamp it on
+// real authenticated activity — at most once an hour, never blocking the request.
+function touchMentorActivity(user) {
+  if (user?.role !== 'mentor') return;
+  const last = user.lastActive ? new Date(user.lastActive).getTime() : 0;
+  if (Date.now() - last < 60 * 60 * 1000) return;
+  User.updateOne({ _id: user._id }, { $set: { lastActive: new Date() } }).catch(() => {});
+}
+
 // ✅ Required authentication (for protected routes like profile, messages)
 const auth = async (req, res, next) => {
   try {
@@ -37,6 +46,7 @@ const auth = async (req, res, next) => {
     }
 
     req.user = user;
+    touchMentorActivity(user);
 
     next();
 
@@ -95,6 +105,7 @@ export const optionalAuth = async (req, res, next) => {
 
     if (user) {
       req.user = user;
+      touchMentorActivity(user);
       if (process.env.NODE_ENV === 'development') {
         console.debug('🔐 Authenticated user:', user.username);
         console.debug('🎓 User college:', user.education?.[0]?.institution);

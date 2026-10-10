@@ -12,6 +12,8 @@
 //    node scripts/backfillAnswerCards.js --dry-run      # show what would change
 //    node scripts/backfillAnswerCards.js --limit=20     # cap how many to process
 //    node scripts/backfillAnswerCards.js --mentor=<id>  # one mentor's cards only
+//    node scripts/backfillAnswerCards.js --ids=<id>,<id> # only these cards
+//  Original content of every rewritten card is saved to `answercards_backup`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ⚠️ Must load env BEFORE importing AIService — its constructor reads
@@ -34,17 +36,19 @@ const DRY_RUN   = flag('dry-run');
 const ALL       = flag('all');
 const LIMIT     = val('limit') ? parseInt(val('limit'), 10) : 0;
 const MENTOR_ID = val('mentor');
+const IDS       = val('ids') ? val('ids').split(',').map(s => s.trim()).filter(Boolean) : null;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // A card looks "broken" if the AI never structured it — i.e. the headline and
-// situation are identical (the raw-story fallback), or there are no steps.
+// situation are identical (the raw-story fallback), there are no steps, or
+// there's no headline at all (older-format cards).
 function looksBroken(ac = {}) {
   const main = (ac.mainAnswer || '').trim();
   const sit  = (ac.situation || '').trim();
   const noSteps = !Array.isArray(ac.actionableSteps) || ac.actionableSteps.length === 0;
   const dup = main && sit && (main === sit || sit.startsWith(main) || main.startsWith(sit));
-  return dup || noSteps;
+  return !main || dup || noSteps;
 }
 
 function buildEmbeddingText(ac, mentor) {
@@ -64,6 +68,7 @@ async function run() {
 
   const query = {};
   if (MENTOR_ID) query.mentorId = MENTOR_ID;
+  if (IDS) query._id = { $in: IDS };
 
   let cursor = AnswerCard.find(query).populate('mentorId', 'bio topCompanies expertise specialTags education username');
   const cards = await cursor.lean();
@@ -155,6 +160,10 @@ async function run() {
     }
 
     try {
+      // Keep the original content so a bad rewrite can be restored.
+      await mongoose.connection.collection('answercards_backup').insertOne({
+        cardId: card._id, answerContent: ac, backedUpAt: new Date(), reason: 'backfillAnswerCards',
+      });
       await AnswerCard.updateOne(
         { _id: card._id },
         { $set: { answerContent: newContent, ...(embedding ? { embedding } : {}) } }

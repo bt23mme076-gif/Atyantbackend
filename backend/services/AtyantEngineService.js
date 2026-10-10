@@ -6,6 +6,9 @@ import User from '../models/User.js';
 // / _3 from SEPARATE Groq accounts in .env to multiply throughput.
 import { groqChat, groqJSON } from '../utils/groqClient.js';
 import { claudeChatStream } from '../utils/claudeClient.js';
+import atyantEngine, { isSameCollege } from './AtyantEngine.js';
+import { isSameBranch } from '../utils/collegeNormalizer.js';
+import { logFunnel } from '../utils/funnel.js';
 import { extractResumeFromImage } from '../utils/geminiVision.js';
 
 // Chat reply. A touch of warmth without rambling — too high and it produces
@@ -43,7 +46,8 @@ Return ONLY a JSON object with these keys:
   "branch": null,         // the student's stated branch/department; else null
   "year": null,           // "1","2","3","4" or "final" if stated; else null
   "cgpa": null,           // the student's stated CGPA as a string; else null
-  "target": null,         // the student's stated goal; else null
+  "target": null,         // the student's stated goal, INCLUDING any field/domain/role they named in ANY message (e.g. "internship" then later "core, power systems" → "core electrical internship (power systems)"). Never fold their BRANCH into the goal — "internship" from an electrical student stays "internship"; else null
+  "targetCompanies": [],   // companies the student said they're aiming for; [] if none, "not sure" or "any"
   "timeline": null,       // the student's stated timeframe; else null
   "gap": [],               // blockers the student stated, as short strings
   "constraint": []         // hard limits the student stated, as short strings
@@ -75,6 +79,7 @@ function extractionToContext(parsed = {}) {
       cgpa:        toScalarString(parsed.cgpa),
     },
     target:     toScalarString(parsed.target),
+    targetCompanies: toStringArray(parsed.targetCompanies),
     timeline:   toScalarString(parsed.timeline),
     gap:        toStringArray(parsed.gap),
     constraint: toStringArray(parsed.constraint),
@@ -181,33 +186,43 @@ Never sound scripted:
 - Don't open with an acknowledgement word. Banned openers: "Got it", "Understood", "Okay", "Sure", "Great question", "Certainly", "As an AI".
 - No corporate filler: "leverage", "empower", "delve", "unlock", "journey", "I'd be happy to", "Let me help".
 - Keep it tight — max 3 short sentences per paragraph, no bullet-point dumps.
+
+Facts:
+- You have NO data on which companies recruit from which college, placement numbers, or what a campus's batch usually does. Never state those as facts ("they hire from Trichy every year", "most of your batch goes core"). Talk about what the path itself takes — skills, projects, prep — not who recruits where.
+- Never invent a name, company, college, CGPA, or number.
 Be a person, not a form.`;
 
-// Collection phase — natural intake. We still need all 5 layers extracted:
-// 1) Identity (college, branch, year), 2) Target goal, 3) Blockers/Gaps, 4) Timeline, 5) Constraints —
-// but the model gathers them like a senior chatting, not a questionnaire.
+// Collection phase — ask only what the mentor scorer uses (college, branch, goal
+// field, target company). Blockers/timeline/constraints are captured silently
+// if the student volunteers them, never asked.
 const COLLECTION_SYSTEM = `${MASTER_SYSTEM_PROMPT}
 
-You're still getting to know them so you can match them to the right senior's path. Over the chat you need: college, branch, year; their goal; what's blocking them; their timeline; any hard constraints.
+You're still getting to know them so you can match them to the right senior's path. The only things you ever ask about are their college, branch, goal (and its field), and any company they're aiming for. Never ask what's stopping them, their timeline, or their constraints.
 
 How to gather it like a human, not an intake form:
 - React to their last message first (a few words), THEN ask for ONE missing thing. Don't fire questions back-to-back.
+- Make every question feel worth answering: give them something first (a quick real insight about their path), or say in a few words why you're asking — it's so you can find a senior who's been exactly where they are.
+- If a question is optional, make that obvious and easy — "no idea yet" is a perfectly good answer.
 - Bundle naturally only when it genuinely fits — the way a senior would actually ask over chat. Never a checklist.
 - If their message is unclear or doesn't answer you, say so honestly and ask again, simpler. Don't pretend you understood, and never make up a detail they didn't give.
 - Skip anything the "Context extracted so far" block already has. Don't ask CGPA unless it actually matters here.
-- Once you know their college + branch, talk like an insider — weave in what students from there actually do, in your OWN words, phrased DIFFERENTLY every time (never reuse the same core/tech/non-core line). Never invent a name, company, or number.
-- If their goal is vague ("internship"/"placement"), the next thing to pin down is the DIRECTION — tech, core, or something else — using their college's real paths, before you ask about blockers.
-- Keep replies under ~35 words. Your LAST line must be ONE clear, direct question that ends in a question mark — not a vague statement. Output only your message — no JSON, no tags.`;
+- Once you know their branch, show you get their situation — what this path usually takes for someone in their branch — in your OWN words, phrased DIFFERENTLY every time. No campus-specific claims (see Facts).
+- If their goal is vague ("internship"/"placement"), the next thing to pin down is the DIRECTION — tech, core, or something else — framed by the options their branch genuinely has.
+- FORMAT: at most 2 sentences, under 30 words — one short reaction or insight, then ONE clear question ending in a question mark. Output only your message — no JSON, no tags.`;
 
 // Engine phase — final handoff. NO more questions; wrap up and route to clarity.
 const ENGINE_SYSTEM = `${MASTER_SYSTEM_PROMPT}
 
-You've got enough now — no more questions. Give them a real, confident read (under ~85 words):
-- Talk to THEM specifically: their college, branch, year, goal. Generic advice that could fit anyone is banned.
-- Tell them, like a senior would, what people from their kind of background actually did to get there — concrete moves: specific skills, projects, clubs, paths. Not "pick coding or product".
-- One sharp next step that's clearly theirs.
-Then hand off in your OWN words — say you've found seniors who pulled this off from a similar background and you'll show their exact paths. Phrase it naturally and differently each time; don't use a fixed template. Don't end on a question. Don't say results are "below".
-Use ONLY facts you actually have — never invent a college, company, CGPA, or number.`;
+You've got enough now — no more questions. FORMAT: EXACTLY 3 short sentences, about 50 words total, one paragraph. Long replies lose students — cut, don't cram.
+1. A specific read on THEM (their branch, goal, any target company): what this path actually takes — concrete skills or projects, not generic advice.
+2. One sharp next step they can start this week.
+3. The handoff, built ONLY from the "Matched seniors" line you're given — say truthfully what matched, in your own words. If none share their college, don't imply they do. If there are none, say you're still finding the right senior for them.
+Don't end on a question. Don't say results are "below".`;
+
+// Per-turn length rules, sent after the student's latest message (see
+// claudeChatStream) — the system-prompt word limits alone were ignored.
+const COLLECT_REMINDER = "Reply now: at most 2 sentences, each under 15 words — a quick reaction, then your one question. No lists, nothing else.";
+const ENGINE_REMINDER = "Reply now: exactly 3 sentences, EACH under 18 words, one paragraph. One idea per sentence — no lists of skills. No preamble (never announce 'no more questions'). Only claim what the Matched seniors line says — never imply they worked at a company it doesn't name.";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -235,13 +250,16 @@ function goalHasField(context = {}) {
   return GOAL_FIELD_RE.test(text);
 }
 
-// What we ACTUALLY need to connect a student to a mentor: their BRANCH (the field
-// matchMentors keys on) + a goal that names a FIELD/DOMAIN (so the match is real,
-// not random). College is bonus personalization; blockers/timeline/constraints
-// are never gates — requiring all five was the bug that trapped students forever.
-function readyToRoute(context = {}) {
+// What we ACTUALLY need to connect a student to a mentor: their BRANCH + a goal
+// that names a FIELD/DOMAIN (so the match is real, not random). College (a top
+// scorer signal) and target company are each asked at most ONCE — if the student
+// skips them we route anyway. Blockers/timeline/constraints are never gates —
+// requiring all five was the bug that trapped students forever.
+function readyToRoute(context = {}, asked = {}) {
   const id = context.identity || {};
-  return !!id.branch && goalHasField(context);
+  return !!id.branch && goalHasField(context)
+    && (!!id.college || !!asked.college)
+    && ((context.targetCompanies || []).length > 0 || !!asked.company);
 }
 
 // Detect an explicit ask to be connected to a mentor/senior ("connect me with a
@@ -254,7 +272,7 @@ function wantsMentor(message) {
 }
 
 function generateProblemStatement(context = {}) {
-  const { identity = {}, target, gap = [], timeline, constraint = [] } = context;
+  const { identity = {}, target, targetCompanies = [], gap = [], timeline, constraint = [] } = context;
   const lines = [];
 
   const idParts = [
@@ -266,6 +284,7 @@ function generateProblemStatement(context = {}) {
 
   if (idParts.length) lines.push(`Student: ${idParts.join(' | ')}`);
   if (target)            lines.push(`Goal: ${target}`);
+  if (targetCompanies.length) lines.push(`Target companies: ${targetCompanies.join(', ')}`);
   if (gap.length)        lines.push(`Gap: ${gap.join(', ')}`);
   if (timeline)          lines.push(`Timeline: ${timeline}`);
   if (constraint.length) lines.push(`Constraint: ${constraint.join(', ')}`);
@@ -325,6 +344,7 @@ function mergeContext(existing = {}, update) {
   const merged = {
     identity: { ...(existing.identity || {}) },
     target: existing.target || null,
+    targetCompanies: [...(existing.targetCompanies || [])],
     gap: [...(existing.gap || [])],
     timeline: existing.timeline || null,
     constraint: [...(existing.constraint || [])]
@@ -338,10 +358,18 @@ function mergeContext(existing = {}, update) {
     }
   }
 
-  if (update.target) merged.target = update.target;
+  // A re-extracted vague goal ("internship") must not wipe one that already
+  // names its field ("internship (core electrical)").
+  if (update.target && !(goalHasField({ target: merged.target }) && !goalHasField({ target: update.target }))) {
+    merged.target = update.target;
+  }
 
   if (Array.isArray(update.gap) && update.gap.length > 0) {
     merged.gap = [...new Set([...merged.gap, ...update.gap.filter(Boolean)])];
+  }
+
+  if (Array.isArray(update.targetCompanies) && update.targetCompanies.length > 0) {
+    merged.targetCompanies = [...new Set([...merged.targetCompanies, ...update.targetCompanies.filter(Boolean)])];
   }
 
   if (update.timeline) merged.timeline = update.timeline;
@@ -362,6 +390,7 @@ const MATCH_STOPWORDS = new Set([
   'and', 'or', 'the', 'a', 'an', 'of', 'in', 'for', 'to', 'with', 'at', 'on',
   'my', 'me', 'i', 'is', 'am', 'are', 'be', 'get', 'got', 'want', 'need',
   'engineering', 'engineer', 'branch', 'year', 'student', 'role', 'roles', 'job', 'jobs',
+  'management', // "product management" must not claim overlap with "People Management"
 ]);
 
 // Build search tokens from a free-text phrase: lowercase, split, drop stopwords
@@ -388,7 +417,7 @@ function tokenRegex(token) {
 // Each result carries `matchedOn`: the fields that genuinely matched, empty for
 // a fallback pick. Nothing downstream should claim relevance a mentor doesn't
 // have, and this is what makes that checkable rather than assumed.
-async function matchMentors(context = {}, limit = 3) {
+async function keywordMatchMentors(context = {}, limit = 3) {
   const { identity = {}, target } = context;
 
   // `gap` is deliberately excluded — blockers read like "not prepared" / "no
@@ -448,6 +477,80 @@ async function matchMentors(context = {}, limit = 3) {
         }
       : null,
   }));
+}
+
+// Ranked match through the same scorer the clarity page uses (college, branch,
+// goal/domain, companies, feedback, load). `matchedOn` lists only overlap we can
+// show the student; a mentor ranked on quality signals alone gets null, and the
+// card labels it as a suggestion. Falls back to the keyword match when the
+// scorer qualifies nobody.
+async function matchMentors(context = {}, problemStatement = '', userId = null, limit = 3) {
+  const { identity = {}, target } = context;
+  const companies = context.targetCompanies || [];
+  const goal = [target, ...companies].filter(Boolean).join(', ');
+  const studentContext = { college: identity.college, branch: identity.branch, year: identity.year, goal };
+  const queryText = [problemStatement, goal].filter(Boolean).join('\n');
+
+  const { mentors: ranked, targetDomain } = await atyantEngine.matchMentorsForChat(userId, queryText, studentContext, limit);
+  if (!ranked.length) return keywordMatchMentors(context, limit);
+
+  const display = await User.find({ _id: { $in: ranked.map(m => m._id) } })
+    .select('name username profilePicture').lean();
+  const dmap = new Map(display.map(d => [String(d._id), d]));
+
+  const rx = matchTokens(goal).map(tokenRegex);
+  const hitsIn = (values = []) => [...new Set(values.filter(v => rx.some(r => r.test(String(v)))))];
+
+  return ranked.map(m => {
+    const d = dmap.get(String(m._id)) || {};
+    const mEdu = m.education?.[0] || {};
+    const mCollege = mEdu.institutionName || mEdu.institution || null;
+    const background = [];
+    if (isSameCollege(identity.college, mCollege)) background.push('Same college');
+    if (identity.branch && isSameBranch(identity.branch, mEdu.field)) background.push('Same branch');
+    if (targetDomain && m.companyDomain === targetDomain) background.push(`${m.companyDomain} path`);
+    const matchedOn = {
+      background,
+      expertise: hitsIn(m.expertise),
+      topCompanies: hitsIn(m.topCompanies),
+    };
+    const hasOverlap = background.length || matchedOn.expertise.length || matchedOn.topCompanies.length;
+    return {
+      id: String(m._id),
+      name: d.name || d.username || m.username || 'Atyant Mentor',
+      username: d.username || m.username,
+      profilePicture: d.profilePicture,
+      bio: m.bio,
+      expertise: m.expertise || [],
+      topCompanies: m.topCompanies || [],
+      companyDomain: m.companyDomain,
+      college: mCollege,
+      matchScore: m.matchScore,
+      isRelevanceMatch: !!hasOverlap,
+      matchedOn: hasOverlap ? matchedOn : null,
+    };
+  });
+}
+
+// One-line, factual summary of the matches for the handoff prompt — counts and
+// real overlaps only, so the model can't claim more than the cards show.
+function describeMatches(mentors = []) {
+  if (!mentors.length) return 'none yet';
+  const n = mentors.length;
+  const withTag = (label) => mentors.filter(m => m.matchedOn?.background?.includes(label)).length;
+  const sameCollege = withTag('Same college');
+  const sameBranch = withTag('Same branch');
+  const paths = [...new Set(mentors.flatMap(m => (m.matchedOn?.background || []).filter(b => b.endsWith(' path'))))];
+  const companies = [...new Set(mentors.flatMap(m => m.matchedOn?.topCompanies || []))];
+  const loose = mentors.filter(m => !m.isRelevanceMatch).length;
+
+  const parts = [`${n} senior${n === 1 ? '' : 's'}`];
+  parts.push(sameCollege ? `${sameCollege} from the student's own college` : "none from the student's own college");
+  if (sameBranch) parts.push(`${sameBranch} from their branch`);
+  if (paths.length) parts.push(`on the ${paths.join(' / ')}`);
+  if (companies.length) parts.push(`with experience at ${companies.join(', ')}`);
+  if (loose) parts.push(`${loose} only a loose suggestion with no direct overlap`);
+  return parts.join('; ');
 }
 
 // ─── Greeting Detection ─────────────────────────────────────────────────────
@@ -511,9 +614,9 @@ function buildNoiseReply(conv) {
 // ⚠️ Keep this string in sync with GREETING_OPENER in the frontend
 // (AskAtyantPage.jsx) — chips are re-attached after refresh by exact match.
 function buildGreeting() {
-  return `What's confusing you right now?
+  return `Hey! What are you trying to crack right now — an internship, placements, a switch, higher studies?
 
-Tell me your full situation in one go — your college, branch, year, and what you're trying to crack.`;
+Drop your college and branch too, and I'll find seniors from your own campus who've already done it.`;
 }
 
 // Quick-reply chips shown under the opener. `value` is what gets sent to the
@@ -565,6 +668,15 @@ async function getOrCreateConversation(sessionId, userId) {
 // reflect this turn's extraction and `conv.messages` must already include the
 // user's turn (chat text or a resume-upload placeholder) before calling this.
 async function finishTurn(conv, userMessage, emit, sessionId) {
+  // The extractor often keeps a vague goal ("internship") even after the student
+  // answers the field question, which left the chat asking forever. If we just
+  // asked for the field and the reply names one, fold it into the goal here.
+  if (conv.pendingAsk === 'field' && conv.context?.target && !goalHasField(conv.context)
+      && GOAL_FIELD_RE.test(userMessage)) {
+    conv.context.target = `${conv.context.target} (${String(userMessage).trim().slice(0, 120)})`;
+  }
+  conv.pendingAsk = null;
+
   conv.problemStatement = generateProblemStatement(conv.context);
 
   // ── Routing gate ─────────────────────────────────────────────────────────
@@ -577,7 +689,7 @@ async function finishTurn(conv, userMessage, emit, sessionId) {
   const assistantTurns = conv.messages.filter(m => m.role === 'assistant').length;
 
   if (
-    readyToRoute(conv.context) ||
+    readyToRoute(conv.context, conv.asked) ||
     (userWantsMentor && conv.context.target) ||
     (assistantTurns >= 5 && (conv.context.target || conv.context.identity?.college || conv.context.identity?.branch))
   ) {
@@ -585,16 +697,19 @@ async function finishTurn(conv, userMessage, emit, sessionId) {
   }
 
   let reply, outputMode = null;
+  let matchedMentors = [];
 
   // ── Phase 1: Context Collection — ask ONE question ───────────────────────
   if (conv.phase === 'collecting') {
     const ctx = conv.context || {};
     const id = ctx.identity || {};
 
-    // Only the essentials that actually gate a good mentor match: their BRANCH
-    // (what matchMentors keys on) and their goal. We do NOT interrogate for
-    // blockers/timeline/constraints — if the student mentions them, extraction
-    // still captures them silently.
+    // Only what the mentor scorer actually uses: branch, goal + its field, then
+    // college and target company (each asked once, optional). We do NOT
+    // interrogate for blockers/timeline/constraints — if the student mentions
+    // them, extraction still captures them silently.
+    const asked = conv.asked || {};
+    const hasCompanies = (ctx.targetCompanies || []).length > 0;
     const need = [];
     if (!id.branch) {
       need.push(id.college
@@ -608,6 +723,26 @@ async function finishTurn(conv, userMessage, emit, sessionId) {
       // right mentor, framed by what their branch's seniors usually go for.
       need.push("WHICH field the goal is in — e.g. software/SDE, data/ML, core, product, or consulting — framed by what their branch's seniors usually target");
     }
+    // Asked only once the essentials are in, so it's always need[0] when sent.
+    let askingNow = null;
+    if (!need.length) {
+      if (!id.college && !asked.college) {
+        askingNow = hasCompanies || asked.company ? 'college' : 'both';
+        need.push(askingNow === 'both'
+          ? "which college they're at, plus (optional, same breath) any company they've got their eye on — seniors from their own campus who cracked that are the best match. 'No idea yet' on the company is fine"
+          : "which college they're at — seniors from their own campus are the closest match");
+      } else if (!hasCompanies && !asked.company) {
+        askingNow = 'company';
+        need.push("(optional) any company they're dreaming of for this goal — make it fun and easy, 'no idea yet' is a perfectly good answer");
+      }
+    }
+    if (askingNow) {
+      conv.asked = {
+        college: asked.college || askingNow !== 'company',
+        company: asked.company || askingNow !== 'college',
+      };
+    }
+    conv.pendingAsk = !id.branch ? 'branch' : !ctx.target ? 'goal' : !goalHasField(ctx) ? 'field' : askingNow;
 
     const systemWithContext = `${COLLECTION_SYSTEM}
 
@@ -620,47 +755,56 @@ ${userWantsMentor ? "\nThe student JUST asked to be connected to a mentor. Ackno
 ---`;
 
     emit({ type: 'progress', stage: 'drafting' });
-    const rawReply = await callGroqStream(toGroqMessages(systemWithContext, conv.messages), emit);
+    const rawReply = await callGroqStream(toGroqMessages(systemWithContext, conv.messages), emit, { reminder: COLLECT_REMINDER });
     reply = stripTags(rawReply);
 
   // ── Phase 2: Execution Engine — final wrap-up, NO questions ──────────────
   } else {
-    emit({ type: 'progress', stage: 'drafting' });
+    // Match FIRST, so the handoff describes the seniors who actually matched
+    // instead of the model guessing ("NIT Trichy seniors" when none exist).
+    emit({ type: 'progress', stage: 'searching_mentors' });
+    try {
+      matchedMentors = await matchMentors(conv.context, conv.problemStatement, conv.userId);
+    } catch (err) {
+      console.error('Mentor match failed (non-fatal):', err.message);
+    }
+    emit({ type: 'progress', stage: 'mentors_found', count: matchedMentors.length });
+    conv.matchedMentors = matchedMentors;
+    logFunnel('handoff_shown', {
+      funnelId: sessionId,
+      userId: conv.userId,
+      props: {
+        mentors: matchedMentors.length,
+        sameCollege: matchedMentors.filter(m => m.matchedOn?.background?.includes('Same college')).length,
+        assistantTurns: assistantTurns + 1,
+      },
+    });
 
+    emit({ type: 'progress', stage: 'drafting' });
     const systemWithProblem = `${ENGINE_SYSTEM}
 
 ---
 Student's Problem Statement (fully mapped by intake system):
 ${conv.problemStatement}
+
+Matched seniors: ${describeMatches(matchedMentors)}
 ---`;
 
-    const rawReply = await callGroqStream(toGroqMessages(systemWithProblem, conv.messages), emit);
+    const rawReply = await callGroqStream(toGroqMessages(systemWithProblem, conv.messages), emit, { reminder: ENGINE_REMINDER });
     reply = stripTags(rawReply);
 
-    // Engine is ready → always route to the clarity page (verified seniors below).
     outputMode = 'MENTOR_ROUTING';
     conv.outputMode = outputMode;
-  }
-
-  // When the engine routes to a mentor, attach REAL matches from the DB. The LLM
-  // describes the type of mentor; the frontend renders these actual cards.
-  let matchedMentors = [];
-  if (outputMode === 'MENTOR_ROUTING') {
-    emit({ type: 'progress', stage: 'searching_mentors' });
-    try {
-      matchedMentors = await matchMentors(conv.context);
-    } catch (err) {
-      console.error('Mentor match failed (non-fatal):', err.message);
-    }
-    emit({ type: 'progress', stage: 'mentors_found', count: matchedMentors.length });
   }
 
   // Safety net: never persist or return an empty bubble. If stripping removed
   // everything (model emitted only tags/reasoning), fall back to a useful prompt.
   if (!reply || !reply.trim()) {
     reply = conv.phase === 'collecting'
-      ? "Tell me a bit more so I can point you the right way — what's the main thing blocking you right now?"
-      : "Found seniors who walked a similar path from the same kind of background. Let me show you their exact paths.";
+      ? "Tell me a bit more so I can point you the right way — which college and branch are you in, and what are you aiming for?"
+      : matchedMentors.length
+        ? "I've pulled up seniors whose paths line up with yours — take a look at what they did."
+        : "I'm still finding the right senior for you — I'll keep looking.";
   }
 
   conv.messages.push({ role: 'assistant', content: reply });
@@ -693,6 +837,7 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
   emit({ type: 'progress', stage: 'reading' });
 
   const conv = await getOrCreateConversation(sessionId, userId);
+  if (!conv.messages.length) logFunnel('chat_started', { funnelId: sessionId, userId, props: { via: 'text' } });
 
   // ── Greeting shortcut — problem-first opener + quick replies, no AI call ──
   if (isGreeting(userMessage)) {
@@ -765,6 +910,7 @@ export async function processResumeUpload(sessionId, extractedContext, fileLabel
   const emit = onProgress ? (event) => { try { onProgress(event); } catch { /* UI-only, non-fatal */ } } : () => {};
 
   const conv = await getOrCreateConversation(sessionId, userId);
+  if (!conv.messages.length) logFunnel('chat_started', { funnelId: sessionId, userId, props: { via: 'resume' } });
   const attachmentNote = `[Uploaded résumé: ${fileLabel}]`;
   const userMessage = userText ? `${userText}\n${attachmentNote}` : attachmentNote;
   conv.messages.push({ role: 'user', content: userMessage });
@@ -808,7 +954,7 @@ ${JSON.stringify(ctx, null, 2)}
 Acknowledge the résumé naturally (mention ${known || "what you found in it"} if it's useful), then ask ONE short question — either confirm you've got their goal right, or ask the one thing still missing (branch, goal, or which field). Do NOT say you're matching them to a mentor yet — you still need to hear back from them first.
 ---`;
 
-  const rawReply = await callGroqStream(toGroqMessages(systemWithContext, conv.messages), emit);
+  const rawReply = await callGroqStream(toGroqMessages(systemWithContext, conv.messages), emit, { reminder: COLLECT_REMINDER });
   let reply = stripTags(rawReply);
   if (!reply || !reply.trim()) {
     reply = known

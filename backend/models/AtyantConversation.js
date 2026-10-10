@@ -19,6 +19,7 @@ const identitySchema = new mongoose.Schema({
 const contextSchema = new mongoose.Schema({
   identity: { type: identitySchema, default: () => ({}) },
   target: { type: String, default: null },
+  targetCompanies: { type: [String], default: [] },
   gap: { type: [String], default: [] },
   timeline: { type: String, default: null },
   constraint: { type: [String], default: [] }
@@ -35,7 +36,17 @@ const atyantConversationSchema = new mongoose.Schema({
     enum: ['collecting', 'engine'],
     default: 'collecting'
   },
+  // One-time optional questions already put to the student, so they're never re-asked.
+  asked: {
+    college: { type: Boolean, default: false },
+    company: { type: Boolean, default: false },
+  },
+  // What the last assistant turn asked for ('branch' | 'goal' | 'field' | 'college' | 'company').
+  pendingAsk: { type: String, default: null },
   problemStatement: { type: String, default: null },
+  // Mentor cards shown at the handoff — restored on refresh and pinned first on
+  // the clarity page, so both views show the same seniors.
+  matchedMentors: { type: [mongoose.Schema.Types.Mixed], default: [] },
   outputMode: {
     type: String,
     enum: ['AI_ANSWER', 'MENTOR_ROUTING', 'CLARIFY', null],
