@@ -12,6 +12,7 @@ import { meetLinkFor } from '../utils/frontendUrl.js';
 import { confirmFromWebhook as confirmMockReportFromWebhook } from '../services/mockInterview/MockPaymentService.js';
 import { trackEvent } from '../services/email/EmailPipeline.js';
 import { logFunnel } from '../utils/funnel.js';
+import { fetchSubscriptionOrder, activateSubscription } from '../services/SubscriptionService.js';
 
 const router = express.Router();
 
@@ -354,6 +355,15 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
       // Not a mentor session: it may be a mock interview report unlock.
       if (!session && await confirmMockReportFromWebhook(entity.order_id, entity.id)) {
         console.log(`✅ Webhook confirmed mock interview report order ${entity.order_id}`);
+      } else if (!session) {
+        // Or a Clarity/Pro purchase whose tab closed before /subscriptions/verify ran.
+        const sub = await fetchSubscriptionOrder(entity.order_id).catch(() => null);
+        if (sub) {
+          const { activated } = await activateSubscription({
+            userId: sub.userId, plan: sub.plan, billing: sub.billing, orderId: entity.order_id, source: 'webhook',
+          });
+          if (activated) console.log(`✅ Webhook activated ${sub.plan} for user ${sub.userId}`);
+        }
       }
       if (session && session.paymentStatus !== 'paid') {
         session.paymentStatus = 'paid';

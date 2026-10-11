@@ -188,6 +188,7 @@ app.use(cookieParser());
 // Parse JSON for everything EXCEPT raw-body webhook endpoints
 app.use((req, res, next) => {
   if (req.originalUrl === '/api/payments/webhook') return next();
+  if (req.originalUrl === '/api/subscriptions/webhook') return next();
   if (req.originalUrl === '/api/livekit/webhook') return next();
   return express.json({ limit: '10mb' })(req, res, next);
 });

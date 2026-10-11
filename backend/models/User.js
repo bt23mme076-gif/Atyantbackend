@@ -636,6 +636,13 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  // Every Razorpay order that has activated a plan — verify + webhook both
+  // fire, and a replayed order must not add credits/extend expiry twice.
+  processedSubscriptionOrders: {
+    type: [String],
+    default: [],
+    select: false,
+  },
   subscriptionCredits: {
     type: Number,
     default: 0

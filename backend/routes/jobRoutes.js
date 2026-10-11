@@ -12,6 +12,7 @@ import { generateCoverLetter } from '../services/CoverLetterService.js';
 import { downloadFileBuffer } from '../services/autoapply/PlaywrightRunner.js';
 import { applyGreenhouse } from '../services/autoapply/GreenhouseApplyAdapter.js';
 import { applyLever } from '../services/autoapply/LeverApplyAdapter.js';
+import { AUTO_APPLY_DAILY_LIMIT, autoApplyUsage, startOfTodayIST } from '../services/autoapply/limits.js';
 
 const AUTO_APPLY_ADAPTERS = { greenhouse: applyGreenhouse, lever: applyLever };
 
@@ -250,6 +251,22 @@ router.post('/:jobId/auto-apply-now', protect, async (req, res) => {
       return res.status(400).json({ message: `${job.company} hosts its own application form, so it has to be filled in by hand — use Apply instead.` });
     }
 
+    // Retrying a form that's already counted today (e.g. after answering its
+    // questions) doesn't cost another slot.
+    const usage = await autoApplyUsage(user);
+    const existing = await Application.findOne({ user: user._id, job: job._id }).select('status mode updatedAt').lean();
+    const alreadyCounted = existing?.mode === 'auto' && ['queued', 'submitted'].includes(existing.status)
+      && existing.updatedAt >= startOfTodayIST();
+    if (!alreadyCounted && usage.remaining <= 0) {
+      return res.status(429).json({
+        code: 'DAILY_LIMIT',
+        ...usage,
+        message: user.subscriptionPlan === 'pro'
+          ? `You've used all ${usage.limit} auto-applies for today. More tomorrow.`
+          : `You've used all ${usage.limit} auto-applies for today. More tomorrow, or upgrade to Pro for ${AUTO_APPLY_DAILY_LIMIT.pro} a day.`,
+      });
+    }
+
     let resumeBuffer;
     try {
       resumeBuffer = await downloadFileBuffer(user.resumeUrl);
@@ -364,6 +381,23 @@ router.get('/applications', protect, async (req, res) => {
   } catch (error) {
     console.error('GET /api/jobs/applications error:', error);
     res.status(500).json({ message: 'Failed to fetch applications', error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+//  GET /auto-apply/usage  — today's auto-apply quota: { limit, used, remaining, resetsAt }
+// ─────────────────────────────────────────────
+router.get('/auto-apply/usage', protect, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('subscriptionPlan subscriptionStatus subscriptionExpiry').lean();
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    const usage = hasActivePlan(user, AUTO_APPLY_PLAN)
+      ? await autoApplyUsage(user)
+      : { limit: 0, used: 0, remaining: 0, resetsAt: null };
+    res.json(usage);
+  } catch (error) {
+    console.error('GET /api/jobs/auto-apply/usage error:', error);
+    res.status(500).json({ message: 'Failed to load usage' });
   }
 });
 

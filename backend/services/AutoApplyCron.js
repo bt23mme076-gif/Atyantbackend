@@ -9,6 +9,7 @@ import { applyLever } from './autoapply/LeverApplyAdapter.js';
 import { generateCoverLetter } from './CoverLetterService.js';
 import { getAnswerMap } from '../models/ApplicationAnswer.js';
 import { hasActivePlan } from '../middleware/subscriptionMiddleware.js';
+import { autoApplyUsage } from './autoapply/limits.js';
 
 const MAX_NEW_APPLICATIONS_PER_USER_PER_RUN = 3;
 
@@ -49,9 +50,12 @@ class AutoApplyCron {
 
         const ranked = matchJobsForUser(user, jobs, { minScore: user.autoApply?.minMatchScore ?? 70 });
 
+        const { remaining } = await autoApplyUsage(user);
+        const cap = Math.min(MAX_NEW_APPLICATIONS_PER_USER_PER_RUN, remaining);
+
         let queued = 0;
         for (const { job, score } of ranked) {
-          if (queued >= MAX_NEW_APPLICATIONS_PER_USER_PER_RUN) break;
+          if (queued >= cap) break;
 
           try {
             await Application.create({
@@ -73,7 +77,16 @@ class AutoApplyCron {
   }
 
   async processQueue() {
-    const queued = await Application.find({ status: 'queued' }).limit(20).lean();
+    // Pro applications go out first when the queue is longer than one batch.
+    const waiting = await Application.find({ status: 'queued' }).sort({ createdAt: 1 }).limit(200).lean();
+    const proIds = new Set((await User.find({
+      _id: { $in: [...new Set(waiting.map(a => String(a.user)))] },
+      subscriptionPlan: 'pro',
+    }).select('_id').lean()).map(u => String(u._id)));
+    const queued = [
+      ...waiting.filter(a => proIds.has(String(a.user))),
+      ...waiting.filter(a => !proIds.has(String(a.user))),
+    ].slice(0, 20);
 
     for (const appDoc of queued) {
       await this.processOne(appDoc);

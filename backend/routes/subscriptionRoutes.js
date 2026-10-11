@@ -1,36 +1,17 @@
 import express from 'express';
 import crypto from 'crypto';
-import Razorpay from 'razorpay';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
-import { trackEvent } from '../services/email/EmailPipeline.js';
-import { logFunnel } from '../utils/funnel.js';
+import {
+  razorpay, PRICING, CREDITS_PER_MONTH, SUBSCRIPTION_RECEIPT_PREFIX,
+  fetchSubscriptionOrder, activateSubscription, subscriptionSummary,
+} from '../services/SubscriptionService.js';
+import { AUTO_APPLY_DAILY_LIMIT } from '../services/autoapply/limits.js';
 
 const router = express.Router();
 
 const RZP_KEY_ID = process.env.RAZORPAY_KEY_ID;
 const RZP_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
-const razorpay = (RZP_KEY_ID && RZP_KEY_SECRET)
-  ? new Razorpay({ key_id: RZP_KEY_ID, key_secret: RZP_KEY_SECRET })
-  : null;
-
-// Subscription pricing (INR) - override with env vars
-const PRICING = {
-  clarity: {
-    monthly: Number(process.env.CLARITY_MONTHLY_PRICE) || 299,
-    yearly: Number(process.env.CLARITY_YEARLY_PRICE) || 2390,
-  },
-  pro: {
-    monthly: Number(process.env.PRO_MONTHLY_PRICE) || 699,
-    yearly: Number(process.env.PRO_YEARLY_PRICE) || 5590,
-  },
-};
-
-// Credits per plan per month
-const CREDITS_PER_MONTH = {
-  clarity: 1,
-  pro: 3,
-};
 
 // Verify Razorpay HMAC signature with timing-safe comparison
 function verifySignature(orderId, paymentId, signature) {
@@ -45,16 +26,13 @@ function verifySignature(orderId, paymentId, signature) {
   }
 }
 
-// Calculate expiry date based on billing cycle
-function calculateExpiry(billing) {
-  const now = new Date();
-  if (billing === 'yearly') {
-    now.setFullYear(now.getFullYear() + 1);
-  } else {
-    now.setMonth(now.getMonth() + 1);
-  }
-  return now;
-}
+// ─────────────────────────────────────────────────────────────
+//  GET /api/subscriptions/pricing  (public)
+//  The exact amounts /create charges, so the pricing page never drifts from them.
+// ─────────────────────────────────────────────────────────────
+router.get('/pricing', (req, res) => {
+  res.json({ ok: true, pricing: PRICING, credits: CREDITS_PER_MONTH, autoApplyDaily: AUTO_APPLY_DAILY_LIMIT });
+});
 
 // ─────────────────────────────────────────────────────────────
 //  POST /api/subscriptions/create
@@ -85,7 +63,7 @@ router.post('/create', protect, async (req, res) => {
     const order = await razorpay.orders.create({
       amount: amount * 100, // paise
       currency: 'INR',
-      receipt: `sub_${plan}_${billing}_${Date.now()}`,
+      receipt: `${SUBSCRIPTION_RECEIPT_PREFIX}${plan}_${billing}_${Date.now()}`,
       notes: {
         userId: String(req.user.userId),
         plan,
@@ -110,15 +88,19 @@ router.post('/create', protect, async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 //  POST /api/subscriptions/verify
-//  Body: { plan, billing, razorpay_order_id, razorpay_payment_id, razorpay_signature }
-//  Verifies payment and activates subscription
+//  Body: { razorpay_order_id, razorpay_payment_id, razorpay_signature }
+//  Verifies payment and activates subscription. Plan + billing are read from
+//  our own Razorpay order, not the request body.
 // ─────────────────────────────────────────────────────────────
 router.post('/verify', protect, async (req, res) => {
   try {
-    const { plan, billing, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
-    if (!plan || !billing || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({ ok: false, error: 'Missing verification fields' });
+    }
+    if (!razorpay) {
+      return res.status(500).json({ ok: false, error: 'Payments not configured' });
     }
 
     // Verify signature
@@ -126,45 +108,37 @@ router.post('/verify', protect, async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Payment signature verification failed' });
     }
 
-    // Confirm payment with Razorpay
+    // Confirm payment + order with Razorpay
+    let sub;
     try {
       const payment = await razorpay.payments.fetch(razorpay_payment_id);
       if (payment.status !== 'captured') {
         return res.status(400).json({ ok: false, error: `Payment not captured (status: ${payment.status})` });
       }
+      if (payment.order_id !== razorpay_order_id) {
+        return res.status(400).json({ ok: false, error: 'Payment does not belong to this order' });
+      }
+      sub = await fetchSubscriptionOrder(razorpay_order_id);
     } catch (e) {
-      console.error('razorpay.payments.fetch failed:', e.message);
+      console.error('Razorpay payment/order fetch failed:', e.message);
       return res.status(502).json({ ok: false, error: 'Could not confirm payment with Razorpay' });
     }
 
-    // Update user subscription
-    const user = await User.findById(req.user.userId);
+    if (!sub) {
+      return res.status(400).json({ ok: false, error: 'Not a subscription order' });
+    }
+    if (sub.userId !== String(req.user.userId)) {
+      return res.status(403).json({ ok: false, error: 'This payment belongs to a different account' });
+    }
+
+    const { user } = await activateSubscription({
+      userId: sub.userId, plan: sub.plan, billing: sub.billing, orderId: razorpay_order_id, source: 'verify',
+    });
     if (!user) {
       return res.status(404).json({ ok: false, error: 'User not found' });
     }
 
-    const expiry = calculateExpiry(billing);
-    const credits = CREDITS_PER_MONTH[plan];
-
-    user.subscriptionPlan = plan;
-    user.subscriptionStatus = 'active';
-    user.subscriptionExpiry = expiry;
-    user.razorpaySubscriptionId = razorpay_order_id;
-    user.subscriptionCredits = (user.subscriptionCredits || 0) + credits;
-
-    await user.save();
-    trackEvent(user._id, 'purchase', { kind: 'subscription', plan, refId: razorpay_order_id });
-    logFunnel('purchase', { userId: user._id, props: { kind: 'subscription', plan, refId: razorpay_order_id } });
-
-    res.json({
-      ok: true,
-      subscription: {
-        plan: user.subscriptionPlan,
-        status: user.subscriptionStatus,
-        expiry: user.subscriptionExpiry,
-        credits: user.subscriptionCredits,
-      },
-    });
+    res.json({ ok: true, subscription: subscriptionSummary(user) });
   } catch (err) {
     console.error('POST /subscriptions/verify error:', err);
     res.status(500).json({ ok: false, error: err.message });
@@ -264,9 +238,10 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
       return res.status(400).json({ error: 'Webhook secret not configured' });
     }
 
+    // Raw body (server.js skips JSON parsing for this path) — HMAC must cover the exact bytes.
     const signature = req.headers['x-razorpay-signature'];
     const digest = crypto.createHmac('sha256', secret).update(req.body).digest('hex');
-    
+
     if (digest !== signature) {
       console.error('❌ Invalid Razorpay webhook signature');
       return res.status(400).json({ error: 'Invalid signature' });
@@ -275,26 +250,13 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
     const body = JSON.parse(req.body.toString());
     const entity = body.payload?.payment?.entity;
 
-    if (body.event === 'payment.captured' && entity) {
-      const userId = entity.notes?.userId;
-      const plan = entity.notes?.plan;
-      const billing = entity.notes?.billing;
-
-      if (userId && plan && billing) {
-        const user = await User.findById(userId);
-        if (user && user.razorpaySubscriptionId !== entity.order_id) {
-          const expiry = calculateExpiry(billing);
-          const credits = CREDITS_PER_MONTH[plan];
-
-          user.subscriptionPlan = plan;
-          user.subscriptionStatus = 'active';
-          user.subscriptionExpiry = expiry;
-          user.razorpaySubscriptionId = entity.order_id;
-          user.subscriptionCredits = (user.subscriptionCredits || 0) + credits;
-          
-          await user.save();
-          console.log(`✅ Webhook activated subscription for user ${userId}`);
-        }
+    if (body.event === 'payment.captured' && entity?.order_id && razorpay) {
+      const sub = await fetchSubscriptionOrder(entity.order_id);
+      if (sub) {
+        const { activated } = await activateSubscription({
+          userId: sub.userId, plan: sub.plan, billing: sub.billing, orderId: entity.order_id, source: 'webhook',
+        });
+        if (activated) console.log(`✅ Webhook activated ${sub.plan} for user ${sub.userId}`);
       }
     }
 
