@@ -1,4 +1,4 @@
-import { launchPage, splitName, detectCaptcha, findUnfilledRequired, waitForForm, fillCombobox, dedupeByLabel } from './PlaywrightRunner.js';
+import { launchPage, splitName, detectCaptcha, findUnfilledRequired, waitForForm, fillCombobox, dedupeByLabel, idSelector } from './PlaywrightRunner.js';
 import { normalizeQuestionKey } from '../../models/ApplicationAnswer.js';
 
 /**
@@ -57,7 +57,7 @@ export async function applyGreenhouse({ job, user, resumeBuffer, resumeFilename,
       if (field.isCombobox) {
         await fillCombobox(page, field.id, answer);
       } else {
-        await page.fill(`#${field.id}`, answer).catch(() => {});
+        await page.fill(idSelector(field.id), answer).catch(() => {});
       }
     }
 

@@ -154,9 +154,11 @@ export function dedupeByLabel(fields, normalizeFn) {
   return out;
 }
 
+export const idSelector = (id) => `[id=${JSON.stringify(String(id))}]`;
+
 export async function fillCombobox(page, id, value) {
   if (!id) return false;
-  const selector = `#${id}`;
+  const selector = idSelector(id);
   if (!(await page.locator(selector).count())) return false;
 
   await page.click(selector);
@@ -190,7 +192,7 @@ export async function fillCombobox(page, id, value) {
     return false;
   }
 
-  await page.click(`#${optionId}`);
+  await page.click(idSelector(optionId));
   await page.waitForTimeout(300);
   return true;
 }
