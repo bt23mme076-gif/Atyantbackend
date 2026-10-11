@@ -36,6 +36,16 @@ function inviteMessage(senior, inviterName, link) {
   return `Hi ${first}, I'm ${inviterName}, a junior from your background. I saw your journey and had one question about how you got there — I've posted it on Atyant, where seniors answer juniors from the same background. Would really appreciate your take: ${link}`;
 }
 
+// LinkedIn connection notes are capped (~200 chars on free accounts), so the
+// note must fit with the link intact.
+const NOTE_LIMIT = 200;
+function inviteNote(senior, inviterName, link) {
+  const first = senior.name.split(' ')[0];
+  const me = inviterName.split(' ')[0];
+  const note = `Hi ${first}, I'm ${me}, a junior from your college — one quick question about your journey. Would love your take: ${link}`;
+  return note.length <= NOTE_LIMIT ? note : `Hi! Junior from your college — one quick question about your journey: ${link}`;
+}
+
 async function ownConversation(sessionId, userId) {
   if (!sessionId) return null;
   const conv = await AtyantConversation.findOne({ sessionId }).lean();
@@ -106,6 +116,7 @@ router.post('/', protect, async (req, res) => {
       link,
       linkedinUrl: invite.senior.linkedinUrl,
       message: inviteMessage(invite.senior, inviterName, link),
+      note: inviteNote(invite.senior, inviterName, link),
       status: invite.status,
     });
   } catch (err) {
