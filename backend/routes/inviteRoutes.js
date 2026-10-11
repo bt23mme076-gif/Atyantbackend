@@ -83,14 +83,21 @@ router.post('/', protect, async (req, res) => {
       }
       const sessionId = str(req.body.sessionId, 100);
       const conv = await ownConversation(sessionId, inviterId);
-      invite = await MentorInvite.create({
-        code: crypto.randomBytes(6).toString('base64url'),
-        inviterId,
-        sessionId: conv ? sessionId : null,
-        senior: { name, headline: str(senior.headline, 160), linkedinUrl, slug },
-        question: str(req.body.question, 300) || defaultQuestion(conv?.context),
-      });
-      logFunnel('invite_created', { funnelId: invite.sessionId, userId: inviterId, props: { code: invite.code } });
+      try {
+        invite = await MentorInvite.create({
+          code: crypto.randomBytes(6).toString('base64url'),
+          inviterId,
+          sessionId: conv ? sessionId : null,
+          senior: { name, headline: str(senior.headline, 160), linkedinUrl, slug },
+          question: str(req.body.question, 300) || defaultQuestion(conv?.context),
+        });
+        logFunnel('invite_created', { funnelId: invite.sessionId, userId: inviterId, props: { code: invite.code } });
+      } catch (err) {
+        if (err.code !== 11000) throw err;
+        // Concurrent request created it first (unique inviter + senior).
+        invite = await MentorInvite.findOne({ inviterId, 'senior.slug': slug });
+        if (!invite) throw err;
+      }
     }
 
     const link = `${frontendBase()}/?invite=${invite.code}`;
@@ -109,49 +116,64 @@ router.post('/', protect, async (req, res) => {
 
 // GET /api/invites/mine — the student's invites and where each one stands.
 router.get('/mine', protect, async (req, res) => {
-  const invites = await MentorInvite.find({ inviterId: req.user.userId })
-    .sort({ createdAt: -1 })
-    .select('code senior.name senior.headline status rewardCredits createdAt')
-    .lean();
-  res.json({ invites });
+  try {
+    const invites = await MentorInvite.find({ inviterId: req.user.userId })
+      .sort({ createdAt: -1 })
+      .select('code senior.name senior.headline status rewardCredits createdAt')
+      .lean();
+    res.json({ invites });
+  } catch (err) {
+    console.error('List invites failed:', err.message);
+    res.status(500).json({ message: 'Could not load invites' });
+  }
 });
 
 // GET /api/invites/:code — public landing page data for the invited senior.
 router.get('/:code', async (req, res) => {
-  const code = str(req.params.code, 20);
-  const invite = await MentorInvite.findOneAndUpdate(
-    { code },
-    { $inc: { openCount: 1 } },
-    { new: true },
-  ).populate('inviterId', 'name username').lean();
-  if (!invite) return res.status(404).json({ message: 'Invite not found' });
+  try {
+    const code = str(req.params.code, 20);
+    const invite = await MentorInvite.findOneAndUpdate(
+      { code },
+      { $inc: { openCount: 1 } },
+      { new: true },
+    ).populate('inviterId', 'name username').lean();
+    if (!invite) return res.status(404).json({ message: 'Invite not found' });
 
-  if (invite.status === 'sent') {
-    MentorInvite.updateOne({ _id: invite._id, status: 'sent' }, { $set: { status: 'opened' } }).catch(() => {});
-    logFunnel('invite_opened', { funnelId: invite.sessionId, props: { code } });
+    if (invite.status === 'sent') {
+      MentorInvite.updateOne({ _id: invite._id, status: 'sent' }, { $set: { status: 'opened' } }).catch(() => {});
+      logFunnel('invite_opened', { funnelId: invite.sessionId, props: { code } });
+    }
+
+    const inviter = invite.inviterId || {};
+    res.json({
+      seniorName: invite.senior.name,
+      inviterName: (inviter.name || inviter.username || 'A junior').split(' ')[0],
+      question: invite.question,
+      claimed: !!invite.mentorId,
+    });
+  } catch (err) {
+    console.error('Load invite failed:', err.message);
+    res.status(500).json({ message: 'Could not load invite' });
   }
-
-  const inviter = invite.inviterId || {};
-  res.json({
-    seniorName: invite.senior.name,
-    inviterName: (inviter.name || inviter.username || 'A junior').split(' ')[0],
-    question: invite.question,
-    claimed: !!invite.mentorId,
-  });
 });
 
 // POST /api/invites/:code/claim — the senior, once signed in, attaches the invite to their account.
 router.post('/:code/claim', protect, async (req, res) => {
-  const userId = req.user.userId;
-  const invite = await MentorInvite.findOneAndUpdate(
-    { code: str(req.params.code, 20), mentorId: null, inviterId: { $ne: userId } },
-    { $set: { mentorId: userId, status: 'signed_up' } },
-    { new: true },
-  );
-  if (!invite) return res.status(409).json({ message: 'Invite already claimed or invalid' });
+  try {
+    const userId = req.user.userId;
+    const invite = await MentorInvite.findOneAndUpdate(
+      { code: str(req.params.code, 20), mentorId: null, inviterId: { $ne: userId } },
+      { $set: { mentorId: userId, status: 'signed_up' } },
+      { new: true },
+    );
+    if (!invite) return res.status(409).json({ message: 'Invite already claimed or invalid' });
 
-  logFunnel('invite_claimed', { funnelId: invite.sessionId, userId, props: { code: invite.code } });
-  res.json({ ok: true });
+    logFunnel('invite_claimed', { funnelId: invite.sessionId, userId, props: { code: invite.code } });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Claim invite failed:', err.message);
+    res.status(500).json({ message: 'Could not claim invite' });
+  }
 });
 
 export default router;
