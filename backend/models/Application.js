@@ -13,12 +13,12 @@ const applicationSchema = new mongoose.Schema({
     required: true,
   },
   mode: {
-    type: String,
+    type: { type: String },
     enum: ['auto', 'manual'],
     default: 'auto',
   },
   status: {
-    type: String,
+    type: { type: String },
     enum: ['queued', 'submitted', 'failed', 'needs_manual_action'],
     default: 'queued',
     index: true,
@@ -34,7 +34,7 @@ const applicationSchema = new mongoose.Schema({
     name: String,
     label: String,
     isCombobox: Boolean,
-    type: String,
+    type: { type: String },
     options: [String],
     hint: String,
   }],
