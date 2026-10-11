@@ -824,8 +824,10 @@ Matched seniors: ${describeMatches(matchedMentors)}
     problemStatement: conv.problemStatement,
     outputMode: conv.outputMode,
     matchedMentors,
-    // No senior in our pool → frontend offers GET /api/invites/seniors (signed-in only).
-    canInviteSeniors: conv.phase === 'engine' && matchedMentors.length === 0 && !!conv.userId,
+    // No senior from the student's own college in our pool → frontend offers
+    // GET /api/invites/seniors (signed-in only), even if looser matches are shown.
+    canInviteSeniors: conv.phase === 'engine' && !!conv.userId && !!conv.context?.identity?.college
+      && !matchedMentors.some(m => m.matchedOn?.background?.includes('Same college')),
     sessionId
   };
 }
