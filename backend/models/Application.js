@@ -13,12 +13,12 @@ const applicationSchema = new mongoose.Schema({
     required: true,
   },
   mode: {
-    type: { type: String },
+    type: String,
     enum: ['auto', 'manual'],
     default: 'auto',
   },
   status: {
-    type: { type: String },
+    type: String,
     enum: ['queued', 'submitted', 'failed', 'needs_manual_action'],
     default: 'queued',
     index: true,
