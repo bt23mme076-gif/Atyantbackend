@@ -1,4 +1,4 @@
-import { launchPage, detectCaptcha, findUnfilledRequired, waitForForm, fillCombobox, dedupeByLabel, idSelector } from './PlaywrightRunner.js';
+import { launchPage, detectCaptcha, findUnfilledRequired, waitForForm, fillCombobox, dedupeByLabel, fillField, describeUnanswered } from './PlaywrightRunner.js';
 import { normalizeQuestionKey } from '../../models/ApplicationAnswer.js';
 
 /**
@@ -46,20 +46,15 @@ export async function applyLever({ job, user, resumeBuffer, resumeFilename, save
 
     let unfilled = await findUnfilledRequired(page);
     for (const field of unfilled) {
-      if (!field.id || !field.label) continue;
+      if (!field.label) continue;
       const answer = savedAnswers[normalizeQuestionKey(field.label)];
       if (!answer) continue;
-
-      if (field.isCombobox) {
-        await fillCombobox(page, field.id, answer);
-      } else {
-        await page.fill(idSelector(field.id), answer).catch(() => {});
-      }
+      await fillField(page, field, answer);
     }
 
     unfilled = await findUnfilledRequired(page);
     if (unfilled.length > 0) {
-      const unansweredQuestions = dedupeByLabel(unfilled, normalizeQuestionKey);
+      const unansweredQuestions = await describeUnanswered(page, dedupeByLabel(unfilled, normalizeQuestionKey));
       return {
         status: 'needs_manual_action',
         reason: `Unanswered required field(s): ${unansweredQuestions.map((q) => q.label || q.name).join(', ')}`,

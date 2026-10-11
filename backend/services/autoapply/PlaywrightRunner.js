@@ -93,6 +93,10 @@ export async function detectCaptcha(page) {
 export async function findUnfilledRequired(page) {
   return page.evaluate(() => {
     function getLabel(el) {
+      if (el.type === 'radio' || el.type === 'checkbox') {
+        const legend = el.closest('fieldset')?.querySelector('legend');
+        if (legend && legend.textContent.trim()) return legend.textContent.replace(/\*$/, '').trim();
+      }
       if (el.id) {
         const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
         if (lbl) return lbl.textContent.replace(/\*$/, '').trim();
@@ -122,7 +126,11 @@ export async function findUnfilledRequired(page) {
     return fields
       .filter((el) => el.type !== 'hidden' && (el.required || el.getAttribute('aria-required') === 'true'))
       .filter((el) => {
-        if (el.type === 'checkbox' || el.type === 'radio') return !el.checked;
+        if (el.type === 'radio') {
+          const group = el.name ? document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`) : [el];
+          return !Array.from(group).some((r) => r.checked);
+        }
+        if (el.type === 'checkbox') return !el.checked;
         if (el.getAttribute('role') === 'combobox') return !comboboxHasValue(el);
         return !el.value || !String(el.value).trim();
       })
@@ -131,6 +139,17 @@ export async function findUnfilledRequired(page) {
         name: el.name || el.id || `${el.tagName.toLowerCase()}[${el.type || ''}]`,
         label: getLabel(el),
         isCombobox: el.getAttribute('role') === 'combobox',
+        type: el.getAttribute('role') === 'combobox' ? 'combobox'
+          : el.tagName === 'SELECT' ? 'select'
+          : el.type === 'radio' || el.type === 'checkbox' ? el.type
+          : el.tagName === 'TEXTAREA' ? 'textarea' : 'text',
+        options: el.tagName === 'SELECT'
+          ? Array.from(el.options).map((o) => o.textContent.trim()).filter((t) => t && !/^(select|choose|please)/i.test(t))
+          : el.type === 'radio' && el.name
+            ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`))
+                .map((r) => (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)?.textContent.trim()) || r.closest('label')?.textContent.trim() || r.value)
+                .filter(Boolean)
+            : el.type === 'checkbox' ? ['Yes'] : [],
       }));
   });
 }
@@ -152,6 +171,88 @@ export function dedupeByLabel(fields, normalizeFn) {
     out.push(f);
   }
   return out;
+}
+
+const norm = (t) => String(t || '').trim().toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ');
+const SYNONYMS = { male: ['man'], female: ['woman'], man: ['male'], woman: ['female'], yes: ['y', 'true', 'i agree', 'i consent'], no: ['n', 'false'] };
+
+export function matchOption(options, answer) {
+  const a = norm(answer);
+  if (!a) return null;
+  const opts = options.map((o) => ({ o, n: norm(o) }));
+  const alts = [a, ...(SYNONYMS[a] || [])];
+  const hit = opts.find((x) => alts.includes(x.n))
+    || opts.find((x) => alts.some((t) => x.n.startsWith(t + ' ')))
+    || opts.find((x) => x.n.includes(a) || (x.n.length > 2 && a.includes(x.n)));
+  return hit ? hit.o : null;
+}
+
+// Fills one field according to its real control type. Plain page.fill only
+// works on text inputs, which is why selects/radios/consent boxes kept coming
+// back as "unanswered" even after the student answered them.
+export async function fillField(page, field, answer) {
+  try {
+    const key = field.id ? idSelector(field.id) : null;
+    if (field.type === 'combobox' || field.isCombobox) return await fillCombobox(page, field.id, answer);
+    if (field.type === 'select' && key) {
+      const label = matchOption(field.options || [], answer);
+      if (!label) return false;
+      await page.locator(key).first().selectOption({ label });
+      return true;
+    }
+    if (field.type === 'checkbox' && key) {
+      if (!/^(yes|y|true|agree|i agree|consent|accept|ok)\b/i.test(String(answer).trim())) return false;
+      await page.locator(key).first().check({ force: true });
+      return true;
+    }
+    if (field.type === 'radio') {
+      const label = matchOption(field.options || [], answer);
+      if (!label) return false;
+      return await page.evaluate(({ name, label }) => {
+        const t = (x) => (x || '').trim();
+        const radios = Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`));
+        const r = radios.find((el) => t((el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.textContent) || el.closest('label')?.textContent || el.value) === label);
+        if (!r) return false;
+        r.click();
+        return true;
+      }, { name: field.name, label });
+    }
+    if (!key) return false;
+    await page.locator(key).first().fill(String(answer));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Reads a react-select combobox's choices (so the student can be shown the
+// exact options) by opening it, then closing without selecting anything.
+export async function readComboboxOptions(page, id) {
+  try {
+    const sel = idSelector(id);
+    await page.click(sel, { timeout: 3000 });
+    await page.waitForTimeout(400);
+    const options = await page.evaluate((s) => {
+      const el = document.querySelector(s);
+      const listId = el?.getAttribute('aria-owns') || el?.getAttribute('aria-controls');
+      const list = listId ? document.getElementById(listId) : null;
+      return list ? Array.from(list.querySelectorAll('[role="option"]')).map((o) => o.textContent.trim()).filter(Boolean).slice(0, 15) : [];
+    }, sel);
+    await page.keyboard.press('Escape').catch(() => {});
+    return options;
+  } catch {
+    return [];
+  }
+}
+
+export async function describeUnanswered(page, fields) {
+  for (const f of fields) {
+    if (f.type === 'combobox' && f.id && !(f.options || []).length) f.options = await readComboboxOptions(page, f.id);
+    f.hint = f.options && f.options.length
+      ? `Type exactly one of: ${f.options.slice(0, 8).join(' / ')}`
+      : f.type === 'checkbox' ? 'Type Yes to tick this box' : '';
+  }
+  return fields;
 }
 
 export const idSelector = (id) => `[id=${JSON.stringify(String(id))}]`;
@@ -180,8 +281,12 @@ export async function fillCombobox(page, id, value) {
     if (!list) return null;
     const opts = Array.from(list.querySelectorAll('[role="option"]'));
     const norm = (t) => t.trim().toLowerCase();
-    const el = opts.find((o) => norm(o.textContent) === norm(value))
-      || opts.find((o) => norm(o.textContent).includes(norm(value)));
+    const syn = { male: 'man', female: 'woman', y: 'yes', n: 'no' };
+    const v = norm(value);
+    const alts = [v, syn[v]].filter(Boolean);
+    const el = opts.find((o) => alts.includes(norm(o.textContent)))
+      || opts.find((o) => alts.some((a) => norm(o.textContent).startsWith(a)))
+      || opts.find((o) => norm(o.textContent).includes(v));
     if (!el) return null;
     if (!el.id) el.id = `__autoapply_opt_${Math.random().toString(36).slice(2)}`;
     return el.id;

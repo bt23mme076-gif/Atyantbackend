@@ -34,6 +34,9 @@ const applicationSchema = new mongoose.Schema({
     name: String,
     label: String,
     isCombobox: Boolean,
+    type: String,
+    options: [String],
+    hint: String,
   }],
   submittedAt: { type: Date, default: null },
 }, { timestamps: true });
