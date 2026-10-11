@@ -8,6 +8,7 @@ import { optionalAuth } from '../middleware/auth.js';
 import { localizeMeetLink } from '../utils/frontendUrl.js';
 import sessionPipelineService from '../services/SessionPipelineService.js';
 import { applySessionReview } from '../services/reviewService.js';
+import { rewardInviteForSession } from '../services/InviteRewardService.js';
 
 const router = express.Router();
 
@@ -273,12 +274,13 @@ router.patch('/:id/cancel', protect, async (req, res) => {
 // PATCH /api/sessions/:id/complete — mark a session complete (mentor/admin)
 router.patch('/:id/complete', protect, async (req, res) => {
   try {
-    const session = await Session.findOneAndUpdate(
-      { _id: req.params.id },
-      { status: 'completed' },
-      { new: true }
-    );
+    // Only the session's mentor (or an admin) may complete it — completion now pays invite rewards.
+    const filter = req.user.role === 'admin'
+      ? { _id: req.params.id }
+      : { _id: req.params.id, mentorId: req.user.userId };
+    const session = await Session.findOneAndUpdate(filter, { status: 'completed' }, { new: true });
     if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
+    rewardInviteForSession(session._id).catch(err => console.error('Invite reward failed (non-fatal):', err.message));
     res.json({ ok: true, session });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });

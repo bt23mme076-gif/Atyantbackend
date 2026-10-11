@@ -8,6 +8,7 @@ import User from '../models/User.js';
 import { findSeniors, isLinkedinProfileUrl, linkedinSlug } from '../services/SeniorSearchService.js';
 import { frontendBase } from '../utils/frontendUrl.js';
 import { logFunnel } from '../utils/funnel.js';
+import { rewardInviteFor } from '../services/InviteRewardService.js';
 
 const router = express.Router();
 
@@ -97,6 +98,7 @@ router.post('/', protect, async (req, res) => {
         invite = await MentorInvite.create({
           code: crypto.randomBytes(6).toString('base64url'),
           inviterId,
+          inviterIp: req.ip || null,
           sessionId: conv ? sessionId : null,
           senior: { name, headline: str(senior.headline, 160), linkedinUrl, slug },
           question: str(req.body.question, 300) || defaultQuestion(conv?.context),
@@ -174,12 +176,18 @@ router.post('/:code/claim', protect, async (req, res) => {
     const userId = req.user.userId;
     const invite = await MentorInvite.findOneAndUpdate(
       { code: str(req.params.code, 20), mentorId: null, inviterId: { $ne: userId } },
-      { $set: { mentorId: userId, status: 'signed_up' } },
+      { $set: { mentorId: userId, status: 'signed_up', claimIp: req.ip || null } },
       { new: true },
     );
     if (!invite) return res.status(409).json({ message: 'Invite already claimed or invalid' });
 
     logFunnel('invite_claimed', { funnelId: invite.sessionId, userId, props: { code: invite.code } });
+
+    // Already a listed mentor → onboarding won't run again, so move it along now.
+    const claimant = await User.findById(userId).select('mentorListed linkedinProfile').lean();
+    if (claimant?.mentorListed) {
+      rewardInviteFor(claimant).catch(err => console.error('Invite onboard check failed (non-fatal):', err.message));
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('Claim invite failed:', err.message);

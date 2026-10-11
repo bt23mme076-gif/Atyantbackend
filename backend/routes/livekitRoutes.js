@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import liveKitService from '../services/LiveKitService.js';
 import sessionPipelineService from '../services/SessionPipelineService.js';
+import { rewardInviteForSession } from '../services/InviteRewardService.js';
 
 const router = express.Router();
 
@@ -271,6 +272,7 @@ router.post('/webhook', express.raw({ type: () => true }), async (req, res) => {
         // and hog the egress worker's CPU budget (blocking overlapping sessions).
         if (session?.egressId) await liveKitService.stopEgress(session.egressId);
         console.log(`Room finished → session ${sessionId} marked completed`);
+        rewardInviteForSession(sessionId).catch(err => console.error('Invite reward failed (non-fatal):', err.message));
       }
     }
 
