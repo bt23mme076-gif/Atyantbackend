@@ -1,6 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
+import AnswerHelpfulVote from '../models/AnswerHelpfulVote.js';
 import { optionalAuth } from '../middleware/auth.js';
 import atyantEngine from '../services/AtyantEngine.js';
 import { generateProblemStatement } from '../services/ProblemStatementGenerator.js';
@@ -207,6 +208,65 @@ router.get('/community-count', optionalAuth, async (req, res) => {
   } catch (err) {
     console.error('community-count error:', err);
     res.json({ ok: true, count: 0 }); // never break the hero on a count failure
+  }
+});
+
+// ── "Helpful" votes on answer cards ──
+// Kept out of /match on purpose: that payload is cached for 5 min and shared
+// across students, while vote counts must be live and "voted" is per person.
+const voterKeyOf = (req) => {
+  const userId = req.user?.userId || req.user?._id;
+  if (userId) return `u:${userId}`;
+  const visitorId = String(req.body?.visitorId || '').trim();
+  return /^[A-Za-z0-9_-]{8,64}$/.test(visitorId) ? `v:${visitorId}` : null;
+};
+const validIds = (ids) =>
+  (Array.isArray(ids) ? ids : []).slice(0, 20).filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+// POST /api/clarity/helpful/counts  { cardIds: [...], visitorId }
+router.post('/helpful/counts', optionalAuth, async (req, res) => {
+  try {
+    const ids = validIds(req.body?.cardIds).map((id) => new mongoose.Types.ObjectId(id));
+    if (!ids.length) return res.json({ ok: true, counts: {}, voted: [] });
+    const voterKey = voterKeyOf(req);
+    const [rows, mine] = await Promise.all([
+      AnswerHelpfulVote.aggregate([
+        { $match: { cardId: { $in: ids } } },
+        { $group: { _id: '$cardId', n: { $sum: 1 } } },
+      ]),
+      voterKey ? AnswerHelpfulVote.find({ cardId: { $in: ids }, voterKey }, 'cardId').lean() : [],
+    ]);
+    const counts = Object.fromEntries(rows.map((r) => [String(r._id), r.n]));
+    res.json({ ok: true, counts, voted: mine.map((v) => String(v.cardId)) });
+  } catch (err) {
+    console.error('Helpful counts error:', err);
+    res.json({ ok: true, counts: {}, voted: [] }); // counts are decoration — never break the feed
+  }
+});
+
+// POST /api/clarity/helpful/:cardId  { visitorId } — toggles this voter's vote
+router.post('/helpful/:cardId', optionalAuth, async (req, res) => {
+  try {
+    const { cardId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(cardId)) return res.status(400).json({ ok: false, error: 'Invalid card' });
+    const voterKey = voterKeyOf(req);
+    if (!voterKey) return res.status(400).json({ ok: false, error: 'Missing voter id' });
+
+    const removed = await AnswerHelpfulVote.findOneAndDelete({ cardId, voterKey });
+    let voted = false;
+    if (!removed) {
+      try {
+        await AnswerHelpfulVote.create({ cardId, voterKey });
+      } catch (e) {
+        if (e.code !== 11000) throw e; // double-tap race: the vote already exists
+      }
+      voted = true;
+    }
+    const count = await AnswerHelpfulVote.countDocuments({ cardId });
+    res.json({ ok: true, voted, count });
+  } catch (err) {
+    console.error('Helpful vote error:', err);
+    res.status(500).json({ ok: false, error: 'Could not save vote' });
   }
 });
 
