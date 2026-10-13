@@ -4,7 +4,7 @@ import User from '../models/User.js';
 // All Groq traffic in the backend flows through utils/groqClient.js, which does
 // multi-key round-robin + cooldown failover (see that file). Add GROQ_API_KEY_2
 // / _3 from SEPARATE Groq accounts in .env to multiply throughput.
-import { groqChat, groqJSON } from '../utils/groqClient.js';
+import { groqChat, groqJSON, groqChatStream } from '../utils/groqClient.js';
 import { claudeChatStream } from '../utils/claudeClient.js';
 import atyantEngine, { isSameCollege } from './AtyantEngine.js';
 import { isSameBranch } from '../utils/collegeNormalizer.js';
@@ -20,10 +20,26 @@ const callGroq = (messages, opts = {}) => groqChat(messages, { temperature: 0.75
 // the same progress callback finishTurn/processResumeUpload already thread
 // through everywhere else, so a `token` event flows out over the existing SSE
 // connection with no route changes needed.
-// Chat replies run on Claude Haiku 5.5 (utils/claudeClient.js); Groq still
-// handles extraction.
-const callGroqStream = (messages, emit, opts = {}) =>
+// Reasoning replies (the final mentor-match wrap-up) run on Claude
+// (utils/claudeClient.js). Everyday intake chat runs on the free Groq tier and
+// falls back to Claude if Groq is down — but only before any token has been
+// shown, so a half-streamed reply is never duplicated.
+const callClaudeStream = (messages, emit, opts = {}) =>
   claudeChatStream(messages, { ...opts, onToken: (text) => emit({ type: 'token', text }) });
+
+const callChatStream = async (messages, emit, { reminder, ...opts } = {}) => {
+  let streamed = false;
+  const onToken = (text) => { streamed = true; emit({ type: 'token', text }); };
+  // Reminder goes last, after the student's latest turn, where the model weighs it most.
+  const withReminder = reminder ? [...messages, { role: 'system', content: reminder }] : messages;
+  try {
+    return await groqChatStream(withReminder, { maxTokens: 300, ...opts, onToken });
+  } catch (err) {
+    if (streamed) throw err;
+    console.error('Groq chat failed, falling back to Claude:', err.message);
+    return claudeChatStream(messages, { reminder, ...opts, onToken });
+  }
+};
 
 // ─── Dedicated context extractor ──────────────────────────────────────────────
 // A small, fast, deterministic model with JSON mode. This is the SOURCE OF TRUTH
@@ -755,7 +771,7 @@ ${userWantsMentor ? "\nThe student JUST asked to be connected to a mentor. Ackno
 ---`;
 
     emit({ type: 'progress', stage: 'drafting' });
-    const rawReply = await callGroqStream(toGroqMessages(systemWithContext, conv.messages), emit, { reminder: COLLECT_REMINDER });
+    const rawReply = await callChatStream(toGroqMessages(systemWithContext, conv.messages), emit, { reminder: COLLECT_REMINDER });
     reply = stripTags(rawReply);
 
   // ── Phase 2: Execution Engine — final wrap-up, NO questions ──────────────
@@ -790,7 +806,7 @@ ${conv.problemStatement}
 Matched seniors: ${describeMatches(matchedMentors)}
 ---`;
 
-    const rawReply = await callGroqStream(toGroqMessages(systemWithProblem, conv.messages), emit, { reminder: ENGINE_REMINDER });
+    const rawReply = await callClaudeStream(toGroqMessages(systemWithProblem, conv.messages), emit, { reminder: ENGINE_REMINDER });
     reply = stripTags(rawReply);
 
     outputMode = 'MENTOR_ROUTING';
@@ -960,7 +976,7 @@ ${JSON.stringify(ctx, null, 2)}
 Acknowledge the résumé naturally (mention ${known || "what you found in it"} if it's useful), then ask ONE short question — either confirm you've got their goal right, or ask the one thing still missing (branch, goal, or which field). Do NOT say you're matching them to a mentor yet — you still need to hear back from them first.
 ---`;
 
-  const rawReply = await callGroqStream(toGroqMessages(systemWithContext, conv.messages), emit, { reminder: COLLECT_REMINDER });
+  const rawReply = await callChatStream(toGroqMessages(systemWithContext, conv.messages), emit, { reminder: COLLECT_REMINDER });
   let reply = stripTags(rawReply);
   if (!reply || !reply.trim()) {
     reply = known

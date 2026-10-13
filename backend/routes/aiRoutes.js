@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import { createRequire } from 'module';
 import { optionalAuth } from '../middleware/auth.js';
+import { aiBurstLimiter, aiDailyQuota } from '../middleware/aiQuota.js';
 import { trackEvent } from '../services/email/EmailPipeline.js';
 import { groqChat as sharedGroqChat } from '../utils/groqClient.js';
 import {
@@ -58,7 +59,7 @@ LANGUAGE: Short sentences. Max 3 per paragraph. Use: "Here's the thing", "The ho
 
 // POST /api/ai/chat
 // Body: { message, sessionId? }
-router.post('/chat', optionalAuth, async (req, res) => {
+router.post('/chat', optionalAuth, aiBurstLimiter, aiDailyQuota('msg'), async (req, res) => {
   try {
     const { message, sessionId } = req.body;
 
@@ -98,6 +99,7 @@ router.post('/chat', optionalAuth, async (req, res) => {
 
   } catch (error) {
     console.error('AI chat error:', error.message);
+    await req.aiQuota?.refund();
     if (error.message?.includes('429')) {
       return res.status(429).json({ ok: false, error: 'Too many requests. Please wait a moment and try again.' });
     }
@@ -120,16 +122,19 @@ router.delete('/chat/:sessionId', (req, res) => {
 // actually completes (context extraction, mentor search), then one `done`
 // event with the full reply payload — so the frontend's "thinking" UI reflects
 // what the engine is really doing instead of a canned wait animation.
-router.post('/atyant-chat', optionalAuth, async (req, res) => {
+router.post('/atyant-chat', optionalAuth, aiBurstLimiter, aiDailyQuota('msg'), async (req, res) => {
   const { message, sessionId } = req.body;
 
   if (!message || !message.trim()) {
+    await req.aiQuota?.refund();
     return res.status(400).json({ ok: false, error: 'Message is required' });
   }
   if (message.trim().length > 2000) {
+    await req.aiQuota?.refund();
     return res.status(400).json({ ok: false, error: 'Message too long (max 2000 chars)' });
   }
   if (!sessionId || typeof sessionId !== 'string' || sessionId.length < 8) {
+    await req.aiQuota?.refund();
     return res.status(400).json({ ok: false, error: 'Valid sessionId is required' });
   }
 
@@ -144,11 +149,12 @@ router.post('/atyant-chat', optionalAuth, async (req, res) => {
   try {
     const userId = req.user?._id?.toString() || null;
     const result = await processAtyantMessage(sessionId, message.trim(), userId, send);
-    send({ type: 'done', ok: true, ...result });
+    send({ type: 'done', ok: true, ...result, remaining: req.aiQuota?.remaining ?? null });
     // Short follow-ups ("yes", "ok thanks") aren't real intent — don't let them overwrite the query.
     if (message.trim().length >= 20) trackEvent(userId, 'search', { query: message.trim().slice(0, 200) });
   } catch (error) {
     console.error('Atyant Engine error:', error.message);
+    await req.aiQuota?.refund();
     const rateLimited = error.message?.includes('429');
     send({
       type: 'error',
@@ -165,14 +171,16 @@ router.post('/atyant-chat', optionalAuth, async (req, res) => {
 // Same SSE progress shape as the text endpoint above, but the turn's context
 // comes from a parsed résumé (PDF text or a scanned photo), optionally combined
 // with a typed message sent alongside it.
-router.post('/atyant-chat/resume', optionalAuth, resumeUpload.single('resume'), async (req, res) => {
+router.post('/atyant-chat/resume', optionalAuth, aiBurstLimiter, aiDailyQuota('resume'), resumeUpload.single('resume'), async (req, res) => {
   const { sessionId, message } = req.body;
   const file = req.file;
 
   if (!file) {
+    await req.aiQuota?.refund();
     return res.status(400).json({ ok: false, error: 'A résumé file (PDF, JPG, PNG or WEBP, under 8MB) is required.' });
   }
   if (!sessionId || typeof sessionId !== 'string' || sessionId.length < 8) {
+    await req.aiQuota?.refund();
     return res.status(400).json({ ok: false, error: 'Valid sessionId is required' });
   }
 
@@ -204,6 +212,7 @@ router.post('/atyant-chat/resume', optionalAuth, resumeUpload.single('resume'), 
     send({ type: 'done', ok: true, ...result });
   } catch (error) {
     console.error('Résumé upload error:', error.message);
+    await req.aiQuota?.refund();
     send({ type: 'error', status: 500, error: error.message || 'Could not process that file. Try again?' });
   } finally {
     res.end();

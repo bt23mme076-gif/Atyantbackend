@@ -1,4 +1,4 @@
-// Claude (Anthropic) client — used only for the Atyant engine chat reply.
+// Claude (Anthropic) client — used only for the Atyant engine's final reasoning reply (mentor-match wrap-up).
 // Everything else (JSON extraction, roadmap, cover letters, audio) stays on Groq.
 import Anthropic from '@anthropic-ai/sdk';
 
