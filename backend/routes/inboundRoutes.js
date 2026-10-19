@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { Resend } from 'resend';
 import User from '../models/User.js';
 import InboundEmail from '../models/InboundEmail.js';
-import { extractSecurityCode } from '../services/autoapply/inbox.js';
+import { extractSecurityCode, htmlToText } from '../services/autoapply/inbox.js';
 import { esc } from '../services/email/layout.js';
 
 const router = express.Router();
@@ -49,7 +49,7 @@ async function handleReceived(data) {
 
   const mail = await fetchReceived(data.email_id);
   const body = mail.text || '';
-  const code = /security code/i.test(mail.subject || '') ? extractSecurityCode(body || mail.html || '') : '';
+  const code = /security code/i.test(mail.subject || '') ? extractSecurityCode(body || htmlToText(mail.html)) : '';
 
   const record = await InboundEmail.create({
     resendId: data.email_id, alias, user: user._id,

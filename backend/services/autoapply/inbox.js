@@ -34,6 +34,16 @@ export async function applyEmailFor(user) {
   return user.email || '';
 }
 
+// Greenhouse sends HTML only (no text part): "...field on your application: </p> <h1>N6VeJ9qG</h1>".
+export function htmlToText(html = '') {
+  return String(html)
+    .replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // "Copy and paste this code into the security code field on your application:  N6VeJ9qG"
 export function extractSecurityCode(text = '') {
   const m = /security code field[^:]*:\s*([A-Za-z0-9]{6,12})\b/i.exec(text)
