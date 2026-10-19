@@ -10,6 +10,22 @@ function countryForPhone(phone) {
   return DIAL_COUNTRY.find(([code]) => p.startsWith(code))?.[1] || 'India';
 }
 
+// Saved answers are keyed by exact question wording, so the same demographic
+// question phrased differently by each company would be re-asked every time.
+// Gender is matched across wordings; anything ambiguous (transgender, pronouns,
+// orientation) still needs its own answer.
+const GENDER_Q = /gender/;
+const NOT_GENDER_Q = /transgender|pronoun|expression|orientation/;
+function savedAnswerFor(savedAnswers, label) {
+  const key = normalizeQuestionKey(label);
+  if (savedAnswers[key]) return savedAnswers[key];
+  if (GENDER_Q.test(key) && !NOT_GENDER_Q.test(key)) {
+    const match = Object.keys(savedAnswers).find((k) => GENDER_Q.test(k) && !NOT_GENDER_Q.test(k));
+    if (match) return savedAnswers[match];
+  }
+  return undefined;
+}
+
 // Greenhouse shows the emailed code either as one input or as a row of
 // single-character boxes that auto-advance as you type.
 async function enterSecurityCode(page, code) {
@@ -86,7 +102,7 @@ export async function applyGreenhouse({ job, user, resumeBuffer, resumeFilename,
     let unfilled = await findUnfilledRequired(page);
     for (const field of unfilled) {
       if (!field.label) continue;
-      const answer = savedAnswers[normalizeQuestionKey(field.label)];
+      const answer = savedAnswerFor(savedAnswers, field.label);
       if (!answer) continue;
       await fillField(page, field, answer);
     }

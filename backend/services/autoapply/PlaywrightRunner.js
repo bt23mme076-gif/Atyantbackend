@@ -257,47 +257,72 @@ export async function describeUnanswered(page, fields) {
 
 export const idSelector = (id) => `[id=${JSON.stringify(String(id))}]`;
 
+// react-select comboboxes that search as you type (Greenhouse's City/Location
+// pickers hit a geocoder) re-render their option list while results stream in,
+// so a click on a node found a moment earlier can land on nothing. Wait for the
+// list to settle, pick by index, and confirm the chosen value actually rendered
+// before reporting success — otherwise retry.
 export async function fillCombobox(page, id, value) {
   if (!id) return false;
   const selector = idSelector(id);
   if (!(await page.locator(selector).count())) return false;
 
-  await page.click(selector);
-  await page.type(selector, value, { delay: 40 });
-  await page.waitForTimeout(700);
+  const optionTexts = (s) => page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    const lid = el?.getAttribute('aria-owns') || el?.getAttribute('aria-controls');
+    const list = lid && document.getElementById(lid);
+    return list ? Array.from(list.querySelectorAll('[role="option"]')).map((o) => o.textContent.trim()) : [];
+  }, s);
 
-  const listId = await page.evaluate((s) => {
-    const el = document.querySelector(s);
-    return el?.getAttribute('aria-owns') || el?.getAttribute('aria-controls') || null;
+  const isSelected = () => page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    const control = el?.closest('.select__control') || el?.parentElement?.parentElement?.parentElement;
+    return !!control?.querySelector('.select__single-value, .select__multi-value');
   }, selector);
 
-  if (!listId) {
-    await page.keyboard.press('Escape').catch(() => {});
-    return false;
+  const norm = (t) => t.trim().toLowerCase();
+  const syn = { male: 'man', female: 'woman', y: 'yes', n: 'no' };
+  const v = norm(value);
+  const alts = [v, syn[v]].filter(Boolean);
+  const pick = (texts) => {
+    const i = texts.findIndex((t) => alts.includes(norm(t)));
+    if (i >= 0) return i;
+    const j = texts.findIndex((t) => alts.some((a) => norm(t).startsWith(a)));
+    return j >= 0 ? j : texts.findIndex((t) => norm(t).includes(v));
+  };
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.click(selector);
+    await page.keyboard.press('Control+A').catch(() => {});
+    await page.keyboard.press('Backspace').catch(() => {});
+    await page.type(selector, value, { delay: 40 });
+
+    // Wait until options appear and stop changing.
+    let last = '';
+    let texts = [];
+    for (let i = 0; i < 20; i++) {
+      await page.waitForTimeout(350);
+      texts = await optionTexts(selector);
+      const sig = texts.join('|');
+      if (texts.length && sig === last) break;
+      last = sig;
+    }
+
+    const index = pick(texts);
+    if (index < 0) {
+      await page.keyboard.press('Escape').catch(() => {});
+      continue;
+    }
+
+    const lid = await page.evaluate((s) => {
+      const el = document.querySelector(s);
+      return el?.getAttribute('aria-owns') || el?.getAttribute('aria-controls');
+    }, selector);
+    await page.locator(`[id=${JSON.stringify(lid)}] [role="option"]`).nth(index).click({ timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(400);
+    if (await isSelected()) return true;
   }
 
-  const optionId = await page.evaluate(({ listId, value }) => {
-    const list = document.getElementById(listId);
-    if (!list) return null;
-    const opts = Array.from(list.querySelectorAll('[role="option"]'));
-    const norm = (t) => t.trim().toLowerCase();
-    const syn = { male: 'man', female: 'woman', y: 'yes', n: 'no' };
-    const v = norm(value);
-    const alts = [v, syn[v]].filter(Boolean);
-    const el = opts.find((o) => alts.includes(norm(o.textContent)))
-      || opts.find((o) => alts.some((a) => norm(o.textContent).startsWith(a)))
-      || opts.find((o) => norm(o.textContent).includes(v));
-    if (!el) return null;
-    if (!el.id) el.id = `__autoapply_opt_${Math.random().toString(36).slice(2)}`;
-    return el.id;
-  }, { listId, value });
-
-  if (!optionId) {
-    await page.keyboard.press('Escape').catch(() => {});
-    return false;
-  }
-
-  await page.click(idSelector(optionId));
-  await page.waitForTimeout(300);
-  return true;
+  await page.keyboard.press('Escape').catch(() => {});
+  return false;
 }
