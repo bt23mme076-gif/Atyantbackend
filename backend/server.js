@@ -59,6 +59,7 @@ import tpoRoutes from './routes/tpoRoutes.js';
 import jobRoutes from './routes/jobRoutes.js';
 import mockInterviewRoutes from './routes/mockInterviewRoutes.js';
 import emailRoutes from './routes/emailRoutes.js';
+import inboundRoutes from './routes/inboundRoutes.js';
 import reviewRoutes from './routes/reviewRoutes.js';
 import eventRoutes from './routes/eventRoutes.js';
 import inviteRoutes from './routes/inviteRoutes.js';
@@ -191,6 +192,7 @@ app.use((req, res, next) => {
   if (req.originalUrl === '/api/payments/webhook') return next();
   if (req.originalUrl === '/api/subscriptions/webhook') return next();
   if (req.originalUrl === '/api/livekit/webhook') return next();
+  if (req.originalUrl === '/api/email/inbound') return next();
   return express.json({ limit: '10mb' })(req, res, next);
 });
 
@@ -279,6 +281,7 @@ app.use('/api/livekit', livekitRoutes);   // in-house meet: join token + webhook
 app.use('/api/tpo', tpoRoutes);           // TPO dashboard — VNIT T&P cell
 app.use('/api/jobs', jobRoutes);          // job aggregation — Greenhouse/Lever adapters
 app.use('/api/mock-interviews', mockInterviewRoutes); // AI mock interview: join + agent dispatch
+app.use('/api/email/inbound', inboundRoutes); // Resend inbound webhook (raw body)
 app.use('/api/email', emailRoutes);        // lifecycle email: page-view beacon + unsubscribe
 app.use('/api/reviews', reviewRoutes);    // ratings: platform feedback + mock interview / session reviews
 app.use('/api/events', eventRoutes);      // product funnel steps (chat → mentor → booking)

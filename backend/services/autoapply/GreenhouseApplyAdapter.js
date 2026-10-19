@@ -1,5 +1,6 @@
 import { launchPage, splitName, detectCaptcha, findUnfilledRequired, waitForForm, fillCombobox, dedupeByLabel, fillField, describeUnanswered } from './PlaywrightRunner.js';
 import { normalizeQuestionKey } from '../../models/ApplicationAnswer.js';
+import { applyEmailFor, inboxEnabled, waitForSecurityCode } from './inbox.js';
 
 const DIAL_COUNTRY = [['+971', 'United Arab Emirates'], ['+44', 'United Kingdom'], ['+65', 'Singapore'], ['+61', 'Australia'], ['+49', 'Germany'], ['+91', 'India'], ['+1', 'United States']];
 
@@ -7,6 +8,26 @@ const DIAL_COUNTRY = [['+971', 'United Arab Emirates'], ['+44', 'United Kingdom'
 function countryForPhone(phone) {
   const p = String(phone).replace(/[^\d+]/g, '');
   return DIAL_COUNTRY.find(([code]) => p.startsWith(code))?.[1] || 'India';
+}
+
+// Greenhouse shows the emailed code either as one input or as a row of
+// single-character boxes that auto-advance as you type.
+async function enterSecurityCode(page, code) {
+  const boxes = page.locator('input[maxlength="1"]:visible');
+  const nBoxes = await boxes.count();
+  if (nBoxes >= code.length) {
+    await boxes.first().click();
+    await page.keyboard.type(code, { delay: 80 });
+    return { ok: true };
+  }
+  const single = page.locator('input[id*="security" i], input[name*="security" i], input[aria-label*="security" i], input[autocomplete="one-time-code"]').first();
+  if (await single.count()) {
+    await single.fill(code);
+    return { ok: true };
+  }
+  const inputs = await page.evaluate(() => Array.from(document.querySelectorAll('input')).filter((el) => el.offsetParent)
+    .map((el) => `${el.type}#${el.id || el.name || '?'}/${el.maxLength}`).slice(-8).join(', '));
+  return { ok: false, detail: `no code input found; inputs: ${inputs}` };
 }
 
 /**
@@ -35,7 +56,8 @@ export async function applyGreenhouse({ job, user, resumeBuffer, resumeFilename,
 
     if (await page.locator('#first_name').count()) await page.fill('#first_name', firstName);
     if (await page.locator('#last_name').count()) await page.fill('#last_name', lastName);
-    if (await page.locator('#email').count()) await page.fill('#email', user.email || '');
+    const applyEmail = await applyEmailFor(user);
+    if (await page.locator('#email').count()) await page.fill('#email', applyEmail);
     if (user.autoApply?.phone && (await page.locator('#phone').count())) {
       await page.fill('#phone', user.autoApply.phone);
       // The phone's country picker is marked optional but the form rejects the
@@ -84,6 +106,7 @@ export async function applyGreenhouse({ job, user, resumeBuffer, resumeFilename,
     }
 
     const submitBtn = page.locator('button[type="submit"], #submit_app').first();
+    const submittedAt = new Date();
     await submitBtn.click();
 
     // The confirmation renders asynchronously (often a client-side route change
@@ -101,7 +124,23 @@ export async function applyGreenhouse({ job, user, resumeBuffer, resumeFilename,
       return { status: 'submitted', confirmationText: bodyText.slice(0, 500) };
     }
     if (VERIFY_CODE.test(bodyText)) {
-      return { status: 'needs_manual_action', reason: 'Greenhouse sent a verification code to your email — enter it on the company site to finish' };
+      if (!inboxEnabled()) {
+        return { status: 'needs_manual_action', reason: 'Greenhouse sent a verification code to your email — enter it on the company site to finish' };
+      }
+      const code = await waitForSecurityCode(applyEmail, submittedAt);
+      if (!code) return { status: 'failed', reason: 'Greenhouse security code email did not arrive in 2 minutes — try again' };
+
+      const entered = await enterSecurityCode(page, code);
+      if (!entered.ok) return { status: 'needs_manual_action', reason: `Could not enter the security code (${entered.detail})` };
+
+      await page.locator('button[type="submit"], #submit_app').first().click();
+      for (let i = 0; i < 20; i++) {
+        await page.waitForTimeout(1000);
+        bodyText = await page.locator('body').innerText().catch(() => '');
+        if (CONFIRMED.test(bodyText) || /confirmation/i.test(page.url())) {
+          return { status: 'submitted', confirmationText: bodyText.slice(0, 500) };
+        }
+      }
     }
 
     const errors = await page.evaluate(() => Array.from(document.querySelectorAll(

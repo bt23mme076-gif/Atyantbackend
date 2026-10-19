@@ -1,3 +1,4 @@
+import { applyEmailFor } from './inbox.js';
 import { launchPage, detectCaptcha, findUnfilledRequired, waitForForm, fillCombobox, dedupeByLabel, fillField, describeUnanswered } from './PlaywrightRunner.js';
 import { normalizeQuestionKey } from '../../models/ApplicationAnswer.js';
 
@@ -25,7 +26,7 @@ export async function applyLever({ job, user, resumeBuffer, resumeFilename, save
       await page.fill('input[name="name"]', user.name || '');
     }
     if (await page.locator('input[name="email"]').count()) {
-      await page.fill('input[name="email"]', user.email || '');
+      await page.fill('input[name="email"]', await applyEmailFor(user));
     }
     if (user.autoApply?.phone && (await page.locator('input[name="phone"]').count())) {
       await page.fill('input[name="phone"]', user.autoApply.phone);
