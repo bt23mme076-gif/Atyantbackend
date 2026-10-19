@@ -72,16 +72,30 @@ export async function applyGreenhouse({ job, user, resumeBuffer, resumeFilename,
 
     const submitBtn = page.locator('button[type="submit"], #submit_app').first();
     await submitBtn.click();
-    await page.waitForTimeout(3000);
 
-    const bodyText = await page.locator('body').innerText().catch(() => '');
-    const confirmed = /thank you|application (received|submitted)|we.?ve received your application/i.test(bodyText);
-
-    if (!confirmed) {
-      return { status: 'needs_manual_action', reason: 'No confirmation text detected after submit — verify manually' };
+    // The confirmation renders asynchronously (often a client-side route change
+    // after the submit XHR), so poll instead of reading the page once.
+    const CONFIRMED = /thank you|application (received|submitted)|we.?ve received your application|successfully submitted/i;
+    const VERIFY_CODE = /security code|verification code|verify your email/i;
+    let bodyText = '';
+    for (let i = 0; i < 15; i++) {
+      await page.waitForTimeout(1000);
+      bodyText = await page.locator('body').innerText().catch(() => '');
+      if (CONFIRMED.test(bodyText) || /confirmation/i.test(page.url()) || VERIFY_CODE.test(bodyText)) break;
     }
 
-    return { status: 'submitted', confirmationText: bodyText.slice(0, 500) };
+    if (CONFIRMED.test(bodyText) || /confirmation/i.test(page.url())) {
+      return { status: 'submitted', confirmationText: bodyText.slice(0, 500) };
+    }
+    if (VERIFY_CODE.test(bodyText)) {
+      return { status: 'needs_manual_action', reason: 'Greenhouse sent a verification code to your email — enter it on the company site to finish' };
+    }
+
+    const errors = await page.evaluate(() => Array.from(document.querySelectorAll(
+      '[role="alert"], .error, .field-error, [class*="error" i], [aria-invalid="true"]',
+    )).map((el) => (el.textContent || '').trim()).filter(Boolean).slice(0, 3).join(' | ')).catch(() => '');
+    const detail = errors || bodyText.replace(/\s+/g, ' ').slice(0, 160);
+    return { status: 'needs_manual_action', reason: `Submit not confirmed — ${detail || 'page showed nothing'} (${page.url().slice(0, 80)})` };
   } catch (err) {
     return { status: 'failed', reason: err.message };
   } finally {
