@@ -76,6 +76,7 @@ import StalePendingCron from './services/StalePendingCron.js';
 import JobSyncCron from './services/JobSyncCron.js';
 import AutoApplyCron from './services/AutoApplyCron.js';
 import EmailPipeline from './services/email/EmailPipeline.js';
+import { esc, callout, renderLayout } from './services/email/layout.js';
 
 // ─── Passport Configuration ────────────────────────────────────────────────
 import './config/passport.js';
@@ -663,11 +664,18 @@ io.on('connection', socket => {
       const isOnline = userSockets.has(data.receiver);
 
       if (!isActive && !isOnline && !pendingNotifications.has(emailKey) && resend) {
+        const preview = String(data.text || '').slice(0, 400);
         resend.emails.send({
-          from: 'notification@atyant.in',
+          from: 'Atyant <notification@atyant.in>',
           to: receiver.email,
-          subject: `New Message from ${sender.username}`,
-          text: `${sender.username}: "${data.text}"\n\nReply at ${allowedOrigins[0]}`
+          subject: `New message from ${sender.username}`,
+          text: `${sender.username}: "${preview}"\n\nReply at ${allowedOrigins[0]}/chat`,
+          html: renderLayout({
+            tag: 'New message',
+            heading: `${esc(sender.username)} sent you a message.`,
+            body: callout(esc(preview), { label: esc(sender.username) }),
+            cta: { label: 'Reply →', url: `${allowedOrigins[0]}/chat` },
+          }),
         })
           .then(() => pendingNotifications.set(emailKey, true))
           .catch(err => console.error('Email notification failed:', err.message));

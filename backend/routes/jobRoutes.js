@@ -8,6 +8,7 @@ import { hasActivePlan } from '../middleware/subscriptionMiddleware.js';
 import JobSyncCron from '../services/JobSyncCron.js';
 import AutoApplyCron from '../services/AutoApplyCron.js';
 import { matchJobsForUser } from '../services/MatchingEngine.js';
+import { trackEvent } from '../services/email/EmailPipeline.js';
 import { generateCoverLetter } from '../services/CoverLetterService.js';
 import { downloadFileBuffer } from '../services/autoapply/PlaywrightRunner.js';
 import { applyGreenhouse } from '../services/autoapply/GreenhouseApplyAdapter.js';
@@ -110,6 +111,15 @@ router.get('/matches', protect, async (req, res) => {
     const ranked = matchJobsForUser(user, jobs, { minScore: Number(minScore) || 0 });
 
     const total = ranked.length;
+    const top = ranked.filter((r) => r.score > 0).slice(0, 3);
+    if (top.length) {
+      trackEvent(req.user.userId, 'jobs_view', {
+        total: ranked.filter((r) => r.score > 0).length,
+        jobs: top.map(({ job, score, matchedSkills }) => ({
+          title: job.title, company: job.company, location: job.location, score, matchedSkills,
+        })),
+      });
+    }
     const pageItems = ranked.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
     res.json({

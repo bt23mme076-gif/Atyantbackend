@@ -45,6 +45,15 @@ export const FLOWS = {
     ],
   },
 
+  // Opened the job portal and has matches. Not a sales step — paid users get it too.
+  jobs: {
+    event: 'jobs_view',
+    cooldownDays: 14,
+    steps: [
+      { step: 'jobs_welcome', delay: 1 * H, priority: 4 },
+    ],
+  },
+
   // Post-purchase: feedback + cross-sell. Receipts are sent immediately elsewhere.
   purchase: {
     event: 'purchase',

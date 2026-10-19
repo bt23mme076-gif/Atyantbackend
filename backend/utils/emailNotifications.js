@@ -1,4 +1,5 @@
 import { Resend } from 'resend';
+import { esc, p, small, details, callout, pills, renderLayout } from '../services/email/layout.js';
 
 // ─────────────────────────────────────────────
 //  INIT  (single instance, warn if missing)
@@ -38,36 +39,18 @@ async function sendEmail({ to, subject, html }) {
 //  MENTOR: new question notification
 // ─────────────────────────────────────────────
 export const sendMentorNewQuestionNotification = async (mentorEmail, mentorName, questionText, keywords = []) => {
-  const keywordBadges = keywords.slice(0, 5).map(kw =>
-    `<span style="background:#d1fae5;color:#065f46;padding:6px 12px;border-radius:12px;font-size:13px;font-weight:600;display:inline-block;margin:4px">${kw}</span>`
-  ).join('');
+  const html = renderLayout({
+    tag: 'New question',
+    heading: 'A student needs your experience.',
+    body:
+      p(`Hi ${esc(mentorName)}, a student asked a question that matches your expertise.`) +
+      callout(esc(questionText), { label: 'Question' }) +
+      (keywords.length ? small('Related topics') + pills(keywords.slice(0, 5)) : '') +
+      callout('Share your real experience, not generic advice.', { label: 'Remember', accent: 'jobs' }),
+    cta: { label: 'Answer question →', url: `${APP_URL}/mentor-dashboard` },
+  });
 
-  const html = `
-<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
-  <h1 style="color:#10b981;text-align:center;margin:0 0 30px">🎯 Atyant</h1>
-  <div style="background:#f0fdf4;padding:30px;border-radius:10px;border-left:4px solid #10b981">
-    <h2 style="color:#1f2937;margin-top:0">New Question Assigned to You!</h2>
-    <p style="color:#6b7280;line-height:1.6">Hi ${mentorName},</p>
-    <p style="color:#6b7280;line-height:1.6">A student asked a question that matches your expertise.</p>
-    <div style="background:#fff;padding:20px;border-radius:8px;margin:20px 0;border:2px solid #10b981">
-      <h3 style="color:#10b981;margin-top:0;font-size:14px;text-transform:uppercase;letter-spacing:1px">Question</h3>
-      <p style="color:#1f2937;font-size:16px;line-height:1.6;margin:0">${questionText}</p>
-    </div>
-    ${keywordBadges ? `<div style="margin:20px 0"><p style="color:#6b7280;font-size:14px;margin-bottom:8px">Related Topics:</p>${keywordBadges}</div>` : ''}
-    <div style="text-align:center;margin:30px 0">
-      <a href="${APP_URL}/mentor-dashboard"
-         style="background:#10b981;color:#fff;padding:14px 32px;text-decoration:none;border-radius:8px;font-weight:700;display:inline-block">
-        Answer Question
-      </a>
-    </div>
-    <div style="background:#fef3c7;padding:15px;border-radius:8px">
-      <p style="color:#92400e;margin:0;font-size:13px">💡 <strong>Remember:</strong> Share your real experience — not generic advice.</p>
-    </div>
-  </div>
-  <p style="text-align:center;color:#9ca3af;font-size:12px;margin-top:30px">© ${new Date().getFullYear()} Atyant. All rights reserved.</p>
-</div>`;
-
-  const result = await sendEmail({ to: mentorEmail, subject: '🎯 New Question Assigned to You', html });
+  const result = await sendEmail({ to: mentorEmail, subject: 'New question assigned to you', html });
   if (result.success) console.log(`✅ Mentor notification sent → ${mentorEmail}`);
   return result;
 };
@@ -150,69 +133,36 @@ export const sendMeetingNotification = async (mentorEmail, userEmail, meetingDet
 //  SERVICE PURCHASE: notification to mentor and student
 // ─────────────────────────────────────────────
 export const sendServicePurchaseNotification = async (mentorEmail, mentorName, userEmail, userName, serviceName, sessionDetails = {}) => {
-  const mentorHtml = `
-<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
-  <h1 style="color:#6366f1;text-align:center;margin:0 0 30px">💰 New Service Purchase</h1>
-  <div style="background:#ede9fe;padding:30px;border-radius:10px;border-left:4px solid #6366f1">
-    <h2 style="color:#1f2937;margin-top:0">🎉 New Service Purchased!</h2>
-    <p style="color:#6b7280;line-height:1.6">Hi ${mentorName},</p>
-    <p style="color:#6b7280;line-height:1.6">A student has purchased your <strong>${serviceName}</strong> service.</p>
-    <div style="background:#fff;padding:20px;border-radius:8px;margin:20px 0;border:2px solid #6366f1">
-      <h3 style="color:#6366f1;margin-top:0;font-size:14px;text-transform:uppercase;letter-spacing:1px">Student Details</h3>
-      <p style="color:#1f2937;font-size:16px;line-height:1.6;margin:0"><strong>Name:</strong> ${userName}</p>
-      <p style="color:#1f2937;font-size:16px;line-height:1.6;margin:0"><strong>Email:</strong> ${userEmail}</p>
-    </div>
-    ${sessionDetails.scheduledAt ? `
-    <div style="background:#f0fdf4;padding:20px;border-radius:8px;margin:20px 0">
-      <h3 style="color:#10b981;margin-top:0;font-size:14px;text-transform:uppercase;letter-spacing:1px">Scheduled Session</h3>
-      <p style="color:#065f46;margin:0;font-size:16px;line-height:1.6"><strong>Date & Time:</strong> ${new Date(sessionDetails.scheduledAt).toLocaleString()}</p>
-      <p style="color:#065f46;margin:0;font-size:16px;line-height:1.6"><strong>Topic:</strong> ${sessionDetails.topic || 'Career Guidance'}</p>
-    </div>
-    ` : ''}
-    <div style="background:#d1fae5;padding:20px;border-radius:8px;margin:20px 0">
-      <p style="color:#065f46;margin:0;font-size:14px">💬 <strong>Chat Now Available:</strong></p>
-      <p style="color:#065f46;margin:0;font-size:14px">You can now chat with this student to discuss their needs and prepare for the session.</p>
-    </div>
-    <div style="text-align:center;margin:30px 0">
-      <a href="${APP_URL}/mentor-dashboard"
-         style="background:#6366f1;color:#fff;padding:14px 32px;text-decoration:none;border-radius:8px;font-weight:700;display:inline-block">
-        View in Dashboard
-      </a>
-    </div>
-  </div>
-  <p style="text-align:center;color:#9ca3af;font-size:12px;margin-top:30px">© ${new Date().getFullYear()} Atyant. All rights reserved.</p>
-</div>`;
+  const sessionRows = sessionDetails.scheduledAt ? details([
+    ['Date & time', `${new Date(sessionDetails.scheduledAt).toLocaleString('en-IN', { dateStyle: 'full', timeStyle: 'short', timeZone: 'Asia/Kolkata' })} (IST)`],
+    ['Topic', esc(sessionDetails.topic || 'Career Guidance')],
+  ]) : '';
 
-  const studentHtml = `
-<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
-  <h1 style="color:#10b981;text-align:center;margin:0 0 30px">✨ Service Purchased</h1>
-  <div style="background:#f0fdf4;padding:30px;border-radius:10px;border-left:4px solid #10b981">
-    <h2 style="color:#1f2937;margin-top:0">🎉 Payment Successful!</h2>
-    <p style="color:#6b7280;line-height:1.6">Hi ${userName},</p>
-    <p style="color:#6b7280;line-height:1.6">Your purchase of <strong>${serviceName}</strong> with ${mentorName} is confirmed.</p>
-    ${sessionDetails.scheduledAt ? `
-    <div style="background:#fff;padding:20px;border-radius:8px;margin:20px 0;border:2px solid #10b981">
-      <h3 style="color:#10b981;margin-top:0;font-size:14px;text-transform:uppercase;letter-spacing:1px">Scheduled Session</h3>
-      <p style="color:#1f2937;font-size:16px;line-height:1.6;margin:0"><strong>Date & Time:</strong> ${new Date(sessionDetails.scheduledAt).toLocaleString()}</p>
-      <p style="color:#1f2937;font-size:16px;line-height:1.6;margin:0"><strong>Topic:</strong> ${sessionDetails.topic || 'Career Guidance'}</p>
-    </div>
-    ` : ''}
-    <div style="background:#d1fae5;padding:20px;border-radius:8px;margin:20px 0">
-      <p style="color:#065f46;margin:0;font-size:14px">💬 <strong>Chat Now Available:</strong></p>
-      <p style="color:#065f46;margin:0;font-size:14px">You can now chat directly with ${mentorName} to discuss your session and any questions.</p>
-    </div>
-    <div style="text-align:center;margin:30px 0">
-      <a href="${APP_URL}/chat"
-         style="background:#10b981;color:#fff;padding:14px 32px;text-decoration:none;border-radius:8px;font-weight:700;display:inline-block">
-        Start Chat
-      </a>
-    </div>
-  </div>
-  <p style="text-align:center;color:#9ca3af;font-size:12px;margin-top:30px">© ${new Date().getFullYear()} Atyant. All rights reserved.</p>
-</div>`;
+  const mentorHtml = renderLayout({
+    tag: 'New purchase',
+    accent: 'success',
+    heading: `New ${esc(serviceName)} purchase.`,
+    body:
+      p(`Hi ${esc(mentorName)}, a student has purchased your <strong>${esc(serviceName)}</strong> service.`) +
+      details([['Student', esc(userName)], ['Email', esc(userEmail)]]) +
+      sessionRows +
+      callout('You can now chat with this student to discuss their needs and prepare for the session.', { label: 'Chat is open', accent: 'success' }),
+    cta: { label: 'View in dashboard →', url: `${APP_URL}/mentor-dashboard` },
+  });
 
-  const mentorResult = await sendEmail({ to: mentorEmail, subject: '💰 New Service Purchased', html: mentorHtml });
-  const studentResult = await sendEmail({ to: userEmail, subject: '✨ Service Purchased Successfully', html: studentHtml });
+  const studentHtml = renderLayout({
+    tag: 'Payment successful',
+    accent: 'success',
+    heading: 'Payment successful.',
+    body:
+      p(`Hi ${esc(userName)}, your purchase of <strong>${esc(serviceName)}</strong> with ${esc(mentorName)} is confirmed.`) +
+      sessionRows +
+      callout(`You can now chat directly with ${esc(mentorName)} to discuss your session and any questions.`, { label: 'Chat is open', accent: 'success' }),
+    cta: { label: 'Start chat →', url: `${APP_URL}/chat` },
+  });
+
+  const mentorResult = await sendEmail({ to: mentorEmail, subject: `New ${serviceName} purchase from ${userName}`, html: mentorHtml });
+  const studentResult = await sendEmail({ to: userEmail, subject: 'Payment successful: your Atyant purchase is confirmed', html: studentHtml });
 
   if (mentorResult.success) console.log(`✅ Service purchase notification sent to mentor → ${mentorEmail}`);
   if (studentResult.success) console.log(`✅ Service purchase notification sent to student → ${userEmail}`);

@@ -782,6 +782,9 @@
 
 
 import { Resend } from 'resend';
+import {
+  esc, p, small, list, details, callout, code, secondaryButton, renderLayout,
+} from '../services/email/layout.js';
 
 // Lazy-initialized so env is always read at call time, not module load time
 let _resend = null;
@@ -797,12 +800,20 @@ function getResend() {
   return _resend;
 }
 
-// Shared footer for branded emails
-const emailFooter = `
-  <div style="text-align: center; margin-top: 30px; color: #9ca3af; font-size: 12px;">
-    <p>This email was sent by Atyant. If you have any questions, just reply to this email.</p>
-    <p>&copy; ${new Date().getFullYear()} Atyant. All rights reserved.</p>
-  </div>`;
+// Session details + join/calendar buttons, shared by confirmation and reminder emails.
+function sessionEmail({ heading, intro, tag, rows, meetLink, calUrl, pendingNote }) {
+  return renderLayout({
+    tag,
+    accent: 'success',
+    heading,
+    body: p(intro) + details(rows),
+    cta: meetLink ? { label: 'Join Atyant Meet', url: meetLink } : null,
+    afterCta: meetLink
+      ? `<div style="text-align:center;margin:-8px 0 18px;">${secondaryButton('Add to Google Calendar', calUrl)}</div>` +
+        small(`Link: <a href="${meetLink}" style="color:#5A4CB0;">${esc(meetLink)}</a>`)
+      : callout(pendingNote, { accent: 'jobs' }),
+  });
+}
 
 // ─────────────────────────────────────────────────────────────
 //  Welcome email — new STUDENT/USER signup
@@ -821,42 +832,23 @@ export const sendUserWelcomeEmail = async (email, username) => {
       from: 'Atyant <notifications@atyant.in>',
       replyTo: 'support@atyant.in',
       to: [email],
-      subject: 'Welcome to Atyant 🎉 — find someone exactly like you',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h1 style="color: #4F46E5; margin: 0;">Atyant</h1>
-          </div>
-
-          <div style="background-color: #f8fafc; padding: 30px; border-radius: 10px; border-left: 4px solid #4F46E5;">
-            <h2 style="color: #1f2937; margin-top: 0;">Welcome aboard, ${name}! 🎉</h2>
-
-            <p style="color: #6b7280; line-height: 1.6; margin-bottom: 16px;">
-              You just joined Atyant — the place where you find seniors who walked <em>exactly</em> your path,
-              from your college and your branch, and learn how they cracked it.
-            </p>
-
-            <p style="color: #6b7280; line-height: 1.6; margin-bottom: 8px;">Here's what you can do right now:</p>
-            <ul style="color: #6b7280; line-height: 1.8; margin: 0 0 20px 18px; padding: 0;">
-              <li><strong>Ask any career question</strong> and get matched to seniors who've been there.</li>
-              <li><strong>Book a 1:1 session</strong> — chat or video — with a mentor from your background.</li>
-              <li><strong>Get a personalized roadmap</strong> for placements or internships.</li>
-            </ul>
-
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${appUrl}"
-                 style="background-color: #4F46E5; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-                Find My Match
-              </a>
-            </div>
-
-            <p style="color: #6b7280; line-height: 1.6; font-size: 14px; margin-top: 24px;">
-              Have a question? Just reply to this email — a real person reads it.
-            </p>
-          </div>
-          ${emailFooter}
-        </div>
-      `
+      subject: 'Welcome to Atyant: find someone exactly like you',
+      html: renderLayout({
+        tag: 'Welcome',
+        heading: `Welcome aboard, ${esc(name)}.`,
+        body:
+          p('You just joined Atyant, the place where you find seniors who walked <em>exactly</em> your path, from your college and your branch, and learn how they cracked it.') +
+          p("Here's what you can do right now:") +
+          list([
+            '<strong>Ask any career question</strong> and get matched to seniors who\'ve been there.',
+            '<strong>Book a 1:1 session</strong>, chat or video, with a mentor from your background.',
+            '<strong>Get a personalized roadmap</strong> for placements or internships.',
+            '<strong>Practise with an AI mock interview</strong> and get feedback on every answer.',
+            '<strong>Browse open jobs</strong> that match your profile, or let Auto-Apply send them.',
+          ]),
+        cta: { label: 'Find my match →', url: appUrl },
+        afterCta: p('Have a question? Just reply to this email. A real person reads it.'),
+      }),
     });
 
     if (error) {
@@ -888,48 +880,24 @@ export const sendMentorWelcomeEmail = async (email, mentorName) => {
       from: 'Atyant <notifications@atyant.in>',
       replyTo: 'support@atyant.in',
       to: [email],
-      subject: 'Welcome to Atyant, mentor 🙌 — your journey can change a junior\'s life',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h1 style="color: #4F46E5; margin: 0;">Atyant</h1>
-          </div>
-
-          <div style="background-color: #f0f5ff; padding: 30px; border-radius: 10px; border-left: 4px solid #4F46E5;">
-            <h2 style="color: #1f2937; margin-top: 0;">Welcome to the mentor community, ${name}! 🙌</h2>
-
-            <p style="color: #6b7280; line-height: 1.6; margin-bottom: 16px;">
-              Thank you for stepping up to guide juniors from a background like yours. The advice you wish
-              you'd had is exactly what a student on Atyant is searching for right now.
-            </p>
-
-            <p style="color: #6b7280; line-height: 1.6; margin-bottom: 8px;">Here's how Atyant works for you:</p>
-            <ul style="color: #6b7280; line-height: 1.8; margin: 0 0 20px 18px; padding: 0;">
-              <li><strong>Get discovered automatically</strong> — our AI matches you to students from your college, branch and goal.</li>
-              <li><strong>Guide on your terms</strong> — 1:1 chats and video sessions, scheduled around you.</li>
-              <li><strong>Build your reputation</strong> — a public mentor profile that showcases your journey and achievements.</li>
-              <li><strong>Earn for your time</strong> — set your own price per session, or mentor for free. Your call.</li>
-            </ul>
-
-            <p style="color: #6b7280; line-height: 1.6; margin-bottom: 8px;">
-              <strong>One quick step to go live:</strong> complete your mentor profile — add your companies,
-              expertise and your story — so students start matching with you.
-            </p>
-
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${appUrl}"
-                 style="background-color: #4F46E5; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-                Complete My Mentor Profile
-              </a>
-            </div>
-
-            <p style="color: #6b7280; line-height: 1.6; font-size: 14px; margin-top: 24px;">
-              Questions about mentoring on Atyant? Just reply to this email.
-            </p>
-          </div>
-          ${emailFooter}
-        </div>
-      `
+      subject: 'Welcome to Atyant, mentor: your journey can change a junior\'s life',
+      html: renderLayout({
+        tag: 'Mentor',
+        accent: 'jobs',
+        heading: `Welcome to the mentor community, ${esc(name)}.`,
+        body:
+          p('Thank you for stepping up to guide juniors from a background like yours. The advice you wish you\'d had is exactly what a student on Atyant is searching for right now.') +
+          p("Here's how Atyant works for you:") +
+          list([
+            '<strong>Get discovered automatically.</strong> Our AI matches you to students from your college, branch and goal.',
+            '<strong>Guide on your terms.</strong> 1:1 chats and video sessions, scheduled around you.',
+            '<strong>Build your reputation.</strong> A public mentor profile that showcases your journey.',
+            '<strong>Earn for your time.</strong> Set your own price per session, or mentor for free.',
+          ]) +
+          callout('Complete your mentor profile (companies, expertise and your story) so students start matching with you.', { label: 'One step to go live', accent: 'jobs' }),
+        cta: { label: 'Complete my mentor profile →', url: appUrl },
+        afterCta: p('Questions about mentoring on Atyant? Just reply to this email.'),
+      }),
     });
 
     if (error) {
@@ -970,34 +938,20 @@ export const sendSessionConfirmationEmails = async ({
     + `&details=${encodeURIComponent(`Join your Atyant session: ${meetLink || ''}`)}`
     + `&location=${encodeURIComponent(meetLink || 'https://atyant.in')}`;
 
-  const meetBlock = meetLink
-    ? `<div style="text-align:center;margin:28px 0;">
-         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Atyant Meet</a>
-         <p style="color:#9ca3af;font-size:12px;margin-top:10px;">Link: <a href="${meetLink}" style="color:#4F46E5;">${meetLink}</a></p>
-         <a href="${calUrl}" style="display:inline-block;margin-top:14px;padding:9px 22px;border:2px solid #4F46E5;border-radius:6px;color:#4F46E5;text-decoration:none;font-weight:600;font-size:14px;">📅 Add to Google Calendar</a>
-       </div>`
-    : `<p style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:12px;border-radius:8px;line-height:1.5;">
-         Your session link will be shared shortly before the session. We'll email it to you.
-       </p>`;
-
-  const card = (heading, intro) => `
-    <div style="font-family: Arial, sans-serif; max-width:600px; margin:0 auto; padding:20px;">
-      <div style="text-align:center; margin-bottom:30px;"><h1 style="color:#4F46E5; margin:0;">Atyant</h1></div>
-      <div style="background:#f0fdf4; padding:30px; border-radius:10px; border-left:4px solid #22c55e;">
-        <h2 style="color:#1f2937; margin-top:0;">${heading}</h2>
-        <p style="color:#6b7280; line-height:1.6;">${intro}</p>
-        <div style="background:#fff; padding:20px; border-radius:8px; margin:20px 0;">
-          <table style="width:100%; border-collapse:collapse;">
-            <tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">Topic:</td><td style="padding:8px 0;color:#1f2937;">${topic || 'Mentorship Session'}</td></tr>
-            <tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">When:</td><td style="padding:8px 0;color:#1f2937;">${when} (IST)</td></tr>
-            <tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">Duration:</td><td style="padding:8px 0;color:#1f2937;">${durationMin || 30} min</td></tr>
-            ${amount ? `<tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">Amount paid:</td><td style="padding:8px 0;color:#22c55e;font-weight:700;">₹${amount}</td></tr>` : ''}
-          </table>
-        </div>
-        ${meetBlock}
-      </div>
-      ${emailFooter}
-    </div>`;
+  const card = (heading, intro) => sessionEmail({
+    tag: 'Session confirmed',
+    heading,
+    intro,
+    meetLink,
+    calUrl,
+    pendingNote: "Your session link will be shared shortly before the session. We'll email it to you.",
+    rows: [
+      ['Topic', esc(topic || 'Mentorship Session')],
+      ['When', `${when} (IST)`],
+      ['Duration', `${durationMin || 30} min`],
+      amount && ['Amount paid', `₹${amount}`],
+    ],
+  });
 
   try {
     const results = await Promise.allSettled([
@@ -1005,17 +959,17 @@ export const sendSessionConfirmationEmails = async ({
         from: 'Atyant <notifications@atyant.in>',
         replyTo: 'support@atyant.in',
         to: [studentEmail],
-        subject: '✅ Your Atyant session is confirmed',
-        html: card('Your session is confirmed! 🎉',
-          `Hi ${studentName || 'there'}, your session with <strong>${mentorName || 'your mentor'}</strong> is booked. Add it to your calendar and join via the link below.`),
+        subject: 'Your Atyant session is confirmed',
+        html: card('Your session is confirmed.',
+          `Hi ${esc(studentName || 'there')}, your session with <strong>${esc(mentorName || 'your mentor')}</strong> is booked. Add it to your calendar and join via the link below.`),
       }),
       getResend().emails.send({
         from: 'Atyant <notifications@atyant.in>',
         replyTo: 'support@atyant.in',
         to: [mentorEmail],
-        subject: `📅 New confirmed session with ${studentName || 'a student'}`,
-        html: card('You have a new confirmed session 🎉',
-          `Hi ${mentorName || 'there'}, <strong>${studentName || 'a student'}</strong> has booked a mock interview session with you. Please join the session using the link below. You can also add this session to your calendar.`),
+        subject: `New confirmed session with ${studentName || 'a student'}`,
+        html: card('You have a new confirmed session.',
+          `Hi ${esc(mentorName || 'there')}, <strong>${esc(studentName || 'a student')}</strong> has booked a mock interview session with you. Please join the session using the link below. You can also add this session to your calendar.`),
       }),
     ]);
     results.forEach((r, i) => {
@@ -1054,34 +1008,20 @@ export const sendSessionReminderEmails = async ({
     + `&details=${encodeURIComponent(`Join your Atyant session: ${meetLink || ''}`)}`
     + `&location=${encodeURIComponent(meetLink || 'https://atyant.in')}`;
 
-  const meetBlock = meetLink
-    ? `<div style="text-align:center;margin:28px 0;">
-         <a href="${meetLink}" style="background-color:#4F46E5;color:#fff;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">Join Atyant Meet</a>
-         <p style="color:#9ca3af;font-size:12px;margin-top:10px;">Link: <a href="${meetLink}" style="color:#4F46E5;">${meetLink}</a></p>
-         <a href="${calUrl}" style="display:inline-block;margin-top:14px;padding:9px 22px;border:2px solid #4F46E5;border-radius:6px;color:#4F46E5;text-decoration:none;font-weight:600;font-size:14px;">📅 Add to Google Calendar</a>
-       </div>`
-    : `<p style="color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:12px;border-radius:8px;line-height:1.5;">
-         Your session link will be shared shortly before the session.
-       </p>`;
-
-  const card = (heading, intro) => `
-    <div style="font-family: Arial, sans-serif; max-width:600px; margin:0 auto; padding:20px;">
-      <div style="text-align:center; margin-bottom:30px;"><h1 style="color:#4F46E5; margin:0;">Atyant</h1></div>
-      <div style="background:#eff6ff; padding:30px; border-radius:10px; border-left:4px solid #4F46E5;">
-        <h2 style="color:#1f2937; margin-top:0;">${heading}</h2>
-        <p style="color:#6b7280; line-height:1.6;">${intro}</p>
-        <div style="background:#fff; padding:20px; border-radius:8px; margin:20px 0;">
-          <table style="width:100%; border-collapse:collapse;">
-            <tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">Topic:</td><td style="padding:8px 0;color:#1f2937;">${topic || 'Mentorship Session'}</td></tr>
-            <tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">When:</td><td style="padding:8px 0;color:#1f2937;">${when} (IST)</td></tr>
-            <tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">Starts in:</td><td style="padding:8px 0;color:#4F46E5;font-weight:700;">${label}</td></tr>
-            <tr><td style="padding:8px 0;color:#6b7280;font-weight:600;">Duration:</td><td style="padding:8px 0;color:#1f2937;">${durationMin || 30} min</td></tr>
-          </table>
-        </div>
-        ${meetBlock}
-      </div>
-      ${emailFooter}
-    </div>`;
+  const card = (heading, intro) => sessionEmail({
+    tag: 'Reminder',
+    heading,
+    intro,
+    meetLink,
+    calUrl,
+    pendingNote: 'Your session link will be shared shortly before the session.',
+    rows: [
+      ['Topic', esc(topic || 'Mentorship Session')],
+      ['When', `${when} (IST)`],
+      ['Starts in', label],
+      ['Duration', `${durationMin || 30} min`],
+    ],
+  });
 
   try {
     const results = await Promise.allSettled([
@@ -1089,17 +1029,17 @@ export const sendSessionReminderEmails = async ({
         from: 'Atyant <notifications@atyant.in>',
         replyTo: 'support@atyant.in',
         to: [studentEmail],
-        subject: `⏰ Reminder: your Atyant session starts in ${label}`,
-        html: card(`Your session starts in ${label} ⏰`,
-          `Hi ${studentName || 'there'}, this is a reminder that your session with <strong>${mentorName || 'your mentor'}</strong> starts in ${label}. Join via the link below.`),
+        subject: `Reminder: your Atyant session starts in ${label}`,
+        html: card(`Your session starts in ${label}.`,
+          `Hi ${esc(studentName || 'there')}, this is a reminder that your session with <strong>${esc(mentorName || 'your mentor')}</strong> starts in ${label}. Join via the link below.`),
       }),
       getResend().emails.send({
         from: 'Atyant <notifications@atyant.in>',
         replyTo: 'support@atyant.in',
         to: [mentorEmail],
-        subject: `⏰ Reminder: your Atyant session with ${studentName || 'a student'} starts in ${label}`,
-        html: card(`Your session starts in ${label} ⏰`,
-          `Hi ${mentorName || 'there'}, this is a reminder that your session with <strong>${studentName || 'a student'}</strong> starts in ${label}. Join via the link below.`),
+        subject: `Reminder: your Atyant session with ${studentName || 'a student'} starts in ${label}`,
+        html: card(`Your session starts in ${label}.`,
+          `Hi ${esc(mentorName || 'there')}, this is a reminder that your session with <strong>${esc(studentName || 'a student')}</strong> starts in ${label}. Join via the link below.`),
       }),
     ]);
     results.forEach((r, i) => {
@@ -1549,23 +1489,15 @@ export const sendSignupOTPEmail = async (email, otp) => {
 
       text: `Welcome to Atyant\n\nUse the following verification code to complete your signup:\n\n${otp}\n\nThis verification code expires in exactly 10 minutes. For security reasons, please do not share this code with anyone.\n\nIf you did not request this, you can safely ignore this email.\n\nRegards,\nTeam Atyant\nsupport@atyant.in`,
 
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; color: #333333; line-height: 1.6;">
-          <h1 style="color:#4F46E5; margin-bottom: 20px;">Atyant</h1>
-          <h2>Verify Your Account</h2>
-          <p>Use the following verification code to complete your signup:</p>
-          <div style="font-size:32px; font-weight:bold; color:#4F46E5; letter-spacing:6px; margin:30px 0; background-color: #f9fafb; padding: 15px; text-align: center; border-radius: 6px;">
-            ${otp}
-          </div>
-          <p>This code expires in <strong>10 minutes</strong>.</p>
-          <p style="color: #666666; font-size: 14px;">If you didn't request this, you can safely ignore this email.</p>
-          <hr style="margin-top:30px; border:none; border-top:1px solid #eeeeee;">
-          <p style="font-size:12px; color:#999999; text-align: center;">
-            This email was sent by Atyant.<br>
-            If you have issues, contact support@atyant.in
-          </p>
-        </div>
-      `
+      html: renderLayout({
+        tag: 'Verification',
+        heading: 'Verify your account.',
+        body:
+          p('Use this code to complete your signup:') +
+          code(otp) +
+          p('This code expires in <strong>10 minutes</strong>. Please don\'t share it with anyone.') +
+          small("If you didn't request this, you can safely ignore this email."),
+      })
     });
 
     if (error) {
@@ -1604,24 +1536,15 @@ export const sendPasswordOTPEmail = async (email, otp) => {
       // FIX #2: Expanded plain-text body to balance out the 45% text-to-HTML ratio penalty
       text: `Atyant Password Reset\n\nWe received a request to reset your password for your Atyant account. Use the following verification code to complete your request:\n\n${otp}\n\nThis verification code expires in exactly 10 minutes. For security reasons, please do not share this code with anyone.\n\nIf you did not request this password change, you can safely ignore this email. Your account remains secure.\n\nRegards,\nTeam Atyant\nsupport@atyant.in`,
 
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; color: #333333; line-height: 1.6;">
-          <h1 style="color:#4F46E5; margin-bottom: 20px;">Atyant</h1>
-          <h2>Password Reset</h2>
-          <p>We received a request to reset your password.</p>
-          <p>Use the following verification code to complete your request:</p>
-          <div style="font-size:32px; font-weight:bold; color:#4F46E5; letter-spacing:6px; margin:30px 0; background-color: #f9fafb; padding: 15px; text-align: center; border-radius: 6px;">
-            ${otp}
-          </div>
-          <p>This code expires in <strong>10 minutes</strong>.</p>
-          <p style="color: #666666; font-size: 14px;">If you didn't request this password reset, you can safely ignore this email.</p>
-          <hr style="margin-top:30px; border:none; border-top:1px solid #eeeeee;">
-          <p style="font-size:12px; color:#999999; text-align: center;">
-            This email was sent by Atyant.<br>
-            If you have issues, contact support@atyant.in
-          </p>
-        </div>
-      `
+      html: renderLayout({
+        tag: 'Password reset',
+        heading: 'Reset your password.',
+        body:
+          p('We received a request to reset your password. Use this code to continue:') +
+          code(otp) +
+          p('This code expires in <strong>10 minutes</strong>. Please don\'t share it with anyone.') +
+          small("If you didn't request a password reset, you can safely ignore this email. Your account remains secure."),
+      })
     });
 
     if (error) {

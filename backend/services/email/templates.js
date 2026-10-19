@@ -1,4 +1,5 @@
 import { frontendBase } from '../../utils/frontendUrl.js';
+import { B, ACCENT, esc, p, list, renderLayout } from './layout.js';
 
 // ─────────────────────────────────────────────────────────────
 //  Lifecycle email templates
@@ -9,10 +10,6 @@ import { frontendBase } from '../../utils/frontendUrl.js';
 //                                 another email as an "Also for you" block
 // ─────────────────────────────────────────────────────────────
 
-const esc = (s = '') => String(s)
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
 const clip = (s = '', n = 80) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
 
 // The product app is served at the root of atyant.in, so every CTA lands there with UTM tags for attribution.
@@ -21,7 +18,6 @@ export function appLink(campaign, content) {
   return `${frontendBase()}/?${qs}`;
 }
 
-const p = (html) => `<p style="color:#4b5563;line-height:1.6;margin:0 0 14px;">${html}</p>`;
 
 const PAGE_LABEL = {
   pricing: 'our plans',
@@ -33,15 +29,54 @@ const PAGE_LABEL = {
 function mentorList(mentors = []) {
   return `<table role="presentation" width="100%" style="border-collapse:collapse;margin:6px 0 18px;">${
     mentors.slice(0, 3).map(m => `
-      <tr><td style="padding:12px 14px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
-        <div style="font-weight:600;color:#111827;">${esc(m.name)}</div>
-        <div style="color:#4F46E5;font-size:13px;margin-top:2px;">${esc(m.outcome || '')}</div>
-        ${m.matchReason ? `<div style="color:#6b7280;font-size:13px;margin-top:4px;">${esc(clip(m.matchReason, 120))}</div>` : ''}
+      <tr><td style="padding:14px 16px;background:${B.card};border:1px solid ${B.border};border-radius:12px;">
+        <div style="font-weight:600;color:${B.text};">${esc(m.name)}</div>
+        <div style="color:${B.primaryText};font-size:13px;margin-top:2px;">${esc(m.outcome || '')}</div>
+        ${m.matchReason ? `<div style="color:${B.textSub};font-size:13px;margin-top:4px;">${esc(clip(m.matchReason, 120))}</div>` : ''}
+      </td></tr><tr><td style="height:8px;"></td></tr>`).join('')
+  }</table>`;
+}
+
+function jobList(jobs = []) {
+  return `<table role="presentation" width="100%" style="border-collapse:collapse;margin:6px 0 18px;">${
+    jobs.slice(0, 3).map(j => `
+      <tr><td style="padding:14px 16px;background:${B.card};border:1px solid ${B.border};border-radius:12px;">
+        <table role="presentation" width="100%" style="border-collapse:collapse;"><tr>
+          <td style="vertical-align:top;">
+            <div style="font-weight:600;color:${B.text};font-size:15px;">${esc(clip(j.title, 70))}</div>
+            <div style="color:${B.textSub};font-size:13px;margin-top:3px;">${esc(j.company)}${j.location ? ` · ${esc(clip(j.location, 40))}` : ''}</div>
+            ${j.matchedSkills?.length ? `<div style="color:${B.textMuted};font-size:12px;margin-top:6px;">Matches your ${esc(j.matchedSkills.slice(0, 4).join(', '))}</div>` : ''}
+          </td>
+          <td style="vertical-align:top;text-align:right;white-space:nowrap;padding-left:12px;">
+            <span style="display:inline-block;background:${ACCENT.default.bg};color:${B.primaryText};font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;">${Number(j.score) || 0}% match</span>
+          </td>
+        </tr></table>
       </td></tr><tr><td style="height:8px;"></td></tr>`).join('')
   }</table>`;
 }
 
 export const TEMPLATES = {
+  // ── Job portal ─────────────────────────────────────────────
+  jobs_welcome: ({ name, data }) => {
+    const jobs = data.jobs || [];
+    const total = data.total || jobs.length;
+    return {
+      accent: 'jobs',
+      tag: 'Job matches',
+      subject: total > 1
+        ? `${name}, ${total} open roles match your profile`
+        : `${name}, a role at ${jobs[0]?.company || 'a top company'} matches your profile`,
+      heading: `Roles that fit you, ${esc(name)}.`,
+      body:
+        p('Welcome to the <strong>Atyant Job Portal</strong>, where we pull live openings from companies like Stripe, Postman, PhonePe, Groww and 50+ more, and rank them against your skills and projects.') +
+        (jobs.length ? p(jobs.length > 1 ? `Here are your top ${jobs.length} matches right now:` : 'Here is your top match right now:') + jobList(jobs) : '') +
+        p('New roles are added every 6 hours. Turn on <strong>Auto-Apply</strong> and we fill and submit the forms for you, with a cover letter written for each job.'),
+      cta: { label: 'See all my matches →', url: appLink('jobs', 'welcome') },
+      signoff: 'If you have questions or want help with your applications, just reply to this email. We read everything.',
+      teaser: { title: 'Jobs that match your profile', text: `${total} open roles ranked for you.`, cta: 'See matches' },
+    };
+  },
+
   // ── Signup onboarding ──────────────────────────────────────
   signup_day1: ({ name }) => ({
     subject: `${name}, what's the one career question on your mind?`,
@@ -146,11 +181,11 @@ export const TEMPLATES = {
     heading: `You're all set, ${name}`,
     body:
       p('Three things members do in week one:') +
-      `<ol style="color:#4b5563;line-height:1.8;margin:0 0 16px 18px;padding:0;">
-        <li>Complete your profile so matches and Auto-Apply get sharper.</li>
-        <li>Ask your hardest career question and talk to a matched senior.</li>
-        <li>Run one AI mock interview to find your weak spots early.</li>
-      </ol>`,
+      list([
+        'Complete your profile so matches and Auto-Apply get sharper.',
+        'Ask your hardest career question and talk to a matched senior.',
+        'Run one AI mock interview to find your weak spots early.',
+      ], true),
     cta: { label: 'Open Atyant', url: appLink('purchase', 'sub_onboard') },
     teaser: { title: 'Get the most from your plan', text: '3 things to do in week one.', cta: 'Open' },
   } : {
@@ -182,33 +217,5 @@ export const TEMPLATES = {
 
 // Wrap a primary template (+ optional merged teasers) in the brand layout.
 export function renderEmail(primary, teasers, unsubscribeUrl) {
-  const extras = teasers.filter(Boolean);
-  const alsoBlock = extras.length ? `
-    <div style="margin-top:26px;">
-      <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;margin-bottom:10px;">Also for you</div>
-      ${extras.map(t => `
-        <div style="padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:8px;background:#ffffff;">
-          <div style="font-weight:600;color:#111827;">${t.title}</div>
-          <div style="color:#6b7280;font-size:13px;margin:2px 0 6px;">${t.text}</div>
-          <a href="${t.url}" style="color:#4F46E5;font-size:13px;font-weight:600;text-decoration:none;">${t.cta} →</a>
-        </div>`).join('')}
-    </div>` : '';
-
-  return `
-  <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
-    <div style="text-align:center;margin-bottom:24px;"><h1 style="color:#4F46E5;margin:0;">Atyant</h1></div>
-    <div style="background-color:#f8fafc;padding:30px;border-radius:10px;border-left:4px solid #4F46E5;">
-      <h2 style="color:#1f2937;margin-top:0;">${primary.heading}</h2>
-      ${primary.body}
-      <div style="text-align:center;margin:26px 0 6px;">
-        <a href="${primary.cta.url}" style="background-color:#4F46E5;color:white;padding:12px 30px;text-decoration:none;border-radius:6px;font-weight:600;display:inline-block;">${primary.cta.label}</a>
-      </div>
-      ${alsoBlock}
-    </div>
-    <div style="text-align:center;margin-top:30px;color:#9ca3af;font-size:12px;">
-      <p>Questions? Just reply — a real person reads it.</p>
-      <p><a href="${unsubscribeUrl}" style="color:#9ca3af;">Unsubscribe from these emails</a></p>
-      <p>&copy; ${new Date().getFullYear()} Atyant. All rights reserved.</p>
-    </div>
-  </div>`;
+  return renderLayout({ ...primary, extras: teasers.filter(Boolean), unsubscribeUrl });
 }
