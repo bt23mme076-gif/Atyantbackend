@@ -1,6 +1,14 @@
 import { launchPage, splitName, detectCaptcha, findUnfilledRequired, waitForForm, fillCombobox, dedupeByLabel, fillField, describeUnanswered } from './PlaywrightRunner.js';
 import { normalizeQuestionKey } from '../../models/ApplicationAnswer.js';
 
+const DIAL_COUNTRY = [['+971', 'United Arab Emirates'], ['+44', 'United Kingdom'], ['+65', 'Singapore'], ['+61', 'Australia'], ['+49', 'Germany'], ['+91', 'India'], ['+1', 'United States']];
+
+// Atyant students are India-first, so a number with no country code is Indian.
+function countryForPhone(phone) {
+  const p = String(phone).replace(/[^\d+]/g, '');
+  return DIAL_COUNTRY.find(([code]) => p.startsWith(code))?.[1] || 'India';
+}
+
 /**
  * Fills and submits a Greenhouse-hosted application form using only the
  * identity fields we can answer with certainty (name, email, phone, resume),
@@ -30,6 +38,11 @@ export async function applyGreenhouse({ job, user, resumeBuffer, resumeFilename,
     if (await page.locator('#email').count()) await page.fill('#email', user.email || '');
     if (user.autoApply?.phone && (await page.locator('#phone').count())) {
       await page.fill('#phone', user.autoApply.phone);
+      // The phone's country picker is marked optional but the form rejects the
+      // submit ("Country: Select a country") once a number is entered.
+      if (await page.locator('input#country[role="combobox"]').count()) {
+        await fillCombobox(page, 'country', countryForPhone(user.autoApply.phone));
+      }
     }
     if (resumeBuffer && (await page.locator('#resume').count())) {
       await page.setInputFiles('#resume', {
