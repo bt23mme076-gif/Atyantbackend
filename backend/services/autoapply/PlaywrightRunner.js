@@ -115,7 +115,8 @@ export async function findUnfilledRequired(page) {
     function comboboxHasValue(el) {
       let container = el;
       for (let i = 0; i < 6 && container; i++) {
-        const val = container.querySelector('[class*="-singleValue"], [class*="select__single-value"]');
+        // Multi-select pickers ("select all that apply") render chips, not a single value.
+        const val = container.querySelector('[class*="-singleValue"], [class*="select__single-value"], [class*="-multiValue"], [class*="select__multi-value__label"]');
         if (val && val.textContent.trim()) return true;
         container = container.parentElement;
       }
