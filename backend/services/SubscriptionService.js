@@ -19,7 +19,15 @@ export const PRICING = {
     monthly: Number(process.env.PRO_MONTHLY_PRICE) || 699,
     yearly: Number(process.env.PRO_YEARLY_PRICE) || 6708,
   },
+  // Auto-Apply pass: 30 days of auto-apply only. `listPrice` is the struck-through price shown next to the offer.
+  autoapply: {
+    monthly: Number(process.env.AUTOAPPLY_PASS_PRICE) || 49,
+    listPrice: 99,
+    days: 30,
+  },
 };
+
+export const AUTOAPPLY_PASS = 'autoapply';
 
 // Session credits per plan per purchase
 export const CREDITS_PER_MONTH = {
@@ -46,12 +54,36 @@ export async function fetchSubscriptionOrder(orderId) {
   const { userId, plan, billing } = order.notes || {};
   if (!String(order.receipt || '').startsWith(SUBSCRIPTION_RECEIPT_PREFIX)) return null;
   if (!userId || !PRICING[plan] || !['monthly', 'yearly'].includes(billing)) return null;
+  if (plan === AUTOAPPLY_PASS && billing !== 'monthly') return null;
   return { order, userId: String(userId), plan, billing };
+}
+
+// Extends the pass from its current expiry when still running, same as plans.
+async function activateAutoApplyPass({ userId, orderId, source }) {
+  const current = await User.findById(userId).select('autoApply.passExpiry');
+  if (!current) return { user: null, activated: false };
+
+  const running = current.autoApply?.passExpiry && new Date(current.autoApply.passExpiry) > new Date();
+  const expiry = new Date(running ? current.autoApply.passExpiry : Date.now());
+  expiry.setDate(expiry.getDate() + PRICING[AUTOAPPLY_PASS].days);
+
+  const user = await User.findOneAndUpdate(
+    { _id: userId, processedSubscriptionOrders: { $ne: orderId } },
+    { $set: { 'autoApply.passExpiry': expiry }, $addToSet: { processedSubscriptionOrders: orderId } },
+    { new: true },
+  );
+  if (!user) return { user: await User.findById(userId), activated: false };
+
+  trackEvent(user._id, 'purchase', { kind: 'subscription', plan: 'Auto-Apply', refId: orderId });
+  logFunnel('purchase', { userId: user._id, props: { kind: 'autoapply_pass', plan: AUTOAPPLY_PASS, refId: orderId, source } });
+  return { user, activated: true };
 }
 
 // Idempotent: the same order activates a plan exactly once, however many
 // times verify/webhook run (atomic $ne guard on processedSubscriptionOrders).
 export async function activateSubscription({ userId, plan, billing, orderId, source }) {
+  if (plan === AUTOAPPLY_PASS) return activateAutoApplyPass({ userId, orderId, source });
+
   const current = await User.findById(userId).select('subscriptionExpiry subscriptionPlan subscriptionStatus');
   if (!current) return { user: null, activated: false };
 
@@ -87,4 +119,5 @@ export const subscriptionSummary = (user) => ({
   status: user.subscriptionStatus,
   expiry: user.subscriptionExpiry,
   credits: user.subscriptionCredits,
+  autoApplyPassExpiry: user.autoApply?.passExpiry || null,
 });

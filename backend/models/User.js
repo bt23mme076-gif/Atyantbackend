@@ -485,6 +485,8 @@ const userSchema = new mongoose.Schema({
     excludedCompanies: { type: [String], default: [] },
     phone: { type: String, default: '' }, // used to fill application forms; separate from account phone
     consentedAt: { type: Date, default: null },
+    // ₹49 Auto-Apply pass (separate from subscriptionPlan so it never downgrades a Clarity/Pro member).
+    passExpiry: { type: Date, default: null },
     // Address applications are filed under (receives Greenhouse security codes, forwarded to the real email).
     inboxAlias: { type: String, default: undefined, lowercase: true, index: { unique: true, sparse: true } },
   },

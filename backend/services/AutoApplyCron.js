@@ -8,8 +8,7 @@ import { applyGreenhouse } from './autoapply/GreenhouseApplyAdapter.js';
 import { applyLever } from './autoapply/LeverApplyAdapter.js';
 import { generateCoverLetter } from './CoverLetterService.js';
 import { getAnswerMap } from '../models/ApplicationAnswer.js';
-import { hasActivePlan } from '../middleware/subscriptionMiddleware.js';
-import { autoApplyUsage } from './autoapply/limits.js';
+import { autoApplyUsage, FREE_TRIAL_APPLIES } from './autoapply/limits.js';
 
 const MAX_NEW_APPLICATIONS_PER_USER_PER_RUN = 3;
 
@@ -38,8 +37,10 @@ class AutoApplyCron {
     const users = await User.find({ 'autoApply.enabled': true }).lean();
 
     for (const user of users) {
-      // Paid feature — a lapsed or free plan keeps the setting but stops applying.
-      if (!hasActivePlan(user, 'clarity')) continue;
+      // Free trial, the ₹49 pass, or a plan. Once the trial is used up (or a pass/plan
+      // lapses) the setting stays on but nothing more is applied.
+      const usage = await autoApplyUsage(user);
+      if (usage.mode === 'none') continue;
       try {
         const jobs = await Job.find({
           status: 'open',
@@ -50,8 +51,7 @@ class AutoApplyCron {
 
         const ranked = matchJobsForUser(user, jobs, { minScore: user.autoApply?.minMatchScore ?? 70 });
 
-        const { remaining } = await autoApplyUsage(user);
-        const cap = Math.min(MAX_NEW_APPLICATIONS_PER_USER_PER_RUN, remaining);
+        const cap = Math.min(MAX_NEW_APPLICATIONS_PER_USER_PER_RUN, usage.remaining);
 
         let queued = 0;
         for (const { job, score } of ranked) {
@@ -108,8 +108,11 @@ class AutoApplyCron {
         await Application.updateOne({ _id: appDoc._id }, { status: 'failed', reason: 'Auto-apply disabled by user before processing' });
         return;
       }
-      if (!hasActivePlan(user, 'clarity')) {
-        await Application.updateOne({ _id: appDoc._id }, { status: 'failed', reason: 'Auto-apply needs an active Clarity or Pro plan' });
+      // This queued application is already counted in `used`, so a trial user on their
+      // last free slot still shows mode "none" — only fail when they're past the trial.
+      const usage = await autoApplyUsage(user);
+      if (usage.mode === 'none' && usage.used > FREE_TRIAL_APPLIES) {
+        await Application.updateOne({ _id: appDoc._id }, { status: 'failed', reason: 'Free auto-applies used up — get the Auto-Apply pass to continue' });
         return;
       }
 

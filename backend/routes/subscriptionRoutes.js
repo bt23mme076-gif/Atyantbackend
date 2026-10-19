@@ -3,10 +3,11 @@ import crypto from 'crypto';
 import User from '../models/User.js';
 import protect from '../middleware/authMiddleware.js';
 import {
-  razorpay, PRICING, CREDITS_PER_MONTH, SUBSCRIPTION_RECEIPT_PREFIX,
+  razorpay, PRICING, CREDITS_PER_MONTH, SUBSCRIPTION_RECEIPT_PREFIX, AUTOAPPLY_PASS,
   fetchSubscriptionOrder, activateSubscription, subscriptionSummary,
 } from '../services/SubscriptionService.js';
-import { AUTO_APPLY_DAILY_LIMIT } from '../services/autoapply/limits.js';
+import { AUTO_APPLY_DAILY_LIMIT, FREE_TRIAL_APPLIES, PASS_DAILY_LIMIT } from '../services/autoapply/limits.js';
+import { hasActivePlan } from '../middleware/subscriptionMiddleware.js';
 
 const router = express.Router();
 
@@ -31,7 +32,9 @@ function verifySignature(orderId, paymentId, signature) {
 //  The exact amounts /create charges, so the pricing page never drifts from them.
 // ─────────────────────────────────────────────────────────────
 router.get('/pricing', (req, res) => {
-  res.json({ ok: true, pricing: PRICING, credits: CREDITS_PER_MONTH, autoApplyDaily: AUTO_APPLY_DAILY_LIMIT });
+  res.json({
+    ok: true, pricing: PRICING, credits: CREDITS_PER_MONTH, autoApplyDaily: { ...AUTO_APPLY_DAILY_LIMIT, pass: PASS_DAILY_LIMIT }, autoApplyFreeTrial: FREE_TRIAL_APPLIES,
+  });
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -47,12 +50,20 @@ router.post('/create', protect, async (req, res) => {
       return res.status(400).json({ ok: false, error: 'plan and billing are required' });
     }
 
-    if (!['clarity', 'pro'].includes(plan)) {
+    if (!['clarity', 'pro', AUTOAPPLY_PASS].includes(plan)) {
       return res.status(400).json({ ok: false, error: 'Invalid plan' });
     }
 
-    if (!['monthly', 'yearly'].includes(billing)) {
+    if (!['monthly', 'yearly'].includes(billing) || (plan === AUTOAPPLY_PASS && billing !== 'monthly')) {
       return res.status(400).json({ ok: false, error: 'Invalid billing cycle' });
+    }
+
+    // Clarity/Pro already include auto-apply — don't sell the pass on top of a running plan.
+    if (plan === AUTOAPPLY_PASS) {
+      const buyer = await User.findById(req.user.userId).select('subscriptionPlan subscriptionStatus subscriptionExpiry').lean();
+      if (hasActivePlan(buyer, 'clarity')) {
+        return res.status(400).json({ ok: false, error: 'Your plan already includes Auto-Apply.' });
+      }
     }
 
     if (!razorpay) {

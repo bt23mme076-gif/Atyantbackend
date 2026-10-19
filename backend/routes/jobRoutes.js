@@ -4,7 +4,6 @@ import User from '../models/User.js';
 import Application from '../models/Application.js';
 import ApplicationAnswer, { normalizeQuestionKey, getAnswerMap } from '../models/ApplicationAnswer.js';
 import protect from '../middleware/authMiddleware.js';
-import { hasActivePlan } from '../middleware/subscriptionMiddleware.js';
 import JobSyncCron from '../services/JobSyncCron.js';
 import AutoApplyCron from '../services/AutoApplyCron.js';
 import { matchJobsForUser } from '../services/MatchingEngine.js';
@@ -14,17 +13,19 @@ import { generateCoverLetter } from '../services/CoverLetterService.js';
 import { downloadFileBuffer } from '../services/autoapply/PlaywrightRunner.js';
 import { applyGreenhouse } from '../services/autoapply/GreenhouseApplyAdapter.js';
 import { applyLever } from '../services/autoapply/LeverApplyAdapter.js';
-import { AUTO_APPLY_DAILY_LIMIT, autoApplyUsage, startOfTodayIST } from '../services/autoapply/limits.js';
+import { AUTO_APPLY_DAILY_LIMIT, FREE_TRIAL_APPLIES, autoApplyUsage, startOfTodayIST } from '../services/autoapply/limits.js';
+import { PRICING } from '../services/SubscriptionService.js';
 
 const AUTO_APPLY_ADAPTERS = { greenhouse: applyGreenhouse, lever: applyLever };
 
-// Auto-apply is a paid feature: any active Clarity or Pro plan. `code` lets the
-// frontend show an upgrade prompt instead of a generic error.
+// Auto-apply: FREE_TRIAL_APPLIES free, then the ₹49 Auto-Apply pass (or Clarity/Pro).
+// `code` lets the frontend show the pass checkout instead of a generic error.
 const AUTO_APPLY_PLAN = 'clarity';
 const planRequired = (res) => res.status(403).json({
   code: 'PLAN_REQUIRED',
   requiredPlan: AUTO_APPLY_PLAN,
-  message: 'Auto-apply is part of the Clarity and Pro plans. Upgrade to turn it on.',
+  pass: { plan: 'autoapply', price: PRICING.autoapply.monthly, listPrice: PRICING.autoapply.listPrice, days: PRICING.autoapply.days },
+  message: `Your ${FREE_TRIAL_APPLIES} free auto-applies are used up. Get the Auto-Apply pass for ₹${PRICING.autoapply.monthly} (30 days) to keep going.`,
 });
 
 const router = express.Router();
@@ -186,7 +187,7 @@ router.put('/auto-apply/settings', protect, async (req, res) => {
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     // Turning it off or editing other settings stays open to everyone; only switching it on is paid.
-    if (enabled === true && !hasActivePlan(user, AUTO_APPLY_PLAN)) return planRequired(res);
+    if (enabled === true && (await autoApplyUsage(user)).mode === 'none') return planRequired(res);
 
     if (enabled === true) {
       if (confirm !== true) {
@@ -252,7 +253,8 @@ router.post('/:jobId/auto-apply-now', protect, async (req, res) => {
     if (!job) return res.status(404).json({ message: 'Job not found' });
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    if (!hasActivePlan(user, AUTO_APPLY_PLAN)) return planRequired(res);
+    const usage = await autoApplyUsage(user);
+    if (usage.mode === 'none') return planRequired(res);
     if (!user.autoApply?.enabled) {
       return res.status(400).json({ message: 'Enable Auto-Apply in settings first — this authorizes Atyant to submit on your behalf.' });
     }
@@ -270,7 +272,6 @@ router.post('/:jobId/auto-apply-now', protect, async (req, res) => {
 
     // Retrying a form that's already counted today (e.g. after answering its
     // questions) doesn't cost another slot.
-    const usage = await autoApplyUsage(user);
     const existing = await Application.findOne({ user: user._id, job: job._id }).select('status mode updatedAt').lean();
     const alreadyCounted = existing?.mode === 'auto' && ['queued', 'submitted'].includes(existing.status)
       && existing.updatedAt >= startOfTodayIST();
@@ -278,7 +279,7 @@ router.post('/:jobId/auto-apply-now', protect, async (req, res) => {
       return res.status(429).json({
         code: 'DAILY_LIMIT',
         ...usage,
-        message: user.subscriptionPlan === 'pro'
+        message: usage.mode === 'plan' && user.subscriptionPlan === 'pro'
           ? `You've used all ${usage.limit} auto-applies for today. More tomorrow.`
           : `You've used all ${usage.limit} auto-applies for today. More tomorrow, or upgrade to Pro for ${AUTO_APPLY_DAILY_LIMIT.pro} a day.`,
       });
@@ -406,12 +407,12 @@ router.get('/applications', protect, async (req, res) => {
 // ─────────────────────────────────────────────
 router.get('/auto-apply/usage', protect, async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select('subscriptionPlan subscriptionStatus subscriptionExpiry').lean();
+    const user = await User.findById(req.user.userId).select('subscriptionPlan subscriptionStatus subscriptionExpiry autoApply.passExpiry').lean();
     if (!user) return res.status(404).json({ message: 'User not found' });
-    const usage = hasActivePlan(user, AUTO_APPLY_PLAN)
-      ? await autoApplyUsage(user)
-      : { limit: 0, used: 0, remaining: 0, resetsAt: null };
-    res.json(usage);
+    res.json({
+      ...(await autoApplyUsage(user)),
+      pass: { price: PRICING.autoapply.monthly, listPrice: PRICING.autoapply.listPrice, days: PRICING.autoapply.days },
+    });
   } catch (error) {
     console.error('GET /api/jobs/auto-apply/usage error:', error);
     res.status(500).json({ message: 'Failed to load usage' });
