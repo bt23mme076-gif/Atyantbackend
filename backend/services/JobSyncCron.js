@@ -4,6 +4,7 @@ import { fetchGreenhouseJobs } from './adapters/GreenhouseAdapter.js';
 import { fetchLeverJobs } from './adapters/LeverAdapter.js';
 import { fetchFirecrawlJobs } from './adapters/FirecrawlAdapter.js';
 import { GREENHOUSE_BOARD_TOKENS, LEVER_COMPANY_SLUGS, FIRECRAWL_CAREER_PAGES } from '../config/atsCompanies.js';
+import { classifyJob } from './ExperienceFit.js';
 
 // Only ATS-hosted forms can be driven by the auto-apply adapters. A company
 // embedding Greenhouse behind careers.acme.com serves its own page there, so
@@ -54,6 +55,7 @@ class JobSyncCron {
             status: 'open',
             lastSeenAt: runStartedAt,
             autoApplySupported: isAtsHostedUrl(job.applyUrl),
+            ...classifyJob(job),
           },
           { upsert: true, new: true, setDefaultsOnInsert: true },
         );

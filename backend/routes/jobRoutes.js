@@ -9,6 +9,7 @@ import JobSyncCron from '../services/JobSyncCron.js';
 import AutoApplyCron from '../services/AutoApplyCron.js';
 import { matchJobsForUser } from '../services/MatchingEngine.js';
 import { trackEvent } from '../services/email/EmailPipeline.js';
+import { experienceFor } from '../services/ExperienceFit.js';
 import { generateCoverLetter } from '../services/CoverLetterService.js';
 import { downloadFileBuffer } from '../services/autoapply/PlaywrightRunner.js';
 import { applyGreenhouse } from '../services/autoapply/GreenhouseApplyAdapter.js';
@@ -28,6 +29,9 @@ const planRequired = (res) => res.status(403).json({
 
 const router = express.Router();
 
+// ?level=fresher keeps roles a student or new graduate can realistically get.
+const LEVEL_FILTER = { fresher: ['internship', 'entry'], internship: ['internship'] };
+
 // ─────────────────────────────────────────────
 //  GET /  — list open jobs (filters: company, source, location, q)
 //  Public: browsing the board is the top-of-funnel hook, so it must work
@@ -36,9 +40,10 @@ const router = express.Router();
 // ─────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const { company, source, location, q, remote, page = 1, limit = 20 } = req.query;
+    const { company, source, location, q, remote, level, page = 1, limit = 20 } = req.query;
 
     const filter = { status: 'open' };
+    if (LEVEL_FILTER[level]) filter.experienceLevel = { $in: LEVEL_FILTER[level] };
     if (company) filter.company = company;
     if (source) filter.source = source;
     // "Remote only" is a distinct signal from free-text location — most remote
@@ -61,7 +66,7 @@ router.get('/', async (req, res) => {
       Job.countDocuments(filter),
     ]);
 
-    res.json({ jobs, total, page: pageNum, limit: limitNum });
+    res.json({ jobs: jobs.map((job) => ({ ...job, experience: experienceFor(job) })), total, page: pageNum, limit: limitNum });
   } catch (error) {
     console.error('GET /api/jobs error:', error);
     res.status(500).json({ message: 'Failed to fetch jobs', error: error.message });
@@ -92,7 +97,7 @@ router.get('/companies', async (req, res) => {
 router.get('/matches', protect, async (req, res) => {
   try {
     const user = await User.findById(req.user.userId)
-      .select('skills projects preferredRoles')
+      .select('skills projects preferredRoles education workExperience yearsOfExperience')
       .lean();
     if (!user) return res.status(404).json({ message: 'User not found' });
 
@@ -103,11 +108,11 @@ router.get('/matches', protect, async (req, res) => {
       });
     }
 
-    const { page = 1, limit = 20, minScore = 0 } = req.query;
+    const { page = 1, limit = 20, minScore = 0, level } = req.query;
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 20));
 
-    const jobs = await Job.find({ status: 'open' }).lean();
+    const jobs = await Job.find({ status: 'open', ...(LEVEL_FILTER[level] && { experienceLevel: { $in: LEVEL_FILTER[level] } }) }).lean();
     const ranked = matchJobsForUser(user, jobs, { minScore: Number(minScore) || 0 });
 
     const total = ranked.length;
@@ -123,7 +128,7 @@ router.get('/matches', protect, async (req, res) => {
     const pageItems = ranked.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
     res.json({
-      matches: pageItems.map(({ job, score, matchedSkills }) => ({
+      matches: pageItems.map(({ job, score, skillMatch, matchedSkills, experience }) => ({
         job: {
           _id: job._id,
           company: job.company,
@@ -134,7 +139,9 @@ router.get('/matches', protect, async (req, res) => {
           autoApplySupported: job.autoApplySupported,
         },
         score,
+        skillMatch,
         matchedSkills,
+        experience,
       })),
       total,
       page: pageNum,

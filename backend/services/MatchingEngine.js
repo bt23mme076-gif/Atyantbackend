@@ -2,6 +2,8 @@
 // preferred-role fit against the job title. No LLM call — this only needs
 // to be fast and explainable, not semantically clever.
 
+import { experienceFor, fitWeight } from './ExperienceFit.js';
+
 function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -22,7 +24,7 @@ export function computeMatchScore(user, job) {
   );
 
   if (userSkills.size === 0) {
-    return { score: 0, matchedSkills: [] };
+    return { score: 0, skillMatch: 0, matchedSkills: [], experience: experienceFor(job, user) };
   }
 
   const jobText = `${job.title || ''} ${job.descriptionText || ''}`.toLowerCase();
@@ -36,9 +38,14 @@ export function computeMatchScore(user, job) {
     ? 1
     : 0;
 
-  const score = Math.round((skillScore * 0.7 + roleScore * 0.3) * 100);
+  const skillMatch = Math.round((skillScore * 0.7 + roleScore * 0.3) * 100);
 
-  return { score, matchedSkills };
+  // A strong skill overlap on a role the student can't realistically get
+  // (e.g. "8+ years") isn't a match — scale by experience fit.
+  const experience = experienceFor(job, user);
+  const score = Math.round(skillMatch * fitWeight(experience.fit));
+
+  return { score, skillMatch, matchedSkills, experience };
 }
 
 export function matchJobsForUser(user, jobs, { minScore = 0 } = {}) {

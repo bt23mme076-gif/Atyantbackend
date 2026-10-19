@@ -62,6 +62,14 @@ const jobSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  // Derived from title/description at sync time (services/ExperienceFit.js).
+  experienceLevel: {
+    type: String,
+    enum: ['internship', 'entry', 'mid', 'senior', 'unknown'],
+    default: 'unknown',
+    index: true,
+  },
+  minYears: { type: Number, default: null },
 }, { timestamps: true });
 
 // One posting per (source, sourceJobId) — used as the upsert key during sync.
