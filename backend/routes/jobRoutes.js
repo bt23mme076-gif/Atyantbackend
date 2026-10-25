@@ -41,7 +41,7 @@ const LEVEL_FILTER = { fresher: ['internship', 'entry'], internship: ['internshi
 // ─────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const { company, source, location, q, remote, level, page = 1, limit = 20 } = req.query;
+    const { company, source, location, q, remote, level, region, page = 1, limit = 20 } = req.query;
 
     const filter = { status: 'open' };
     if (LEVEL_FILTER[level]) filter.experienceLevel = { $in: LEVEL_FILTER[level] };
@@ -54,13 +54,15 @@ router.get('/', async (req, res) => {
     if (remote === 'true') filter.location = /remote/i;
     else if (location) filter.location = new RegExp(location, 'i');
     if (q) filter.title = new RegExp(q, 'i');
+    // region=india keeps India roles; a location the student typed themselves wins over it.
+    if (region === 'india' && !location && remote !== 'true') filter.isIndia = true;
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 20));
 
     const [jobs, total] = await Promise.all([
       Job.find(filter)
-        .sort({ postedAt: -1 })
+        .sort({ isIndia: -1, postedAt: -1 }) // India roles first, newest within
         .skip((pageNum - 1) * limitNum)
         .limit(limitNum)
         .lean(),
@@ -109,11 +111,15 @@ router.get('/matches', protect, async (req, res) => {
       });
     }
 
-    const { page = 1, limit = 20, minScore = 0, level } = req.query;
+    const { page = 1, limit = 20, minScore = 0, level, region } = req.query;
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 20));
 
-    const jobs = await Job.find({ status: 'open', ...(LEVEL_FILTER[level] && { experienceLevel: { $in: LEVEL_FILTER[level] } }) }).lean();
+    const jobs = await Job.find({
+      status: 'open',
+      ...(LEVEL_FILTER[level] && { experienceLevel: { $in: LEVEL_FILTER[level] } }),
+      ...(region === 'india' && { isIndia: true }),
+    }).lean();
     const ranked = matchJobsForUser(user, jobs, { minScore: Number(minScore) || 0 });
 
     const total = ranked.length;
@@ -129,7 +135,7 @@ router.get('/matches', protect, async (req, res) => {
     const pageItems = ranked.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
     res.json({
-      matches: pageItems.map(({ job, score, skillMatch, matchedSkills, experience }) => ({
+      matches: pageItems.map(({ job, score, skillMatch, matchedSkills, experience, locationFit }) => ({
         job: {
           _id: job._id,
           company: job.company,
@@ -143,6 +149,7 @@ router.get('/matches', protect, async (req, res) => {
         skillMatch,
         matchedSkills,
         experience,
+        locationFit,
       })),
       total,
       page: pageNum,

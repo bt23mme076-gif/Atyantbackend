@@ -3,6 +3,7 @@
 // to be fast and explainable, not semantically clever.
 
 import { experienceFor, fitWeight } from './ExperienceFit.js';
+import { locationFit } from './JobLocation.js';
 
 function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -24,7 +25,7 @@ export function computeMatchScore(user, job) {
   );
 
   if (userSkills.size === 0) {
-    return { score: 0, skillMatch: 0, matchedSkills: [], experience: experienceFor(job, user) };
+    return { score: 0, skillMatch: 0, matchedSkills: [], experience: experienceFor(job, user), locationFit: locationFit(job.location).fit };
   }
 
   const jobText = `${job.title || ''} ${job.descriptionText || ''}`.toLowerCase();
@@ -43,9 +44,10 @@ export function computeMatchScore(user, job) {
   // A strong skill overlap on a role the student can't realistically get
   // (e.g. "8+ years") isn't a match — scale by experience fit.
   const experience = experienceFor(job, user);
-  const score = Math.round(skillMatch * fitWeight(experience.fit));
+  const where = locationFit(job.location);
+  const score = Math.round(skillMatch * fitWeight(experience.fit) * where.weight);
 
-  return { score, skillMatch, matchedSkills, experience };
+  return { score, skillMatch, matchedSkills, experience, locationFit: where.fit };
 }
 
 export function matchJobsForUser(user, jobs, { minScore = 0 } = {}) {

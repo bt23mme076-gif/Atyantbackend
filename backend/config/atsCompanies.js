@@ -45,6 +45,22 @@ export const GREENHOUSE_BOARD_TOKENS = [
   // Not linked from razorpay.com/careers/ directly, but the board is live —
   // found via the "SEE ALL JOBS" link on that page.
   'razorpaysoftwareprivatelimited',
+
+  // Added by scripts/discoverBoards.js — boards with live India openings
+  // (India / total at discovery, Oct 2026).
+  'okta',        // 96 / 390
+  'zscaler',     // 69 / 352
+  'zenoti',      // 37 / 57
+  'glance',      // 20 / 38
+  'toast',       // 19 / 321
+  'hackerrank',  // 18 / 30
+  'agoda',       // 11 / 316
+  'coinbase',    // 9 / 227
+  'jfrog',       // 8 / 69
+  'newrelic',    // 7 / 55
+  'sumologic',   // 7 / 12
+  'mixpanel',    // 4 / 46
+  'observeai',   // 4 / 9
 ];
 
 export const LEVER_COMPANY_SLUGS = [
@@ -52,6 +68,12 @@ export const LEVER_COMPANY_SLUGS = [
   'veeva',
   'spotify',
   'mindtickle',
+  // Added by scripts/discoverBoards.js (India / total at discovery, Oct 2026).
+  'paytm',       // 164 / 196
+  'meesho',      // 57 / 58 (replaces the firecrawl scrape of meesho.io/jobs)
+  'zeta',        // 23 / 27
+  'cred',        // 8 / 8
+  'pocketfm',    // 2 / 10
 ];
 
 // Companies with no Greenhouse/Lever board — their career page gets scraped
@@ -65,7 +87,4 @@ export const FIRECRAWL_CAREER_PAGES = [
   { company: 'zerodha', url: 'https://careers.zerodha.com/' },
   { company: 'urbancompany', url: 'https://careers.urbancompany.com' },
   { company: 'unacademy', url: 'https://unacademy.com/careers' },
-  // Root meesho.io only teases one CTA link — the actual 49-listing board is
-  // on /jobs specifically.
-  { company: 'meesho', url: 'https://www.meesho.io/jobs' },
 ];

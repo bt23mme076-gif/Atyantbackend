@@ -70,6 +70,8 @@ const jobSchema = new mongoose.Schema({
     index: true,
   },
   minYears: { type: Number, default: null },
+  // Location is in India (derived from the location text; see services/JobLocation.js).
+  isIndia: { type: Boolean, default: false, index: true },
 }, { timestamps: true });
 
 // One posting per (source, sourceJobId) — used as the upsert key during sync.
