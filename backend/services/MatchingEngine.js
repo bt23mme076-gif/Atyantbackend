@@ -50,9 +50,13 @@ export function computeMatchScore(user, job) {
   return { score, skillMatch, matchedSkills, experience, locationFit: where.fit };
 }
 
+// Roles the student can't realistically get yet ("needs 5+ years") rank after every
+// role they can, however strong the skill overlap — then by score.
+const unlikely = (m) => (m.experience?.fit === 'unlikely' ? 1 : 0);
+
 export function matchJobsForUser(user, jobs, { minScore = 0 } = {}) {
   return jobs
     .map((job) => ({ job, ...computeMatchScore(user, job) }))
     .filter((m) => m.score >= minScore)
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => unlikely(a) - unlikely(b) || b.score - a.score);
 }
