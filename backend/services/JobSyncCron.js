@@ -42,6 +42,22 @@ class JobSyncCron {
     for (const { company, url } of FIRECRAWL_CAREER_PAGES) {
       await this.syncOne('firecrawl', company, () => fetchFirecrawlJobs(company, url), runStartedAt);
     }
+
+    // A company removed from config (or moved to another source, like meesho from
+    // firecrawl to Lever) is never synced again, so its last postings would stay
+    // open forever. Close them.
+    const configured = {
+      greenhouse: GREENHOUSE_BOARD_TOKENS,
+      lever: LEVER_COMPANY_SLUGS,
+      firecrawl: FIRECRAWL_CAREER_PAGES.map((p) => p.company),
+    };
+    for (const [source, companies] of Object.entries(configured)) {
+      const res = await Job.updateMany(
+        { source, status: 'open', company: { $nin: companies } },
+        { $set: { status: 'closed' } },
+      );
+      if (res.modifiedCount) console.log(`  ${source}: closed ${res.modifiedCount} postings from companies no longer synced`);
+    }
   }
 
   async syncOne(source, companyKey, fetchFn, runStartedAt) {
