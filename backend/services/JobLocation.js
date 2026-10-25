@@ -7,6 +7,9 @@ const INDIA = /\b(india|bengaluru|bangalore|pune|mumbai|hyderabad|gurgaon|gurugr
 // "Remote - US" is remote for people in the US, not for us.
 const NON_INDIA_REGION = /\b(us|usa|u\.s\.a?\.?|united states|canada|uk|united kingdom|europe|emea|eu|germany|france|spain|ireland|netherlands|australia|latam|mexico|brazil|japan|singapore)\b/i;
 
+// Mongo filter for India jobs: the indexed flag, or the location text for jobs not yet tagged.
+export const INDIA_JOBS_FILTER = { $or: [{ isIndia: true }, { location: INDIA }] };
+
 export const isIndiaLocation = (location = '') => INDIA.test(String(location));
 
 // How realistic a job's location is for an India-based student: India is a

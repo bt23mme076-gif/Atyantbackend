@@ -9,6 +9,7 @@ import AutoApplyCron from '../services/AutoApplyCron.js';
 import { matchJobsForUser } from '../services/MatchingEngine.js';
 import { trackEvent } from '../services/email/EmailPipeline.js';
 import { experienceFor } from '../services/ExperienceFit.js';
+import { INDIA_JOBS_FILTER } from '../services/JobLocation.js';
 import { generateCoverLetter } from '../services/CoverLetterService.js';
 import { downloadFileBuffer } from '../services/autoapply/PlaywrightRunner.js';
 import { applyGreenhouse } from '../services/autoapply/GreenhouseApplyAdapter.js';
@@ -55,7 +56,7 @@ router.get('/', async (req, res) => {
     else if (location) filter.location = new RegExp(location, 'i');
     if (q) filter.title = new RegExp(q, 'i');
     // region=india keeps India roles; a location the student typed themselves wins over it.
-    if (region === 'india' && !location && remote !== 'true') filter.isIndia = true;
+    if (region === 'india' && !location && remote !== 'true') Object.assign(filter, INDIA_JOBS_FILTER);
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 20));
@@ -118,7 +119,7 @@ router.get('/matches', protect, async (req, res) => {
     const jobs = await Job.find({
       status: 'open',
       ...(LEVEL_FILTER[level] && { experienceLevel: { $in: LEVEL_FILTER[level] } }),
-      ...(region === 'india' && { isIndia: true }),
+      ...(region === 'india' && INDIA_JOBS_FILTER),
     }).lean();
     const ranked = matchJobsForUser(user, jobs, { minScore: Number(minScore) || 0 });
 
