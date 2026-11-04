@@ -63,6 +63,7 @@ import inboundRoutes from './routes/inboundRoutes.js';
 import reviewRoutes from './routes/reviewRoutes.js';
 import eventRoutes from './routes/eventRoutes.js';
 import inviteRoutes from './routes/inviteRoutes.js';
+import whatsappRoutes from './routes/whatsappRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message from './models/Message.js';
@@ -193,6 +194,7 @@ app.use((req, res, next) => {
   if (req.originalUrl === '/api/subscriptions/webhook') return next();
   if (req.originalUrl === '/api/livekit/webhook') return next();
   if (req.originalUrl === '/api/email/inbound') return next();
+  if (req.originalUrl.startsWith('/api/whatsapp/webhook')) return next();
   return express.json({ limit: '10mb' })(req, res, next);
 });
 
@@ -240,6 +242,7 @@ if (process.env.NODE_ENV === 'production') mongoose.set('debug', false);
 // ─── Rate limiter ──────────────────────────────────────────────────────────
 app.use('/api/', (req, res, next) => {
   if (req.path.startsWith('/community-chat')) return next();
+  if (req.path.startsWith('/whatsapp/webhook')) return next(); // Meta's servers, signature-checked
   globalRateLimit(req, res, next);
 });
 
@@ -286,6 +289,7 @@ app.use('/api/email', emailRoutes);        // lifecycle email: page-view beacon 
 app.use('/api/reviews', reviewRoutes);    // ratings: platform feedback + mock interview / session reviews
 app.use('/api/events', eventRoutes);      // product funnel steps (chat → mentor → booking)
 app.use('/api/invites', inviteRoutes);    // no mentor matched → student invites a senior found on the web
+app.use('/api/whatsapp', whatsappRoutes); // WhatsApp Cloud API: ask → answer → ₹99 call booking
 app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────

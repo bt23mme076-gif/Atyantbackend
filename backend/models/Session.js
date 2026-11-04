@@ -61,6 +61,7 @@ const sessionSchema = new mongoose.Schema({
   paymentStatus:  { type: String, enum: ['free', 'created', 'paid', 'failed'], default: 'free', index: true },
   razorpayOrderId:   { type: String, index: true },
   razorpayPaymentId: { type: String },
+  razorpayPaymentLinkId: { type: String, index: { sparse: true } }, // WhatsApp bookings pay via a Payment Link
   couponCode:        { type: String },
   couponDiscount:    { type: Number, default: 0 },
 

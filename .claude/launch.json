@@ -33,6 +33,24 @@
       "port": 5000
     },
     {
+      "name": "atyant-marketing-dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/jatin/Documents/GitHub/atyant/frontend/node_modules/vite/bin/vite.js",
+        "C:/Users/jatin/Documents/GitHub/atyant/frontend",
+        "--port", "4175", "--strictPort"
+      ],
+      "port": 4175
+    },
+    {
+      "name": "atyant-whatsapp-local",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/jatin/AppData/Local/Temp/claude/d4bd02507992a0ce/3a7451e0-5dd2-48cb-9548-268d706198aa/scratchpad/wa-local.mjs"
+      ],
+      "port": 5055
+    },
+    {
       "name": "atyant-ai-service",
       "runtimeExecutable": "C:/Users/jatin/Documents/GitHub/atyant-ai-service/venv/Scripts/python.exe",
       "runtimeArgs": [

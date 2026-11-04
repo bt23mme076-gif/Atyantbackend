@@ -13,6 +13,7 @@ import { confirmFromWebhook as confirmMockReportFromWebhook } from '../services/
 import { trackEvent } from '../services/email/EmailPipeline.js';
 import { logFunnel } from '../utils/funnel.js';
 import { fetchSubscriptionOrder, activateSubscription } from '../services/SubscriptionService.js';
+import { notifyBookingConfirmed as notifyWaBookingConfirmed } from '../services/whatsapp/WhatsAppAgent.js';
 
 const router = express.Router();
 
@@ -107,6 +108,37 @@ async function finalizeSession(session, student, mentor) {
     scheduledAt: session.scheduledAt, durationMin: session.durationMin,
     topic: session.topic, meetLink: session.meetingLink, amount: session.amount,
   }).catch(err => console.error('Session emails failed (non-fatal):', err.message));
+}
+
+// Mark a session paid, queue the mentor's share, create the room and notify both sides.
+async function confirmPaidSession(session, paymentId) {
+  session.paymentStatus = 'paid';
+  session.status = 'upcoming';
+  session.razorpayPaymentId = paymentId;
+  applyMentorShare(session);        // queue the mentor's share for the monthly payout
+  await session.save();
+
+  const [student, mentor] = await Promise.all([
+    User.findById(session.userId).select('name username email refreshToken accessToken').lean(),
+    User.findById(session.mentorId).select('name username email refreshToken accessToken').lean(),
+  ]);
+  await finalizeSession(session, student, mentor);
+
+  const serviceName = session.serviceId ? getService(session.serviceId)?.label || 'Session' : '1:1 Session';
+  await sendServicePurchaseNotification(
+    mentor.email,
+    mentor.name || mentor.username,
+    student.email,
+    student.name || student.username,
+    serviceName,
+    {
+      scheduledAt: session.scheduledAt,
+      topic: session.topic,
+    }
+  ).catch(err => console.error('Failed to send service purchase notification via webhook:', err));
+  trackSessionPurchase(session, mentor);
+
+  console.log(`✅ Webhook confirmed session ${session._id}`);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -366,34 +398,19 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
         }
       }
       if (session && session.paymentStatus !== 'paid') {
-        session.paymentStatus = 'paid';
-        session.status = 'upcoming';
-        session.razorpayPaymentId = entity.id;
-        applyMentorShare(session);        // queue the mentor's share for the monthly payout
-        await session.save();
+        await confirmPaidSession(session, entity.id);
+      }
+    }
 
-        const [student, mentor] = await Promise.all([
-          User.findById(session.userId).select('name username email refreshToken accessToken').lean(),
-          User.findById(session.mentorId).select('name username email refreshToken accessToken').lean(),
-        ]);
-        await finalizeSession(session, student, mentor);
-
-        // Send service purchase notification via webhook as well
-        const serviceName = session.serviceId ? getService(session.serviceId)?.label || 'Session' : '1:1 Session';
-        await sendServicePurchaseNotification(
-          mentor.email,
-          mentor.name || mentor.username,
-          student.email,
-          student.name || student.username,
-          serviceName,
-          {
-            scheduledAt: session.scheduledAt,
-            topic: session.topic,
-          }
-        ).catch(err => console.error('Failed to send service purchase notification via webhook:', err));
-        trackSessionPurchase(session, mentor);
-
-        console.log(`✅ Webhook confirmed session ${session._id}`);
+    // WhatsApp bookings pay through a Payment Link (no order exists at booking time).
+    if (body.event === 'payment_link.paid') {
+      const link = body.payload?.payment_link?.entity;
+      const payment = body.payload?.payment?.entity;
+      const session = link?.id ? await Session.findOne({ razorpayPaymentLinkId: link.id }) : null;
+      if (session && session.paymentStatus !== 'paid') {
+        session.razorpayOrderId = link.order_id || payment?.order_id;
+        await confirmPaidSession(session, payment?.id);
+        notifyWaBookingConfirmed(session).catch(err => console.error('WA booking notify failed:', err.message));
       }
     }
 
