@@ -1,7 +1,9 @@
-// WhatsApp conversion loop: onboard → ask → instant AnswerCard or senior match
-// → ₹99 audio call via Razorpay Payment Link. Deterministic state machine; the
-// LLM only routes messages (career / greeting / off-topic) so the bot stays a
-// career-guidance service, not a general-purpose chatbot (Meta policy).
+// WhatsApp placement guide: answer first, collect details only when they change
+// the advice, then offer a relevant senior call with checked facts. The same
+// chat engine as the website writes the answers (answerFirst mode); this file
+// owns the deterministic parts: senior facts, booking, payment and consent.
+// Off-topic requests are declined so the bot stays a career service, not a
+// general-purpose chatbot (Meta policy).
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import Razorpay from 'razorpay';
@@ -9,8 +11,9 @@ import User from '../../models/User.js';
 import Session from '../../models/Session.js';
 import WaConversation from '../../models/WaConversation.js';
 import AtyantConversation from '../../models/AtyantConversation.js';
-import atyantEngine from '../AtyantEngine.js';
-import { processAtyantMessage } from '../AtyantEngineService.js';
+import atyantEngine, { isSameCollege } from '../AtyantEngine.js';
+import { processAtyantMessage, recordAtyantChatFeedback } from '../AtyantEngineService.js';
+import { isSameBranch } from '../../utils/collegeNormalizer.js';
 import { groqJSON } from '../../utils/groqClient.js';
 import { sendSignupOTPEmail } from '../../utils/emailService.js';
 import { getService } from '../../config/serviceCatalog.js';
@@ -20,18 +23,17 @@ import * as wa from './WhatsAppClient.js';
 const SERVICE_ID = 'audio-call';
 const LINK_TTL_MIN = 20;            // < StalePendingCron's 30 min, so a link never outlives its slot hold
 const SLOT_DAYS = 7;
+const SUPPORT_EMAIL = 'nitin@atyant.in';
+const REFUND_TERMS = `If the senior doesn't join or cancels, you get a full refund or a free reschedule (email ${SUPPORT_EMAIL}).`;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const GREETING_RE = /^\s*(hi+|hello+|hey+|helo|yo|sup|namaste|ok+|okay|thanks?|thank you|gm|good (morning|evening|afternoon))\s*[!.]*\s*$/i;
+const LEGACY_STATES = new Set(['email', 'college', 'branch', 'year', 'goal', 'ready']);
+const INTRO = 'Hi, I\'m Atyant. I help engineering students with internships and placements, using advice from seniors who\'ve been there.';
+const FEEDBACK_BUTTONS = [{ id: 'fb:up', title: '👍 Helpful' }, { id: 'fb:down', title: '👎 Not really' }];
 
 const razorpay = (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)
   ? new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET })
   : null;
-
-const YEARS = [
-  { id: 'year:1', title: '1st year' }, { id: 'year:2', title: '2nd year' },
-  { id: 'year:3', title: '3rd year' }, { id: 'year:4', title: '4th year' },
-  { id: 'year:grad', title: 'Graduated' },
-];
 
 const hashOtp = (otp) => crypto.createHash('sha256').update(String(otp)).digest('hex');
 const initials = (name = '') =>
@@ -40,15 +42,18 @@ const phone10 = (waId) => (waId.startsWith('91') && waId.length === 12 ? waId.sl
 const fmtWhen = (d) => new Date(d).toLocaleString('en-IN', {
   timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
 });
+const chatSessionId = (waId) => `wa:${waId}`;
+const displayName = (m = {}) => m.name || m.username || 'A senior';
+const eduOf = (m = {}) => (Array.isArray(m.education) ? m.education[0] : m.education) || {};
 
-function mentorLabel(m = {}) {
-  const edu = Array.isArray(m.education) ? m.education[0] : m.education;
-  const college = edu?.institutionName || edu?.institution;
-  const company = m.topCompanies?.[0];
-  return [m.name || m.username || 'A senior', college, company].filter(Boolean).join(' · ');
+// Interactive bodies are capped at 1024 chars: send a long answer as text first.
+async function sendWithButtons(to, text, buttons, shortPrompt = 'Was this useful?') {
+  if (text.length <= 1000) return wa.sendButtons(to, text, buttons);
+  await wa.sendText(to, text);
+  return wa.sendButtons(to, shortPrompt, buttons);
 }
 
-function formatCard(content = {}, mentor) {
+function formatCard(content = {}) {
   const parts = [];
   if (content.mainAnswer) parts.push(`*${content.mainAnswer}*`);
   if (content.situation) parts.push(content.situation);
@@ -60,20 +65,15 @@ function formatCard(content = {}, mentor) {
   }
   if (content.whatWorked) parts.push(`*What worked*\n${content.whatWorked}`);
   if (content.timeline) parts.push(`*Timeline:* ${content.timeline}`);
-  parts.push(`— ${mentorLabel(mentor)}`);
   return parts.join('\n\n');
 }
-
-const studentContext = (conv) => ({
-  college: conv.profile.college, branch: conv.profile.branch, year: conv.profile.year, goal: conv.profile.goal,
-});
 
 async function classify(text) {
   try {
     const r = await groqJSON([
       {
         role: 'system',
-        content: 'You route messages sent to Atyant on WhatsApp. Atyant helps Indian engineering students with internships, placements, jobs, interview prep, resumes, skills, higher studies and booking calls with seniors. Return JSON {"type":"career"|"greeting"|"off_topic"}. career = any question about those topics. greeting = hi/thanks/ok with no question. off_topic = anything else, including writing essays or assignments, solving homework or code, general knowledge and chit-chat.',
+        content: 'You route messages sent to Atyant on WhatsApp. Atyant helps Indian engineering students with internships, placements, jobs, interview prep, resumes, projects, skills, higher studies and booking calls with seniors. Return JSON {"type":"career"|"greeting"|"off_topic"}. career = any question or statement about those topics, including details about themselves (branch, college, year, skills). greeting = hi/thanks/ok with no question. off_topic = anything else, including writing essays or assignments, solving homework or code, general knowledge and chit-chat.',
       },
       { role: 'user', content: text.slice(0, 1000) },
     ], { maxTokens: 30, timeoutMs: 8000 });
@@ -83,49 +83,29 @@ async function classify(text) {
   }
 }
 
-// ─── Onboarding ──────────────────────────────────────────────
+// ─── Profile (single source: the latest chat context) ─────────
 
-async function uniqueUsername(seed) {
-  const base = (String(seed || 'student').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20) || 'student').padEnd(3, '0');
-  for (let i = 0; i < 6; i++) {
-    const candidate = `${base}_${crypto.randomInt(1000, 99999)}`;
-    if (!(await User.exists({ username: candidate }))) return candidate;
-  }
-  return `student_${crypto.randomBytes(5).toString('hex')}`;
+function syncProfile(conv, context = {}) {
+  const id = context.identity || {};
+  if (id.college) conv.profile.college = id.college;
+  if (id.branch) conv.profile.branch = id.branch;
+  if (id.year) conv.profile.year = id.year;
+  if (context.target) conv.profile.goal = context.target;
+  if (Array.isArray(context.targetCompanies)) conv.profile.companies = context.targetCompanies.slice(0, 5);
 }
 
-// After a user is linked: skip profile questions the account already answers.
-async function continueProfile(conv) {
-  const user = await User.findById(conv.userId).select('education').lean();
-  const edu = user?.education?.[0] || {};
-  conv.profile.college ||= edu.institutionName || edu.institution || '';
-  conv.profile.branch  ||= edu.field || '';
-  conv.profile.year    ||= edu.year || '';
-  if (!conv.profile.college) return askStep(conv, 'college');
-  if (!conv.profile.branch)  return askStep(conv, 'branch');
-  if (!conv.profile.year)    return askStep(conv, 'year');
-  if (!conv.profile.goal)    return askStep(conv, 'goal');
-  conv.state = 'ready';
-  return wa.sendText(conv.waId, 'You\'re all set. Type your question, e.g. "How do I prepare for the Amazon SDE internship from 2nd year?"');
-}
-
-async function askStep(conv, step) {
-  conv.state = step;
-  if (step === 'college') return wa.sendText(conv.waId, 'Which college are you in? (e.g. VNIT Nagpur)');
-  if (step === 'branch')  return wa.sendText(conv.waId, 'Your branch? (e.g. Mechanical, CSE, Metallurgy)');
-  if (step === 'year')    return wa.sendList(conv.waId, 'Which year are you in?', 'Pick year', YEARS);
-  if (step === 'goal')    return wa.sendText(conv.waId, 'What are you aiming for? (e.g. "SDE internship at Amazon", "core job in automobile", "consulting placement")');
-}
-
+// Fills only empty fields on the account, so the website profile is never overwritten.
 async function saveProfileToUser(conv) {
+  if (!conv.userId) return;
+  const { college, branch, year } = conv.profile;
+  if (!college && !branch && !year) return;
   const user = await User.findById(conv.userId).select('education');
   if (!user) return;
-  const { college, branch, year } = conv.profile;
   if (user.education?.length) {
     const e = user.education[0];
-    if (!e.institutionName && !e.institution) e.institutionName = college;
-    if (!e.field) e.field = branch;
-    if (!e.year) e.year = year;
+    if (!e.institutionName && !e.institution && college) e.institutionName = college;
+    if (!e.field && branch) e.field = branch;
+    if (!e.year && year) e.year = year;
   } else {
     user.education = [{ institutionName: college, field: branch, year }];
   }
@@ -133,168 +113,60 @@ async function saveProfileToUser(conv) {
   await user.save();
 }
 
-async function handleEmail(conv, text, isFirstContact) {
-  const email = text.toLowerCase();
-  if (!EMAIL_RE.test(email)) {
-    const hello = isFirstContact
-      ? `Hi${conv.name ? ` ${conv.name.split(' ')[0]}` : ''} 👋 This is Atyant. Ask any internship or placement question and get answers from seniors who were in your exact spot: same college type, same branch.\n\n`
-      : '';
-    return wa.sendText(conv.waId, `${hello}First, your email? Session links and answers are sent there too.`);
-  }
-
-  const existing = await User.findOne({ email }).select('_id').lean();
-  if (existing) {
-    const otp = crypto.randomInt(100000, 1000000);
-    conv.pendingEmail = email;
-    conv.otpHash = hashOtp(otp);
-    conv.otpExpires = new Date(Date.now() + 10 * 60_000);
-    conv.otpAttempts = 0;
-    conv.state = 'otp';
-    await sendSignupOTPEmail(email, otp);
-    return wa.sendText(conv.waId, `That email already has an Atyant account. I've sent a 6-digit code to ${email}. Type it here to link this WhatsApp number.\n\n(Wrong email? Type *change*)`);
-  }
-
-  const p10 = phone10(conv.waId);
-  const user = await User.create({
-    username: await uniqueUsername(conv.name || email.split('@')[0]),
-    name: conv.name || null,
-    email,
-    password: await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10),
-    ...(p10 && !(await User.exists({ phone: p10 })) ? { phone: p10 } : {}),
-    role: 'user',
-  });
-  conv.userId = user._id;
-  logFunnel('wa_signup', { userId: user._id, props: { source: 'whatsapp' } });
-  return continueProfile(conv);
-}
-
-async function handleOtp(conv, text) {
-  if (/^change$/i.test(text)) {
-    conv.state = 'email';
-    conv.pendingEmail = conv.otpHash = null;
-    return wa.sendText(conv.waId, 'Okay, type your email.');
-  }
-  const code = text.replace(/\D/g, '');
-  if (!conv.otpExpires || conv.otpExpires < new Date() || conv.otpAttempts >= 5) {
-    conv.state = 'email';
-    conv.pendingEmail = conv.otpHash = null;
-    return wa.sendText(conv.waId, 'That code expired. Type your email again and I\'ll send a new one.');
-  }
-  if (code.length !== 6 || hashOtp(code) !== conv.otpHash) {
-    conv.otpAttempts += 1;
-    return wa.sendText(conv.waId, 'That code doesn\'t match. Try again, or type *change* to use another email.');
-  }
-
-  const user = await User.findOne({ email: conv.pendingEmail });
-  if (!user) {
-    conv.state = 'email';
-    return wa.sendText(conv.waId, 'Couldn\'t find that account any more. Type your email again.');
-  }
-  const p10 = phone10(conv.waId);
-  if (p10 && !user.phone && !(await User.exists({ phone: p10 }))) {
-    user.phone = p10;
-    await user.save();
-  }
-  conv.userId = user._id;
-  conv.pendingEmail = conv.otpHash = conv.otpExpires = null;
-  return continueProfile(conv);
-}
-
-// ─── Questions ───────────────────────────────────────────────
-
-// First mentor (in ranking order) who sells the ₹99 call — never the student themself.
-async function firstBookableMentor(ids, selfId) {
-  const uniq = [...new Set(ids.filter(Boolean).map(String))].filter(id => id !== String(selfId));
-  if (!uniq.length) return null;
-  const rows = await User.find({ _id: { $in: uniq }, role: 'mentor', servicesOffered: SERVICE_ID })
-    .select('name username education topCompanies').lean();
-  const byId = new Map(rows.map(r => [String(r._id), r]));
-  return uniq.map(id => byId.get(id)).find(Boolean) || null;
-}
-
-async function offerCall(conv, mentor, lead) {
-  const service = getService(SERVICE_ID);
-  return wa.sendButtons(conv.waId,
-    `${lead}\n\nTalk to ${mentorLabel(mentor)} directly: ${service.duration} call, ₹${service.price}.`,
-    [{ id: `book:${mentor._id}`, title: `Book call ₹${service.price}` }, { id: 'ask', title: 'Ask another' }]);
-}
-
-const chatSessionId = (waId) => `wa:${waId}`;
-
-// Same chat engine as the website: asks one short follow-up when it needs the
-// field/branch, then answers and names the seniors it matched.
+// Each new question gets a fresh chat seeded with the latest known profile,
+// so matching follows the new topic but corrections are never lost.
 async function ensureChatSeeded(conv) {
   const sessionId = chatSessionId(conv.waId);
   if (await AtyantConversation.exists({ sessionId })) return sessionId;
-  const goal = GREETING_RE.test(conv.profile.goal) ? null : conv.profile.goal || null;
+  const p = conv.profile;
   await AtyantConversation.create({
     sessionId,
-    userId: conv.userId,
+    userId: conv.userId || null,
     context: {
-      identity: { college: conv.profile.college || null, branch: conv.profile.branch || null, year: conv.profile.year || null },
-      target: goal,
+      identity: { college: p.college || null, branch: p.branch || null, year: p.year || null },
+      targetCompanies: p.companies || [],
     },
   });
   return sessionId;
 }
 
-function formatMatches(mentors) {
-  return mentors.slice(0, 3).map((m, i) => {
-    const tags = m.matchedOn?.background?.length ? ` (${m.matchedOn.background.join(', ')})` : '';
-    const where = [m.college, (m.topCompanies || []).slice(0, 2).join(', ')].filter(Boolean).join(' · ');
-    return `${i + 1}. *${m.name}*${where ? ` · ${where}` : ''}${tags}`;
-  }).join('\n');
+// ─── Senior facts (checked against profiles, never invented) ──
+
+async function loadSeniors(ids, selfId) {
+  const uniq = [...new Set(ids.filter(Boolean).map(String))].filter(id => id !== String(selfId));
+  if (!uniq.length) return [];
+  const rows = await User.find({ _id: { $in: uniq }, role: 'mentor', servicesOffered: SERVICE_ID })
+    .select('name username education topCompanies companyDomain availability').lean();
+  const byId = new Map(rows.map(r => [String(r._id), r]));
+  return uniq.map(id => byId.get(id)).filter(Boolean);
 }
 
-async function answerQuestion(conv, text) {
-  let sessionId = await ensureChatSeeded(conv);
-  const chat = await AtyantConversation.findOne({ sessionId }).select('phase pendingAsk').lean();
-  const midIntake = chat?.phase === 'collecting' && !!chat?.pendingAsk; // student is answering our follow-up
-  if (chat?.phase === 'engine') {
-    // Previous question was already answered: a new question gets a fresh chat
-    // (profile re-seeded), otherwise matching stays stuck on the old topic.
-    await AtyantConversation.deleteOne({ sessionId });
-    sessionId = await ensureChatSeeded(conv);
-  }
+// "Why this senior": what matches, what differs, what isn't listed.
+function fitLine(m, profile) {
+  const edu = eduOf(m);
+  const mCollege = edu.institutionName || edu.institution;
+  const mBranch = edu.field;
+  const facts = [];
+  const gaps = [];
 
-  if (!midIntake) {
-    const kind = await classify(text);
-    if (kind === 'greeting') {
-      return wa.sendText(conv.waId, 'Hi! Type any internship, placement or career question and I\'ll find seniors from your background.');
-    }
-    if (kind === 'off_topic') {
-      return wa.sendText(conv.waId, 'I can only help with internships, placements and careers: questions for seniors, and booking calls with them. What would you like to know about your career?');
-    }
-    conv.lastQuestion = text.slice(0, 1000);
+  if (mCollege) facts.push(profile.college && isSameCollege(profile.college, mCollege) ? `same college (${mCollege})` : `studied at ${mCollege}`);
+  else gaps.push('college');
 
-    // A senior has already answered almost exactly this → send their real answer.
-    const r = await atyantEngine.getClarity(conv.userId, text, { studentContext: studentContext(conv), mentorLimit: 3 });
-    const card = r.answerCard;
-    if (card && String(card.mentor?._id) !== String(conv.userId)) {
-      logFunnel('wa_question', { userId: conv.userId, props: { instant: true } });
-      await wa.sendText(conv.waId, formatCard(card.content, card.mentor));
-      const mentor = await firstBookableMentor([card.mentor?._id, ...(r.mentors || []).map(m => m._id)], conv.userId);
-      if (mentor) return offerCall(conv, mentor, 'Want to go deeper on your own situation?');
-      return wa.sendText(conv.waId, 'Ask another question anytime.');
-    }
-  }
+  if (mBranch) {
+    if (profile.branch && isSameBranch(profile.branch, mBranch)) facts.push(`same branch (${mBranch})`);
+    else facts.push(profile.branch ? `${mBranch} branch, not yours (${profile.branch})` : `${mBranch} branch`);
+  } else gaps.push('branch');
 
-  const res = await processAtyantMessage(sessionId, text, conv.userId);
-  const mentors = (res.matchedMentors || []).filter(m => m.id !== String(conv.userId));
-  logFunnel('wa_question', { userId: conv.userId, props: { instant: false, phase: res.phase, mentors: mentors.length } });
+  if (m.companyDomain) facts.push(`${m.companyDomain} career path`);
+  const companies = (m.topCompanies || []).slice(0, 3);
+  if (companies.length) facts.push(`profile lists ${companies.join(', ')}`);
 
-  if (res.phase !== 'engine' || !mentors.length) return wa.sendText(conv.waId, res.reply);
+  const wanted = (profile.companies || []).filter(c =>
+    !companies.some(x => x.toLowerCase().includes(c.toLowerCase()) || c.toLowerCase().includes(x.toLowerCase())));
+  if (wanted.length) gaps.push(`experience at ${wanted.join(', ')}`);
 
-  const bookable = await firstBookableMentor(mentors.map(m => m.id), conv.userId);
-  const body = `${res.reply}\n\n*Seniors who match you*\n${formatMatches(mentors)}`;
-  if (!bookable) return wa.sendText(conv.waId, `${body}\n\nAsk another question anytime.`);
-  const service = getService(SERVICE_ID);
-  return wa.sendButtons(conv.waId,
-    `${body}\n\nTalk to *${bookable.name || bookable.username}* directly: ${service.duration} call, ₹${service.price}.`,
-    [{ id: `book:${bookable._id}`, title: `Book call ₹${service.price}` }, { id: 'ask', title: 'Ask another' }]);
+  return `${facts.join('; ')}${gaps.length ? `. Not listed: ${gaps.join(', ')}` : ''}.`;
 }
-
-// ─── Booking ─────────────────────────────────────────────────
 
 async function freeSlots(mentor) {
   const av = mentor.availability || {};
@@ -323,23 +195,221 @@ async function freeSlots(mentor) {
   return out;
 }
 
-async function loadBookableMentor(mentorId) {
-  return User.findOne({ _id: mentorId, role: 'mentor', servicesOffered: SERVICE_ID })
-    .select('name username education topCompanies availability').lean();
+// ─── Answering ───────────────────────────────────────────────
+
+async function answerQuestion(conv, text, { firstContact = false } = {}) {
+  let sessionId = await ensureChatSeeded(conv);
+  const chat = await AtyantConversation.findOne({ sessionId }).select('phase pendingAsk messages').lean();
+  const midIntake = chat?.phase === 'collecting' && !!chat?.pendingAsk; // answering our follow-up
+
+  if (!midIntake) {
+    const kind = await classify(text);
+    if (kind === 'greeting') {
+      return wa.sendText(conv.waId, firstContact || !chat?.messages?.length
+        ? `${INTRO} What's the one thing you're stuck on?`
+        : 'What would you like help with next?');
+    }
+    if (kind === 'off_topic') {
+      return wa.sendText(conv.waId, 'I can only help with internships, placements and careers. What\'s the career question on your mind?');
+    }
+    if (firstContact) await wa.sendText(conv.waId, INTRO);
+    if (chat?.phase === 'engine') {
+      await AtyantConversation.deleteOne({ sessionId });
+      sessionId = await ensureChatSeeded(conv);
+    }
+    conv.lastQuestion = text.slice(0, 1000);
+
+    // A senior has already answered almost exactly this: send their own words, labelled as theirs.
+    const { college, branch, year, goal } = conv.profile;
+    const r = await atyantEngine.getClarity(conv.userId || null, text, { studentContext: { college, branch, year, goal }, mentorLimit: 3 });
+    const card = r.answerCard;
+    if (card && String(card.mentor?._id) !== String(conv.userId)) {
+      const body = `*From ${displayName(card.mentor)}'s own experience* (their words, from a similar question):\n\n${formatCard(card.content)}`;
+      conv.lastAnswer = body;
+      conv.matchIds = [card.mentor?._id, ...(r.mentors || []).map(m => m._id)].filter(Boolean).map(String);
+      logFunnel('wa_answer', { userId: conv.userId, props: { kind: 'card' } });
+      return offerNext(conv, body);
+    }
+  }
+
+  const res = await processAtyantMessage(sessionId, text, conv.userId || null, null, { answerFirst: true });
+  syncProfile(conv, res.context);
+  await saveProfileToUser(conv);
+  conv.lastAnswer = res.reply;
+  conv.matchIds = (res.matchedMentors || []).map(m => m.id).filter(id => id !== String(conv.userId));
+  logFunnel('wa_answer', { userId: conv.userId, props: { kind: res.phase, matches: conv.matchIds.length } });
+
+  if (res.phase !== 'engine') return wa.sendText(conv.waId, res.reply);
+
+  // The top matches often don't sell calls; look further down the same ranking.
+  if (!(await loadSeniors(conv.matchIds, conv.userId)).length) {
+    const { college, branch, year, goal } = conv.profile;
+    const more = await atyantEngine.matchMentorsForChat(conv.userId || null,
+      [conv.lastQuestion, goal].filter(Boolean).join('\n'), { college, branch, year, goal }, 15).catch(() => ({ mentors: [] }));
+    conv.matchIds = [...conv.matchIds, ...(more.mentors || []).map(m => String(m._id))];
+  }
+  return offerNext(conv, res.reply);
 }
 
-async function offerSlots(conv, mentorId) {
-  const mentor = await loadBookableMentor(mentorId).catch(() => null);
-  if (!mentor) return wa.sendText(conv.waId, 'That senior isn\'t taking calls right now. Ask another question and I\'ll find someone else.');
-  const slots = await freeSlots(mentor);
-  if (!slots.length) {
-    return wa.sendText(conv.waId, `${mentor.name || mentor.username} has no free slots in the next ${SLOT_DAYS} days. Ask another question and I'll find someone else.`);
+// After an answer: feedback, plus a soft offer when a matching senior takes calls.
+async function offerNext(conv, answer) {
+  const seniors = await loadSeniors(conv.matchIds, conv.userId);
+  if (!seniors.length) return sendWithButtons(conv.waId, answer, FEEDBACK_BUTTONS);
+  return sendWithButtons(conv.waId,
+    `${answer}\n\nWould it help to talk to a senior who's been on this path? I'll show what each one actually has in common with you before you choose.`,
+    [...FEEDBACK_BUTTONS, { id: 'seniors', title: 'Show seniors' }],
+    'Was this useful, or would a senior help?');
+}
+
+async function recordFeedback(conv, value) {
+  await recordAtyantChatFeedback(chatSessionId(conv.waId), conv.lastAnswer, value).catch(() => null);
+  logFunnel('wa_feedback', { userId: conv.userId, props: { value } });
+  return wa.sendText(conv.waId, value === 'up'
+    ? 'Glad that helped. Ask me anything else whenever you\'re ready.'
+    : 'Thanks for telling me. What was missing? Tell me a bit more about your situation and I\'ll try again.');
+}
+
+// ─── Seniors → booking ───────────────────────────────────────
+
+async function showSeniors(conv) {
+  const seniors = await loadSeniors(conv.matchIds, conv.userId);
+  const withSlots = [];
+  for (const m of seniors.slice(0, 5)) {
+    const slots = await freeSlots(m);
+    if (slots.length) withSlots.push({ m, next: slots[0] });
+    if (withSlots.length === 3) break;
   }
+  if (!withSlots.length) {
+    return wa.sendText(conv.waId, 'None of the seniors who match you have free slots this week. Keep asking me here, and check back in a few days.');
+  }
+  const lines = withSlots.map(({ m }, i) => `${i + 1}. *${displayName(m)}*: ${fitLine(m, conv.profile)}`).join('\n\n');
+  await wa.sendText(conv.waId, `*Seniors you can talk to*\n\n${lines}\n\nThese details come from each senior's Atyant profile.`);
+  return wa.sendList(conv.waId, 'Pick a senior to see the call details. Nothing is booked yet.', 'Choose senior',
+    withSlots.map(({ m, next }) => ({ id: `senior:${m._id}`, title: displayName(m), description: `25-min call · ₹99 · next ${fmtWhen(next)}` })));
+}
+
+async function showBookingCard(conv, mentorId) {
+  const [mentor] = await loadSeniors([mentorId], conv.userId);
+  if (!mentor) return wa.sendText(conv.waId, 'That senior isn\'t taking calls right now. Ask me anything else.');
+  const slots = await freeSlots(mentor);
+  if (!slots.length) return wa.sendText(conv.waId, `${displayName(mentor)} has no free slots in the next ${SLOT_DAYS} days.`);
+
+  const service = getService(SERVICE_ID);
   conv.state = 'pick_slot';
   conv.mentorId = mentor._id;
-  return wa.sendList(conv.waId, `Pick a time for your call with ${mentorLabel(mentor)} (IST):`, 'See slots',
+  const topic = conv.lastQuestion ? `your question ("${conv.lastQuestion.slice(0, 140)}")` : 'your question';
+  await wa.sendText(conv.waId, [
+    `*${service.duration} audio call with ${displayName(mentor)}*`,
+    `*Why them:* ${fitLine(mentor, conv.profile)}`,
+    `*What you'll cover:* ${topic}, plus your resume and next steps. Audio only, no video.`,
+    `*Price:* ₹${service.price}, paid by UPI or card through Razorpay.`,
+    `*Refunds:* ${REFUND_TERMS}`,
+  ].join('\n\n'));
+  return wa.sendList(conv.waId, 'Pick a time (IST). You\'ll confirm before anything is booked.', 'See times',
     slots.map(t => ({ id: `slot:${mentor._id}:${t}`, title: fmtWhen(t) })));
 }
+
+async function chooseSlot(conv, mentorId, ms) {
+  const [mentor] = await loadSeniors([mentorId], conv.userId);
+  if (!mentor) return wa.sendText(conv.waId, 'That senior isn\'t taking calls right now. Ask me anything else.');
+  if (!(await freeSlots(mentor)).includes(ms)) {
+    await wa.sendText(conv.waId, 'That time was just taken. Here are the others:');
+    return showBookingCard(conv, mentor._id);
+  }
+  conv.mentorId = mentor._id;
+  conv.pendingSlot = ms;
+  if (!conv.userId) {
+    conv.state = 'booking_email';
+    return wa.sendText(conv.waId, 'To book, I need your email for the confirmation and the call link. What\'s your email?');
+  }
+  return askConsent(conv);
+}
+
+async function askConsent(conv) {
+  const mentor = await User.findById(conv.mentorId).select('name username').lean();
+  conv.state = 'confirm';
+  const service = getService(SERVICE_ID);
+  return wa.sendButtons(conv.waId,
+    `Before I book: I'll share your name, email and question with ${displayName(mentor)} so they can prepare. Your phone number stays private.\n\n${fmtWhen(conv.pendingSlot)} IST · ${service.duration} · ₹${service.price}`,
+    [{ id: 'confirm:yes', title: 'Yes, book it' }, { id: 'confirm:no', title: 'Cancel' }]);
+}
+
+// ─── Account (only when booking) ─────────────────────────────
+
+async function uniqueUsername(seed) {
+  const base = (String(seed || 'student').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20) || 'student').padEnd(3, '0');
+  for (let i = 0; i < 6; i++) {
+    const candidate = `${base}_${crypto.randomInt(1000, 99999)}`;
+    if (!(await User.exists({ username: candidate }))) return candidate;
+  }
+  return `student_${crypto.randomBytes(5).toString('hex')}`;
+}
+
+async function handleEmail(conv, text) {
+  const email = text.trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) return wa.sendText(conv.waId, 'That doesn\'t look like an email. Please type it like name@example.com, or type *cancel* to stop booking.');
+
+  if (await User.exists({ email })) {
+    const otp = crypto.randomInt(100000, 1000000);
+    conv.pendingEmail = email;
+    conv.otpHash = hashOtp(otp);
+    conv.otpExpires = new Date(Date.now() + 10 * 60_000);
+    conv.otpAttempts = 0;
+    conv.state = 'otp';
+    await sendSignupOTPEmail(email, otp);
+    return wa.sendText(conv.waId, `That email already has an Atyant account. I've sent a 6-digit code to ${email}. Type it here to continue.\n\n(Wrong email? Type *change*.)`);
+  }
+
+  const p10 = phone10(conv.waId);
+  const user = await User.create({
+    username: await uniqueUsername(conv.name || email.split('@')[0]),
+    name: conv.name || null,
+    email,
+    password: await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10),
+    ...(p10 && !(await User.exists({ phone: p10 })) ? { phone: p10 } : {}),
+    role: 'user',
+  });
+  conv.userId = user._id;
+  await AtyantConversation.updateOne({ sessionId: chatSessionId(conv.waId) }, { $set: { userId: user._id } });
+  await saveProfileToUser(conv);
+  logFunnel('wa_signup', { userId: user._id, props: { source: 'whatsapp' } });
+  return askConsent(conv);
+}
+
+async function handleOtp(conv, text) {
+  if (/^change$/i.test(text)) {
+    conv.state = 'booking_email';
+    conv.pendingEmail = conv.otpHash = null;
+    return wa.sendText(conv.waId, 'Okay, type your email.');
+  }
+  const code = text.replace(/\D/g, '');
+  if (!conv.otpExpires || conv.otpExpires < new Date() || conv.otpAttempts >= 5) {
+    conv.state = 'booking_email';
+    conv.pendingEmail = conv.otpHash = null;
+    return wa.sendText(conv.waId, 'That code expired. Type your email again and I\'ll send a new one.');
+  }
+  if (code.length !== 6 || hashOtp(code) !== conv.otpHash) {
+    conv.otpAttempts += 1;
+    return wa.sendText(conv.waId, 'That code doesn\'t match. Try again, or type *change* to use another email.');
+  }
+  const user = await User.findOne({ email: conv.pendingEmail });
+  if (!user) {
+    conv.state = 'booking_email';
+    return wa.sendText(conv.waId, 'Couldn\'t find that account any more. Type your email again.');
+  }
+  const p10 = phone10(conv.waId);
+  if (p10 && !user.phone && !(await User.exists({ phone: p10 }))) {
+    user.phone = p10;
+    await user.save();
+  }
+  conv.userId = user._id;
+  conv.pendingEmail = conv.otpHash = conv.otpExpires = null;
+  await AtyantConversation.updateOne({ sessionId: chatSessionId(conv.waId) }, { $set: { userId: user._id } });
+  await saveProfileToUser(conv);
+  return askConsent(conv);
+}
+
+// ─── Payment ─────────────────────────────────────────────────
 
 async function cancelPending(conv) {
   if (!conv.sessionId) return;
@@ -352,20 +422,23 @@ async function cancelPending(conv) {
   }
 }
 
-async function createBooking(conv, mentorId, ms) {
-  const mentor = await loadBookableMentor(mentorId).catch(() => null);
-  if (!mentor) return wa.sendText(conv.waId, 'That senior isn\'t taking calls right now. Ask another question and I\'ll find someone else.');
-  const slots = await freeSlots(mentor);
-  if (!slots.includes(ms)) {
-    await wa.sendText(conv.waId, 'That slot was just taken. Pick another:');
-    return offerSlots(conv, mentor._id);
+async function createBooking(conv) {
+  const ms = conv.pendingSlot;
+  const [mentor] = await loadSeniors([conv.mentorId], conv.userId);
+  if (!mentor || !ms) {
+    conv.state = 'chat';
+    return wa.sendText(conv.waId, 'That booking expired. Tap *Show seniors* under an answer to start again.');
+  }
+  if (!(await freeSlots(mentor)).includes(ms)) {
+    await wa.sendText(conv.waId, 'That time was just taken. Here are the others:');
+    return showBookingCard(conv, mentor._id);
   }
   if (!razorpay) return wa.sendText(conv.waId, 'Payments are down for a moment. Please try again shortly.');
 
   await cancelPending(conv);
 
   const service = getService(SERVICE_ID);
-  const mentorName = mentor.name || mentor.username || 'Your Mentor';
+  const mentorName = displayName(mentor);
   const user = await User.findById(conv.userId).select('name username email').lean();
   const session = await Session.create({
     userId: conv.userId, mentorId: mentor._id, mentorName, mentorInitials: initials(mentorName),
@@ -392,27 +465,28 @@ async function createBooking(conv, mentorId, ms) {
     console.error('WA payment link failed:', err?.error?.description || err.message);
     session.status = 'cancelled';
     await session.save();
-    return wa.sendText(conv.waId, 'Couldn\'t create the payment link. Please pick the slot again in a minute.');
+    return wa.sendText(conv.waId, 'Couldn\'t create the payment link. Please pick the time again in a minute.');
   }
 
   session.razorpayPaymentLinkId = link.id;
   await session.save();
   conv.state = 'payment_pending';
   conv.sessionId = session._id;
+  conv.pendingSlot = null;
   logFunnel('wa_payment_link', { userId: conv.userId, props: { sessionId: String(session._id) } });
 
   return wa.sendText(conv.waId,
-    `*${service.duration} call with ${mentorName}*\n${fmtWhen(ms)} IST\n\nPay ₹${service.price} here (valid ${LINK_TTL_MIN} min):\n${link.short_url}\n\nYour call link comes here right after you pay.`);
+    `*${service.duration} call with ${mentorName}*\n${fmtWhen(ms)} IST\n\nPay ₹${service.price} here (valid ${LINK_TTL_MIN} min):\n${link.short_url}\n\nYour call link comes here right after you pay. ${REFUND_TERMS}`);
 }
 
 // Called from the Razorpay webhook once a WhatsApp booking is paid.
 export async function notifyBookingConfirmed(session) {
   const conv = await WaConversation.findOne({ sessionId: session._id });
   if (!conv) return;
-  conv.state = 'ready';
+  conv.state = 'chat';
   await conv.save();
   await wa.sendText(conv.waId,
-    `✅ Booked: call with ${session.mentorName}\n${fmtWhen(session.scheduledAt)} IST\n\n${session.meetingLink ? `Join here: ${session.meetingLink}\n\n` : ''}Details are in your email too. Ask another question anytime.`);
+    `✅ Booked: call with ${session.mentorName}\n${fmtWhen(session.scheduledAt)} IST\n\n${session.meetingLink ? `Join here: ${session.meetingLink}\n\n` : ''}Details are in your email too. Keep asking me anything here.`);
 }
 
 // ─── Entry point ─────────────────────────────────────────────
@@ -427,61 +501,42 @@ function readInput(msg) {
 
 async function route(conv, msg, isFirstContact) {
   const { text, replyId, unsupported } = readInput(msg);
+  if (LEGACY_STATES.has(conv.state)) conv.state = 'chat';
 
+  // Existing account on this number: link quietly, no questions asked.
   if (!conv.userId) {
     const p10 = phone10(conv.waId);
     const user = p10 ? await User.findOne({ phone: p10 }).select('_id').lean() : null;
-    if (user) {
-      conv.userId = user._id;
-      await wa.sendText(conv.waId, `Hi${conv.name ? ` ${conv.name.split(' ')[0]}` : ''} 👋 Found your Atyant account from this number.`);
-      return continueProfile(conv);
-    }
+    if (user) conv.userId = user._id;
   }
 
   if (unsupported) return wa.sendText(conv.waId, 'I can only read text for now. Please type your message.');
 
-  // "hi" mid-onboarding is not an answer — ask the same question again.
-  if (['college', 'branch', 'goal'].includes(conv.state) && GREETING_RE.test(text)) return askStep(conv, conv.state);
-
-  switch (conv.state) {
-    case 'email': return handleEmail(conv, text, isFirstContact);
-    case 'otp':   return handleOtp(conv, text);
-    case 'college':
-      if (!text) return askStep(conv, 'college');
-      conv.profile.college = text.slice(0, 120);
-      return askStep(conv, 'branch');
-    case 'branch':
-      if (!text) return askStep(conv, 'branch');
-      conv.profile.branch = text.slice(0, 80);
-      return askStep(conv, 'year');
-    case 'year': {
-      const picked = YEARS.find(y => y.id === replyId)?.title || text.slice(0, 20);
-      if (!picked) return askStep(conv, 'year');
-      conv.profile.year = picked;
-      return askStep(conv, 'goal');
-    }
-    case 'goal':
-      if (!text) return askStep(conv, 'goal');
-      conv.profile.goal = text.slice(0, 200);
-      await saveProfileToUser(conv);
-      conv.state = 'ready';
-      return wa.sendText(conv.waId, 'Done. Now type your question, e.g. "Which skills got seniors from my branch into core companies?"');
-    default: break;
-  }
-
-  // ready / pick_slot / payment_pending
-  if (replyId === 'ask') {
-    conv.state = 'ready';
-    return wa.sendText(conv.waId, 'Type your question.');
-  }
-  if (replyId?.startsWith('book:')) return offerSlots(conv, replyId.slice(5));
+  if (replyId === 'fb:up' || replyId === 'fb:down') return recordFeedback(conv, replyId === 'fb:up' ? 'up' : 'down');
+  if (replyId === 'seniors') return showSeniors(conv);
+  if (replyId?.startsWith('senior:') || replyId?.startsWith('book:')) return showBookingCard(conv, replyId.split(':')[1]);
   if (replyId?.startsWith('slot:')) {
     const [, mentorId, ms] = replyId.split(':');
-    return createBooking(conv, mentorId, Number(ms));
+    return chooseSlot(conv, mentorId, Number(ms));
   }
-  if (!text) return wa.sendText(conv.waId, 'Type your question.');
-  conv.state = 'ready';
-  return answerQuestion(conv, text);
+  if (replyId === 'confirm:yes') return createBooking(conv);
+  if (replyId === 'confirm:no' || (/^cancel$/i.test(text) && ['booking_email', 'otp', 'confirm', 'pick_slot'].includes(conv.state))) {
+    conv.state = 'chat';
+    conv.pendingSlot = null;
+    return wa.sendText(conv.waId, 'No problem. Nothing was booked or shared. Ask me anything else.');
+  }
+  if (replyId === 'ask') {
+    conv.state = 'chat';
+    return wa.sendText(conv.waId, 'What would you like help with?');
+  }
+  if (/^(cancel|stop)$/i.test(text)) return wa.sendText(conv.waId, 'Nothing is booked or pending. Ask me anything whenever you\'re ready.');
+
+  if (conv.state === 'booking_email') return handleEmail(conv, text);
+  if (conv.state === 'otp') return handleOtp(conv, text);
+
+  if (!text) return wa.sendText(conv.waId, 'What would you like help with?');
+  conv.state = 'chat';
+  return answerQuestion(conv, text, { firstContact: isFirstContact });
 }
 
 export async function handleInbound(msg, contactName) {

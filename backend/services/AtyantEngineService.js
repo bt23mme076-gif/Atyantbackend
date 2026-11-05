@@ -240,6 +240,19 @@ Don't end on a question. Don't say results are "below".`;
 const COLLECT_REMINDER = "Reply now: at most 2 sentences, each under 15 words — a quick reaction, then your one question. No lists, nothing else.";
 const ENGINE_REMINDER = "Reply now: exactly 3 sentences, EACH under 18 words, one paragraph. One idea per sentence — no lists of skills. No preamble (never announce 'no more questions'). Only claim what the Matched seniors line says — never imply they worked at a company it doesn't name.";
 
+// WhatsApp ("answerFirst") mode: a student asked something real, so answer it
+// before collecting anything. Senior suggestions are added by the WhatsApp code
+// with checked facts, so the model never writes the handoff itself.
+const ANSWER_FIRST_RULES = `
+WhatsApp mode — answer first:
+- Start by actually answering what they asked with something specific they can use: a concrete project, skill, resource or step that fits what they told you. If you can't answer well without one detail, give the best general answer you can, then ask for it.
+- Use only details they have told you. If they corrected something (branch, city, language, year), the latest version is the truth — never mix the old one back in.
+- Keep their branch, city, programming languages and spoken language as separate facts; never treat one as another.
+- If you don't know something, say so plainly. Never present general advice as any senior's personal experience or story.
+- Do not mention, name or describe seniors or mentors, and don't offer calls — that is added separately.`;
+const ANSWER_FIRST_COLLECT_REMINDER = "Reply now: 2-4 short sentences. First a specific, useful answer to what they asked (a concrete project, skill or step). Then, only if a missing detail would change the advice, ask ONE short question for it. No lists. Don't mention seniors.";
+const ANSWER_FIRST_ENGINE_REMINDER = "Reply now: 3-4 short sentences, about 60 words: a specific answer for their situation, then one concrete next step for this week. No lists, no questions. Don't mention seniors or mentors.";
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function countLayers(context = {}) {
@@ -683,7 +696,7 @@ async function getOrCreateConversation(sessionId, userId) {
 // persist, and return the standard response shape. `conv.context` must already
 // reflect this turn's extraction and `conv.messages` must already include the
 // user's turn (chat text or a resume-upload placeholder) before calling this.
-async function finishTurn(conv, userMessage, emit, sessionId) {
+async function finishTurn(conv, userMessage, emit, sessionId, { answerFirst = false } = {}) {
   // The extractor often keeps a vague goal ("internship") even after the student
   // answers the field question, which left the chat asking forever. If we just
   // asked for the field and the reply names one, fold it into the goal here.
@@ -760,7 +773,7 @@ async function finishTurn(conv, userMessage, emit, sessionId) {
     }
     conv.pendingAsk = !id.branch ? 'branch' : !ctx.target ? 'goal' : !goalHasField(ctx) ? 'field' : askingNow;
 
-    const systemWithContext = `${COLLECTION_SYSTEM}
+    const systemWithContext = `${COLLECTION_SYSTEM}${answerFirst ? `\n${ANSWER_FIRST_RULES}` : ''}
 
 ---
 What we already know about them:
@@ -771,7 +784,10 @@ ${userWantsMentor ? "\nThe student JUST asked to be connected to a mentor. Ackno
 ---`;
 
     emit({ type: 'progress', stage: 'drafting' });
-    const rawReply = await callChatStream(toGroqMessages(systemWithContext, conv.messages), emit, { reminder: COLLECT_REMINDER });
+    const rawReply = await callChatStream(toGroqMessages(systemWithContext, conv.messages), emit, {
+      reminder: answerFirst ? ANSWER_FIRST_COLLECT_REMINDER : COLLECT_REMINDER,
+      ...(answerFirst ? { maxTokens: 500 } : {}),
+    });
     reply = stripTags(rawReply);
 
   // ── Phase 2: Execution Engine — final wrap-up, NO questions ──────────────
@@ -797,7 +813,15 @@ ${userWantsMentor ? "\nThe student JUST asked to be connected to a mentor. Ackno
     });
 
     emit({ type: 'progress', stage: 'drafting' });
-    const systemWithProblem = `${ENGINE_SYSTEM}
+    const systemWithProblem = answerFirst
+      ? `${MASTER_SYSTEM_PROMPT}
+${ANSWER_FIRST_RULES}
+
+---
+Student's Problem Statement (fully mapped by intake system):
+${conv.problemStatement}
+---`
+      : `${ENGINE_SYSTEM}
 
 ---
 Student's Problem Statement (fully mapped by intake system):
@@ -806,7 +830,9 @@ ${conv.problemStatement}
 Matched seniors: ${describeMatches(matchedMentors)}
 ---`;
 
-    const rawReply = await callClaudeStream(toGroqMessages(systemWithProblem, conv.messages), emit, { reminder: ENGINE_REMINDER });
+    const rawReply = await callClaudeStream(toGroqMessages(systemWithProblem, conv.messages), emit, {
+      reminder: answerFirst ? ANSWER_FIRST_ENGINE_REMINDER : ENGINE_REMINDER,
+    });
     reply = stripTags(rawReply);
 
     outputMode = 'MENTOR_ROUTING';
@@ -851,7 +877,8 @@ Matched seniors: ${describeMatches(matchedMentors)}
 // `onProgress`, if given, is called synchronously with real checkpoints as each
 // stage of the turn actually completes — used to drive a live "thinking" UI
 // instead of a canned one. Never throws from onProgress errors into the engine.
-export async function processAtyantMessage(sessionId, userMessage, userId = null, onProgress = null) {
+// options.answerFirst: WhatsApp mode (see ANSWER_FIRST_RULES). The website omits it.
+export async function processAtyantMessage(sessionId, userMessage, userId = null, onProgress = null, options = {}) {
   const emit = onProgress ? (event) => { try { onProgress(event); } catch { /* UI-only, non-fatal */ } } : () => {};
 
   emit({ type: 'progress', stage: 'reading' });
@@ -914,7 +941,7 @@ export async function processAtyantMessage(sessionId, userMessage, userId = null
   }
   emit({ type: 'progress', stage: 'context', context: conv.context, contextLayers: conv.contextLayers });
 
-  return finishTurn(conv, userMessage, emit, sessionId);
+  return finishTurn(conv, userMessage, emit, sessionId, options);
 }
 
 // ─── Résumé upload ──────────────────────────────────────────────────────────
