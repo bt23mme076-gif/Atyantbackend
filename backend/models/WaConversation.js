@@ -10,7 +10,7 @@ const waConversationSchema = new mongoose.Schema({
   name:   { type: String, default: '' },                     // WhatsApp profile name
   state: {
     type: String,
-    enum: ['chat', 'pick_slot', 'booking_email', 'otp', 'confirm', 'payment_pending',
+    enum: ['chat', 'pick_slot', 'booking_email', 'otp', 'confirm', 'payment_pending', 'invite_college',
       'email', 'college', 'branch', 'year', 'goal', 'ready'],
     default: 'chat',
   },
@@ -31,6 +31,10 @@ const waConversationSchema = new mongoose.Schema({
   matchIds:     { type: [String], default: [] },               // seniors matched to the last answer
   mentorId:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   pendingSlot:  { type: Number, default: null },               // chosen slot (ms) awaiting email/consent
+  pendingAction:{ type: String, enum: ['book', 'invite', null], default: null }, // what to resume after email/OTP
+  // Seniors from the student's college found on LinkedIn for the invite flow.
+  inviteCandidates: { type: [{ name: String, headline: String, linkedinUrl: String, _id: false }], default: [] },
+  inviteSearches:   { type: [Date], default: [] },             // recent web searches (paid API, rate-limited)
   sessionId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Session', default: null },
   seenIds:      { type: [String], default: [] },               // last inbound message ids (dedupe retries)
   lastInboundAt:{ type: Date, default: null },

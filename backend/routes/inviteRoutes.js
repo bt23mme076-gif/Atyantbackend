@@ -1,18 +1,15 @@
 import express from 'express';
-import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import protect from '../middleware/authMiddleware.js';
 import AtyantConversation from '../models/AtyantConversation.js';
 import MentorInvite from '../models/MentorInvite.js';
 import User from '../models/User.js';
-import { findSeniors, isLinkedinProfileUrl, linkedinSlug } from '../services/SeniorSearchService.js';
-import { frontendBase } from '../utils/frontendUrl.js';
+import { findSeniors } from '../services/SeniorSearchService.js';
+import { createInvite, InviteError } from '../services/MentorInviteService.js';
 import { logFunnel } from '../utils/funnel.js';
 import { rewardInviteFor } from '../services/InviteRewardService.js';
 
 const router = express.Router();
-
-const DAILY_INVITE_CAP = 10;
 
 // Each search costs real money (Serper), so cap per user, not per IP.
 const searchLimiter = rateLimit({
@@ -23,29 +20,6 @@ const searchLimiter = rateLimit({
 });
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
-
-function defaultQuestion(ctx = {}) {
-  const id = ctx.identity || {};
-  const who = [id.year, id.branch, 'student', id.college && `from ${id.college}`].filter(Boolean).join(' ');
-  const company = (ctx.targetCompanies || [])[0];
-  const goal = ctx.target || 'their placement';
-  return `A ${who} wants to know how you got to ${company || 'where you are'} — they're aiming for ${goal} and would love 10 minutes of honest advice.`;
-}
-
-function inviteMessage(senior, inviterName, link) {
-  const first = senior.name.split(' ')[0];
-  return `Hi ${first}, I'm ${inviterName}, a junior from your background. I saw your journey and had one question about how you got there — I've posted it on Atyant, where seniors answer juniors from the same background. Would really appreciate your take: ${link}`;
-}
-
-// LinkedIn connection notes are capped (~200 chars on free accounts), so the
-// note must fit with the link intact.
-const NOTE_LIMIT = 200;
-function inviteNote(senior, inviterName, link) {
-  const first = senior.name.split(' ')[0];
-  const me = inviterName.split(' ')[0];
-  const note = `Hi ${first}, I'm ${me}, a junior from your college — one quick question about your journey. Would love your take: ${link}`;
-  return note.length <= NOTE_LIMIT ? note : `Hi! Junior from your college — one quick question about your journey: ${link}`;
-}
 
 async function ownConversation(sessionId, userId) {
   if (!sessionId) return null;
@@ -74,54 +48,26 @@ router.get('/seniors', protect, searchLimiter, async (req, res) => {
 router.post('/', protect, async (req, res) => {
   try {
     const inviterId = req.user.userId;
-    const senior = req.body.senior || {};
-    const name = str(senior.name, 60);
-    const linkedinUrl = str(senior.linkedinUrl, 300);
-    if (!name || !isLinkedinProfileUrl(linkedinUrl)) {
-      return res.status(400).json({ message: 'A name and LinkedIn profile URL are required' });
-    }
-    const slug = linkedinSlug(linkedinUrl);
-
-    const inviter = await User.findById(inviterId).select('name username').lean();
-    const inviterName = inviter?.name || inviter?.username || 'a junior';
-
-    let invite = await MentorInvite.findOne({ inviterId, 'senior.slug': slug });
-    if (!invite) {
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const today = await MentorInvite.countDocuments({ inviterId, createdAt: { $gte: since } });
-      if (today >= DAILY_INVITE_CAP) {
-        return res.status(429).json({ message: `You can invite up to ${DAILY_INVITE_CAP} seniors a day` });
-      }
-      const sessionId = str(req.body.sessionId, 100);
-      const conv = await ownConversation(sessionId, inviterId);
-      try {
-        invite = await MentorInvite.create({
-          code: crypto.randomBytes(6).toString('base64url'),
-          inviterId,
-          inviterIp: req.ip || null,
-          sessionId: conv ? sessionId : null,
-          senior: { name, headline: str(senior.headline, 160), linkedinUrl, slug },
-          question: str(req.body.question, 300) || defaultQuestion(conv?.context),
-        });
-        logFunnel('invite_created', { funnelId: invite.sessionId, userId: inviterId, props: { code: invite.code } });
-      } catch (err) {
-        if (err.code !== 11000) throw err;
-        // Concurrent request created it first (unique inviter + senior).
-        invite = await MentorInvite.findOne({ inviterId, 'senior.slug': slug });
-        if (!invite) throw err;
-      }
-    }
-
-    const link = `${frontendBase()}/?invite=${invite.code}`;
+    const sessionId = str(req.body.sessionId, 100);
+    const conv = await ownConversation(sessionId, inviterId);
+    const { invite, link, message, note } = await createInvite({
+      inviterId,
+      inviterIp: req.ip || null,
+      sessionId: conv ? sessionId : null,
+      context: conv?.context,
+      senior: req.body.senior || {},
+      question: req.body.question,
+    });
     res.status(201).json({
       code: invite.code,
       link,
       linkedinUrl: invite.senior.linkedinUrl,
-      message: inviteMessage(invite.senior, inviterName, link),
-      note: inviteNote(invite.senior, inviterName, link),
+      message,
+      note,
       status: invite.status,
     });
   } catch (err) {
+    if (err instanceof InviteError) return res.status(err.status).json({ message: err.message });
     console.error('Create invite failed:', err.message);
     res.status(500).json({ message: 'Could not create invite' });
   }

@@ -14,6 +14,9 @@ import User from '../../models/User.js';
 import Session from '../../models/Session.js';
 import WaConversation from '../../models/WaConversation.js';
 import AtyantConversation from '../../models/AtyantConversation.js';
+import MentorInvite from '../../models/MentorInvite.js';
+import { findSeniors } from '../SeniorSearchService.js';
+import { createInvite, InviteError, INVITE_REWARD_CREDITS } from '../MentorInviteService.js';
 import atyantEngine, { isSameCollege } from '../AtyantEngine.js';
 import { processAtyantMessage, recordAtyantChatFeedback } from '../AtyantEngineService.js';
 import { isSameBranch } from '../../utils/collegeNormalizer.js';
@@ -280,14 +283,126 @@ async function answerQuestion(conv, text, { firstContact = false } = {}) {
   return offerNext(conv, res.reply);
 }
 
-// After an answer: a soft senior offer (only if one takes calls) + New chat / End chat.
+// Invite is worth offering when we know their college and no matched senior is from it.
+async function inviteWorthOffering(conv) {
+  if (!conv.profile.college) return false;
+  if (!conv.matchIds.length) return true;
+  const rows = await User.find({ _id: { $in: conv.matchIds.slice(0, 15) } }).select('education').lean();
+  return !rows.some(m => isSameCollege(conv.profile.college, eduOf(m).institutionName || eduOf(m).institution));
+}
+
+// After an answer: a soft senior offer (only if one takes calls), an invite
+// offer when no senior from their college is on Atyant, then New chat / End chat.
 async function offerNext(conv, answer) {
   const seniors = await loadSeniors(conv.matchIds, conv.userId);
-  if (!seniors.length) return sendWithButtons(conv.waId, answer, CHAT_BUTTONS, 'Keep going, or:');
-  return sendWithButtons(conv.waId,
-    `${answer}\n\nWant to hear it from a senior who's been on this path? I'll show what each one has in common with you first.`,
-    [{ id: 'seniors', title: 'Show seniors' }, ...CHAT_BUTTONS],
-    'Keep going, or:');
+  const canInvite = await inviteWorthOffering(conv);
+  const buttons = [];
+  if (seniors.length) buttons.push({ id: 'seniors', title: 'Show seniors' });
+  if (canInvite) buttons.push({ id: 'invite', title: 'Invite a senior' });
+  for (const b of CHAT_BUTTONS) if (buttons.length < 3) buttons.push(b);
+
+  const parts = [answer];
+  if (seniors.length) parts.push('Want to hear it from a senior who\'s been on this path? I\'ll show what each one has in common with you first.');
+  if (canInvite) parts.push(`No senior from ${conv.profile.college} is on Atyant for this yet. I can find some on LinkedIn and write the invite for you. You earn a free credit once they join and help a student.`);
+  if (!buttons.some(b => b.id === 'chat:new')) parts.push('_Type *new chat* anytime to switch topics._');
+  return sendWithButtons(conv.waId, parts.join('\n\n'), buttons, 'Keep going, or:');
+}
+
+// ─── Invite a senior (shared rules with the website: MentorInviteService) ─
+
+const INVITE_STATUS = {
+  sent: 'invite ready, not opened yet',
+  opened: 'opened your link',
+  signed_up: 'joined Atyant 🎉',
+  onboarded: 'now a mentor on Atyant',
+  rewarded: 'credit earned 🎉',
+  needs_review: 'being reviewed',
+};
+
+async function startInvite(conv) {
+  if (!conv.userId) {
+    conv.pendingAction = 'invite';
+    conv.state = 'booking_email';
+    return wa.sendText(conv.waId, 'To make your invite link, I need your email, so we can tell you when your senior joins. What\'s your email?');
+  }
+  if (!conv.profile.college) {
+    conv.state = 'invite_college';
+    return wa.sendText(conv.waId, 'Which college are you from? I\'ll look for seniors from there.');
+  }
+  return showInviteCandidates(conv);
+}
+
+async function showInviteCandidates(conv) {
+  const { college, branch, year, goal, companies } = conv.profile;
+  let seniors = conv.inviteCandidates || [];
+  if (!seniors.length) {
+    const recent = (conv.inviteSearches || []).filter(d => Date.now() - new Date(d).getTime() < 3600_000);
+    if (recent.length >= 5) return wa.sendText(conv.waId, 'You\'ve run a lot of searches this hour. Try again in a little while.');
+    conv.inviteSearches = [...recent, new Date()];
+    const { seniors: found = [] } = await findSeniors(
+      { identity: { college, branch, year }, target: goal || null, targetCompanies: companies || [] }, 6,
+    ).catch(err => { console.error('WA senior search failed:', err.message); return {}; });
+    seniors = found.map(s => ({ name: s.name, headline: s.headline, linkedinUrl: s.linkedinUrl }));
+    conv.inviteCandidates = seniors;
+    logFunnel('invite_seniors_shown', { funnelId: chatSessionId(conv.waId), userId: conv.userId, props: { count: seniors.length, via: 'whatsapp' } });
+  }
+  if (!seniors.length) {
+    return wa.sendText(conv.waId, `I couldn't find seniors from ${college} on LinkedIn for this right now. Ask me another question, or try again later.`);
+  }
+  const lines = seniors.map((s, i) => `${i + 1}. *${s.name}*${s.headline ? `: ${s.headline}` : ''}`).join('\n');
+  await wa.sendText(conv.waId, `*Seniors from ${college} on LinkedIn*\nThey aren't on Atyant yet. These are public LinkedIn profiles I haven't verified.\n\n${lines}`);
+  return wa.sendList(conv.waId, 'Pick one and I\'ll write a short invite you can send them.', 'Choose senior',
+    seniors.map((s, i) => ({ id: `inv:${i}`, title: s.name, description: s.headline || 'LinkedIn profile' })));
+}
+
+async function pickInvite(conv, index) {
+  const senior = (conv.inviteCandidates || [])[index];
+  if (!senior) return wa.sendText(conv.waId, 'That list expired. Tap *Invite a senior* again.');
+  const sessionId = chatSessionId(conv.waId);
+  const chat = await AtyantConversation.findOne({ sessionId }).select('context userId').lean();
+  const ownChat = chat && String(chat.userId) === String(conv.userId);
+
+  let result;
+  try {
+    result = await createInvite({
+      inviterId: conv.userId,
+      sessionId: ownChat ? sessionId : null,
+      context: ownChat ? chat.context : null,
+      senior,
+    });
+  } catch (err) {
+    if (err instanceof InviteError) return wa.sendText(conv.waId, `${err.message}.`);
+    throw err;
+  }
+  logFunnel('wa_invite_created', { userId: conv.userId, props: { code: result.invite.code } });
+
+  const first = senior.name.split(' ')[0];
+  const credits = `${INVITE_REWARD_CREDITS} free Atyant credit${INVITE_REWARD_CREDITS === 1 ? '' : 's'}`;
+  await wa.sendText(conv.waId,
+    `Invite ready for *${senior.name}* ✅\n\n1. Open their LinkedIn: ${senior.linkedinUrl}\n2. Tap *Connect*, then *Add a note*, and paste the note I'm sending next.\n\nWhen ${first} joins Atyant and finishes a first session with a student, you get ${credits}. Type *my invites* anytime to check.`);
+  await wa.sendText(conv.waId, result.note);
+  return wa.sendButtons(conv.waId, 'Want to invite another senior?',
+    [{ id: 'invite', title: 'Invite another' }, { id: 'invites:mine', title: 'My invites' }, { id: 'chat:end', title: 'End chat' }]);
+}
+
+async function showMyInvites(conv) {
+  const list = conv.userId
+    ? await MentorInvite.find({ inviterId: conv.userId }).sort({ createdAt: -1 }).limit(10).select('senior.name status').lean()
+    : [];
+  if (!list.length) return wa.sendText(conv.waId, 'You haven\'t invited any seniors yet. Type *invite a senior* to start.');
+  const lines = list.map(i => `• *${i.senior.name}*: ${INVITE_STATUS[i.status] || i.status}`).join('\n');
+  return wa.sendText(conv.waId, `*Your invites*\n${lines}`);
+}
+
+// After email/OTP: carry on with whatever the student was doing.
+async function resumeAfterAccount(conv) {
+  const action = conv.pendingAction;
+  conv.pendingAction = null;
+  if (action === 'invite') {
+    conv.state = 'chat';
+    return startInvite(conv);
+  }
+  return askConsent(conv);
 }
 
 // Old answers still carry 👍/👎 buttons.
@@ -304,6 +419,7 @@ async function startNewChat(conv) {
   await AtyantConversation.deleteOne({ sessionId: chatSessionId(conv.waId) });
   conv.lastAnswer = '';
   conv.matchIds = [];
+  conv.inviteCandidates = [];
   const known = [conv.profile.branch, conv.profile.college].filter(Boolean).join(' at ');
   logFunnel('wa_new_chat', { userId: conv.userId });
   return wa.sendText(conv.waId, `Fresh start.${known ? ` I still remember you're ${known} (tell me if that's changed).` : ''} What do you want help with?`);
@@ -377,6 +493,7 @@ async function chooseSlot(conv, mentorId, ms) {
   conv.mentorId = mentor._id;
   conv.pendingSlot = ms;
   if (!conv.userId) {
+    conv.pendingAction = 'book';
     conv.state = 'booking_email';
     return wa.sendText(conv.waId, 'To book, I need your email for the confirmation and the call link. What\'s your email?');
   }
@@ -431,7 +548,7 @@ async function handleEmail(conv, text) {
   await AtyantConversation.updateOne({ sessionId: chatSessionId(conv.waId) }, { $set: { userId: user._id } });
   await saveProfileToUser(conv);
   logFunnel('wa_signup', { userId: user._id, props: { source: 'whatsapp' } });
-  return askConsent(conv);
+  return resumeAfterAccount(conv);
 }
 
 async function handleOtp(conv, text) {
@@ -464,7 +581,7 @@ async function handleOtp(conv, text) {
   conv.pendingEmail = conv.otpHash = conv.otpExpires = null;
   await AtyantConversation.updateOne({ sessionId: chatSessionId(conv.waId) }, { $set: { userId: user._id } });
   await saveProfileToUser(conv);
-  return askConsent(conv);
+  return resumeAfterAccount(conv);
 }
 
 // ─── Payment ─────────────────────────────────────────────────
@@ -581,6 +698,9 @@ async function route(conv, msg, isFirstContact) {
   if (unsupported) return wa.sendText(conv.waId, 'I can read text and stickers for now. Please type your message.');
 
   if (replyId === 'fb:up' || replyId === 'fb:down') return recordFeedback(conv, replyId === 'fb:up' ? 'up' : 'down');
+  if (replyId === 'invite') return startInvite(conv);
+  if (replyId?.startsWith('inv:')) return pickInvite(conv, Number(replyId.slice(4)));
+  if (replyId === 'invites:mine') return showMyInvites(conv);
   if (replyId === 'chat:new') return startNewChat(conv);
   if (replyId === 'chat:end') return askEndFeedback(conv);
   if (replyId === 'end:up' || replyId === 'end:down') return endChat(conv, replyId === 'end:up' ? 'up' : 'down');
@@ -591,9 +711,10 @@ async function route(conv, msg, isFirstContact) {
     return chooseSlot(conv, mentorId, Number(ms));
   }
   if (replyId === 'confirm:yes') return createBooking(conv);
-  if (replyId === 'confirm:no' || (/^cancel$/i.test(text) && ['booking_email', 'otp', 'confirm', 'pick_slot'].includes(conv.state))) {
+  if (replyId === 'confirm:no' || (/^cancel$/i.test(text) && ['booking_email', 'otp', 'confirm', 'pick_slot', 'invite_college'].includes(conv.state))) {
     conv.state = 'chat';
     conv.pendingSlot = null;
+    conv.pendingAction = null;
     return wa.sendText(conv.waId, 'No problem. Nothing was booked or shared. Ask me anything else.');
   }
   if (replyId === 'ask') {
@@ -604,6 +725,19 @@ async function route(conv, msg, isFirstContact) {
 
   if (conv.state === 'booking_email') return handleEmail(conv, text);
   if (conv.state === 'otp') return handleOtp(conv, text);
+  if (conv.state === 'invite_college') {
+    if (!text) return wa.sendText(conv.waId, 'Which college are you from?');
+    conv.profile.college = text.slice(0, 120);
+    conv.state = 'chat';
+    return startInvite(conv);
+  }
+
+  // Typed shortcuts, same as the buttons.
+  const cmd = text.toLowerCase().replace(/[^a-z ]/g, '').trim();
+  if (cmd === 'new chat') return startNewChat(conv);
+  if (cmd === 'end chat') return askEndFeedback(conv);
+  if (/^my invites?$/.test(cmd)) return showMyInvites(conv);
+  if (/^invite( a)?( my)? (senior|seniors|mentor|mentors)$/.test(cmd)) return startInvite(conv);
 
   if (!text) return wa.sendText(conv.waId, 'What would you like help with?');
   conv.state = 'chat';
