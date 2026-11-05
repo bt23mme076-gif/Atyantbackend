@@ -8,7 +8,9 @@ import Razorpay from 'razorpay';
 import User from '../../models/User.js';
 import Session from '../../models/Session.js';
 import WaConversation from '../../models/WaConversation.js';
+import AtyantConversation from '../../models/AtyantConversation.js';
 import atyantEngine from '../AtyantEngine.js';
+import { processAtyantMessage } from '../AtyantEngineService.js';
 import { groqJSON } from '../../utils/groqClient.js';
 import { sendSignupOTPEmail } from '../../utils/emailService.js';
 import { getService } from '../../config/serviceCatalog.js';
@@ -19,6 +21,7 @@ const SERVICE_ID = 'audio-call';
 const LINK_TTL_MIN = 20;            // < StalePendingCron's 30 min, so a link never outlives its slot hold
 const SLOT_DAYS = 7;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const GREETING_RE = /^\s*(hi+|hello+|hey+|helo|yo|sup|namaste|ok+|okay|thanks?|thank you|gm|good (morning|evening|afternoon))\s*[!.]*\s*$/i;
 
 const razorpay = (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)
   ? new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET })
@@ -199,9 +202,9 @@ async function handleOtp(conv, text) {
 
 // ─── Questions ───────────────────────────────────────────────
 
-// First mentor (in ranking order) who sells the ₹99 call.
-async function firstBookableMentor(ids) {
-  const uniq = [...new Set(ids.filter(Boolean).map(String))];
+// First mentor (in ranking order) who sells the ₹99 call — never the student themself.
+async function firstBookableMentor(ids, selfId) {
+  const uniq = [...new Set(ids.filter(Boolean).map(String))].filter(id => id !== String(selfId));
   if (!uniq.length) return null;
   const rows = await User.find({ _id: { $in: uniq }, role: 'mentor', servicesOffered: SERVICE_ID })
     .select('name username education topCompanies').lean();
@@ -216,46 +219,79 @@ async function offerCall(conv, mentor, lead) {
     [{ id: `book:${mentor._id}`, title: `Book call ₹${service.price}` }, { id: 'ask', title: 'Ask another' }]);
 }
 
-async function answerQuestion(conv, text) {
-  const kind = await classify(text);
-  if (kind === 'greeting') {
-    return wa.sendText(conv.waId, 'Hi! Type any internship, placement or career question and I\'ll find seniors from your background.');
-  }
-  if (kind === 'off_topic') {
-    return wa.sendText(conv.waId, 'I can only help with internships, placements and careers: questions for seniors, and booking calls with them. What would you like to know about your career?');
-  }
+const chatSessionId = (waId) => `wa:${waId}`;
 
-  conv.lastQuestion = text.slice(0, 1000);
-  await wa.sendText(conv.waId, 'Checking what seniors from your background did…');
-
-  const ctx = studentContext(conv);
-  const r = await atyantEngine.getClarity(conv.userId, text, { studentContext: ctx, mentorLimit: 3 });
-  const card = r.answerCard;
-  const mentorIds = [card?.mentor?._id, ...(r.mentors || []).map(m => m._id)];
-  logFunnel('wa_question', { userId: conv.userId, props: { instant: !!card, mentors: (r.mentors || []).length } });
-
-  if (card) {
-    await wa.sendText(conv.waId, formatCard(card.content, card.mentor));
-    const mentor = await firstBookableMentor(mentorIds);
-    if (mentor) return offerCall(conv, mentor, 'Want to go deeper on your own situation?');
-    return wa.sendText(conv.waId, 'Ask another question anytime.');
-  }
-
-  // No ready answer: hand the question to the top senior (existing Path B flow:
-  // they're emailed and answer on the dashboard), and offer a call meanwhile.
-  const top = r.mentors?.[0];
-  const q = await atyantEngine.processQuestion(conv.userId, text, {
-    studentContext: ctx, ...(top ? { preferredMentorId: top._id } : {}),
+// Same chat engine as the website: asks one short follow-up when it needs the
+// field/branch, then answers and names the seniors it matched.
+async function ensureChatSeeded(conv) {
+  const sessionId = chatSessionId(conv.waId);
+  if (await AtyantConversation.exists({ sessionId })) return sessionId;
+  const goal = GREETING_RE.test(conv.profile.goal) ? null : conv.profile.goal || null;
+  await AtyantConversation.create({
+    sessionId,
+    userId: conv.userId,
+    context: {
+      identity: { college: conv.profile.college || null, branch: conv.profile.branch || null, year: conv.profile.year || null },
+      target: goal,
+    },
   });
-  if (!q?.success) return wa.sendText(conv.waId, 'Something went wrong on my side. Please send that again in a minute.');
+  return sessionId;
+}
 
-  const user = await User.findById(conv.userId).select('email').lean();
-  const sent = top
-    ? `No ready answer for this yet, so I've sent it to ${mentorLabel(top)}. Their answer will reach ${user?.email} and your atyant.in dashboard.`
-    : `No senior from your exact background has answered this yet. I've posted it, and the answer will reach ${user?.email}.`;
-  const mentor = await firstBookableMentor(mentorIds);
-  if (mentor) return offerCall(conv, mentor, sent);
-  return wa.sendText(conv.waId, sent);
+function formatMatches(mentors) {
+  return mentors.slice(0, 3).map((m, i) => {
+    const tags = m.matchedOn?.background?.length ? ` (${m.matchedOn.background.join(', ')})` : '';
+    const where = [m.college, (m.topCompanies || []).slice(0, 2).join(', ')].filter(Boolean).join(' · ');
+    return `${i + 1}. *${m.name}*${where ? ` · ${where}` : ''}${tags}`;
+  }).join('\n');
+}
+
+async function answerQuestion(conv, text) {
+  let sessionId = await ensureChatSeeded(conv);
+  const chat = await AtyantConversation.findOne({ sessionId }).select('phase pendingAsk').lean();
+  const midIntake = chat?.phase === 'collecting' && !!chat?.pendingAsk; // student is answering our follow-up
+  if (chat?.phase === 'engine') {
+    // Previous question was already answered: a new question gets a fresh chat
+    // (profile re-seeded), otherwise matching stays stuck on the old topic.
+    await AtyantConversation.deleteOne({ sessionId });
+    sessionId = await ensureChatSeeded(conv);
+  }
+
+  if (!midIntake) {
+    const kind = await classify(text);
+    if (kind === 'greeting') {
+      return wa.sendText(conv.waId, 'Hi! Type any internship, placement or career question and I\'ll find seniors from your background.');
+    }
+    if (kind === 'off_topic') {
+      return wa.sendText(conv.waId, 'I can only help with internships, placements and careers: questions for seniors, and booking calls with them. What would you like to know about your career?');
+    }
+    conv.lastQuestion = text.slice(0, 1000);
+
+    // A senior has already answered almost exactly this → send their real answer.
+    const r = await atyantEngine.getClarity(conv.userId, text, { studentContext: studentContext(conv), mentorLimit: 3 });
+    const card = r.answerCard;
+    if (card && String(card.mentor?._id) !== String(conv.userId)) {
+      logFunnel('wa_question', { userId: conv.userId, props: { instant: true } });
+      await wa.sendText(conv.waId, formatCard(card.content, card.mentor));
+      const mentor = await firstBookableMentor([card.mentor?._id, ...(r.mentors || []).map(m => m._id)], conv.userId);
+      if (mentor) return offerCall(conv, mentor, 'Want to go deeper on your own situation?');
+      return wa.sendText(conv.waId, 'Ask another question anytime.');
+    }
+  }
+
+  const res = await processAtyantMessage(sessionId, text, conv.userId);
+  const mentors = (res.matchedMentors || []).filter(m => m.id !== String(conv.userId));
+  logFunnel('wa_question', { userId: conv.userId, props: { instant: false, phase: res.phase, mentors: mentors.length } });
+
+  if (res.phase !== 'engine' || !mentors.length) return wa.sendText(conv.waId, res.reply);
+
+  const bookable = await firstBookableMentor(mentors.map(m => m.id), conv.userId);
+  const body = `${res.reply}\n\n*Seniors who match you*\n${formatMatches(mentors)}`;
+  if (!bookable) return wa.sendText(conv.waId, `${body}\n\nAsk another question anytime.`);
+  const service = getService(SERVICE_ID);
+  return wa.sendButtons(conv.waId,
+    `${body}\n\nTalk to *${bookable.name || bookable.username}* directly: ${service.duration} call, ₹${service.price}.`,
+    [{ id: `book:${bookable._id}`, title: `Book call ₹${service.price}` }, { id: 'ask', title: 'Ask another' }]);
 }
 
 // ─── Booking ─────────────────────────────────────────────────
@@ -403,6 +439,9 @@ async function route(conv, msg, isFirstContact) {
   }
 
   if (unsupported) return wa.sendText(conv.waId, 'I can only read text for now. Please type your message.');
+
+  // "hi" mid-onboarding is not an answer — ask the same question again.
+  if (['college', 'branch', 'goal'].includes(conv.state) && GREETING_RE.test(text)) return askStep(conv, conv.state);
 
   switch (conv.state) {
     case 'email': return handleEmail(conv, text, isFirstContact);
