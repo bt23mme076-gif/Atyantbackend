@@ -245,13 +245,26 @@ const ENGINE_REMINDER = "Reply now: exactly 3 sentences, EACH under 18 words, on
 // with checked facts, so the model never writes the handoff itself.
 const ANSWER_FIRST_RULES = `
 WhatsApp mode — answer first:
-- Start by actually answering what they asked with something specific they can use: a concrete project, skill, resource or step that fits what they told you. If you can't answer well without one detail, give the best general answer you can, then ask for it.
+- Answer the question they actually asked, with something specific they can use. If you can't answer well without one detail, give the best general answer you can, then ask for it.
+- Pick the ONE lever that most moves their situation, based on what they asked, their year and their goal: where and when to apply (off-campus portals, company career pages, referrals, cold emails), resume fixes, interview or DSA prep, core-subject prep, a specific skill or tool to learn, timeline for their year, GATE or higher studies — or a project.
+- A project is just one option, never the default. Suggest one only when they ask what to build, or when not having a project is clearly what's holding them back. If they ask about applying, resumes, interviews, skills or timing, answer that instead.
+- Never repeat a suggestion you've already made in this chat. If a project was already suggested, move them forward (how to apply, how to talk about it) instead of suggesting another.
+- Open with the most useful or surprising specific thing for them, never a generic line. Sound like a senior texting, not a guide.
+- Don't end with a question unless the student truly can't be helped without one answer. Most replies should end on the next step.
 - Use only details they have told you. If they corrected something (branch, city, language, year), the latest version is the truth — never mix the old one back in.
 - Keep their branch, city, programming languages and spoken language as separate facts; never treat one as another.
 - If you don't know something, say so plainly. Never present general advice as any senior's personal experience or story.
-- Do not mention, name or describe seniors or mentors, and don't offer calls — that is added separately.`;
-const ANSWER_FIRST_COLLECT_REMINDER = "Reply now: 2-4 short sentences. First a specific, useful answer to what they asked (a concrete project, skill or step). Then, only if a missing detail would change the advice, ask ONE short question for it. No lists. Don't mention seniors.";
-const ANSWER_FIRST_ENGINE_REMINDER = "Reply now: 3-4 short sentences, about 60 words: a specific answer for their situation, then one concrete next step for this week. No lists, no questions. Don't mention seniors or mentors.";
+- Do not mention, name or describe seniors or mentors, and don't offer calls — that is added separately. The one exception is a "Real senior example" block below, if given.`;
+
+// A real senior's own answer from the answer-card library, used as a short story.
+const exampleBlock = (example) => example ? `
+
+---
+Real senior example (true, from this senior's own answer on Atyant): ${example}
+If it genuinely fits their question, open with it as a 1-2 sentence story ("Rahul, a VNIT Mech senior, ..."): first name, then only facts written above, nothing added or changed. Then turn it into advice for them. If it doesn't fit, ignore it and don't mention it.
+---` : '';
+const ANSWER_FIRST_COLLECT_REMINDER = "Reply now: 2-4 short sentences. First a specific answer to the exact thing they asked — don't default to suggesting a project. Then, only if a missing detail would change the advice, ask ONE short question for it. No lists. Don't mention seniors.";
+const ANSWER_FIRST_ENGINE_REMINDER = "Reply now: 3-4 short sentences, about 60 words: a specific answer to the exact thing they asked, then one concrete next step for this week that you haven't suggested before in this chat. A project only if they asked what to build. No lists, no questions. Don't mention seniors or mentors.";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -696,7 +709,7 @@ async function getOrCreateConversation(sessionId, userId) {
 // persist, and return the standard response shape. `conv.context` must already
 // reflect this turn's extraction and `conv.messages` must already include the
 // user's turn (chat text or a resume-upload placeholder) before calling this.
-async function finishTurn(conv, userMessage, emit, sessionId, { answerFirst = false } = {}) {
+async function finishTurn(conv, userMessage, emit, sessionId, { answerFirst = false, example = null } = {}) {
   // The extractor often keeps a vague goal ("internship") even after the student
   // answers the field question, which left the chat asking forever. If we just
   // asked for the field and the reply names one, fold it into the goal here.
@@ -723,6 +736,13 @@ async function finishTurn(conv, userMessage, emit, sessionId, { answerFirst = fa
     (assistantTurns >= 5 && (conv.context.target || conv.context.identity?.college || conv.context.identity?.branch))
   ) {
     conv.phase = 'engine';
+  }
+
+  // WhatsApp: at most ONE question per chat — only on the first reply, and only
+  // when we know neither their branch nor the field of their goal.
+  if (answerFirst && conv.phase === 'collecting') {
+    const knowsSomething = !!conv.context?.identity?.branch || goalHasField(conv.context);
+    if (knowsSomething || assistantTurns >= 1) conv.phase = 'engine';
   }
 
   let reply, outputMode = null;
@@ -773,7 +793,7 @@ async function finishTurn(conv, userMessage, emit, sessionId, { answerFirst = fa
     }
     conv.pendingAsk = !id.branch ? 'branch' : !ctx.target ? 'goal' : !goalHasField(ctx) ? 'field' : askingNow;
 
-    const systemWithContext = `${COLLECTION_SYSTEM}${answerFirst ? `\n${ANSWER_FIRST_RULES}` : ''}
+    const systemWithContext = `${COLLECTION_SYSTEM}${answerFirst ? `\n${ANSWER_FIRST_RULES}${exampleBlock(example)}` : ''}
 
 ---
 What we already know about them:
@@ -815,7 +835,7 @@ ${userWantsMentor ? "\nThe student JUST asked to be connected to a mentor. Ackno
     emit({ type: 'progress', stage: 'drafting' });
     const systemWithProblem = answerFirst
       ? `${MASTER_SYSTEM_PROMPT}
-${ANSWER_FIRST_RULES}
+${ANSWER_FIRST_RULES}${exampleBlock(example)}
 
 ---
 Student's Problem Statement (fully mapped by intake system):
@@ -877,7 +897,8 @@ Matched seniors: ${describeMatches(matchedMentors)}
 // `onProgress`, if given, is called synchronously with real checkpoints as each
 // stage of the turn actually completes — used to drive a live "thinking" UI
 // instead of a canned one. Never throws from onProgress errors into the engine.
-// options.answerFirst: WhatsApp mode (see ANSWER_FIRST_RULES). The website omits it.
+// options.answerFirst: WhatsApp mode (see ANSWER_FIRST_RULES); options.example: a
+// real senior's answer to use as a story. The website passes neither.
 export async function processAtyantMessage(sessionId, userMessage, userId = null, onProgress = null, options = {}) {
   const emit = onProgress ? (event) => { try { onProgress(event); } catch { /* UI-only, non-fatal */ } } : () => {};
 

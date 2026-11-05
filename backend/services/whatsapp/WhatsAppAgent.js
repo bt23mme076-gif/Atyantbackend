@@ -29,7 +29,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const GREETING_RE = /^\s*(hi+|hello+|hey+|helo|yo|sup|namaste|ok+|okay|thanks?|thank you|gm|good (morning|evening|afternoon))\s*[!.]*\s*$/i;
 const LEGACY_STATES = new Set(['email', 'college', 'branch', 'year', 'goal', 'ready']);
 const INTRO = 'Hi, I\'m Atyant. I help engineering students with internships and placements, using advice from seniors who\'ve been there.';
-const FEEDBACK_BUTTONS = [{ id: 'fb:up', title: '👍 Helpful' }, { id: 'fb:down', title: '👎 Not really' }];
+const CHAT_BUTTONS = [{ id: 'chat:new', title: 'New chat' }, { id: 'chat:end', title: 'End chat' }];
 
 const razorpay = (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)
   ? new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET })
@@ -195,12 +195,25 @@ async function freeSlots(mentor) {
   return out;
 }
 
+// The closest real senior answer (not the student's own), as a story for the reply.
+function seniorExample(cards = [], selfId) {
+  const c = cards.find(x => x?.mentor?._id && String(x.mentor._id) !== String(selfId));
+  if (!c) return null;
+  const edu = eduOf(c.mentor);
+  const who = [displayName(c.mentor).split(' ')[0], edu.institutionName || edu.institution, edu.field && `${edu.field} branch`]
+    .filter(Boolean).join(', ');
+  const ct = c.content || {};
+  const story = [ct.situation, ct.whatWorked, ct.mainAnswer].filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 600);
+  return story ? { text: `${who}: ${story}`, mentorId: String(c.mentor._id) } : null;
+}
+
 // ─── Answering ───────────────────────────────────────────────
 
 async function answerQuestion(conv, text, { firstContact = false } = {}) {
-  let sessionId = await ensureChatSeeded(conv);
+  const sessionId = await ensureChatSeeded(conv);
   const chat = await AtyantConversation.findOne({ sessionId }).select('phase pendingAsk messages').lean();
   const midIntake = chat?.phase === 'collecting' && !!chat?.pendingAsk; // answering our follow-up
+  let example = null;
 
   if (!midIntake) {
     const kind = await classify(text);
@@ -213,10 +226,6 @@ async function answerQuestion(conv, text, { firstContact = false } = {}) {
       return wa.sendText(conv.waId, 'I can only help with internships, placements and careers. What\'s the career question on your mind?');
     }
     if (firstContact) await wa.sendText(conv.waId, INTRO);
-    if (chat?.phase === 'engine') {
-      await AtyantConversation.deleteOne({ sessionId });
-      sessionId = await ensureChatSeeded(conv);
-    }
     conv.lastQuestion = text.slice(0, 1000);
 
     // A senior has already answered almost exactly this: send their own words, labelled as theirs.
@@ -230,13 +239,15 @@ async function answerQuestion(conv, text, { firstContact = false } = {}) {
       logFunnel('wa_answer', { userId: conv.userId, props: { kind: 'card' } });
       return offerNext(conv, body);
     }
+    example = seniorExample(r.answerCards, conv.userId);
   }
 
-  const res = await processAtyantMessage(sessionId, text, conv.userId || null, null, { answerFirst: true });
+  const res = await processAtyantMessage(sessionId, text, conv.userId || null, null, { answerFirst: true, example: example?.text });
   syncProfile(conv, res.context);
   await saveProfileToUser(conv);
   conv.lastAnswer = res.reply;
-  conv.matchIds = (res.matchedMentors || []).map(m => m.id).filter(id => id !== String(conv.userId));
+  conv.matchIds = [example?.mentorId, ...(res.matchedMentors || []).map(m => m.id)]
+    .filter(id => id && id !== String(conv.userId));
   logFunnel('wa_answer', { userId: conv.userId, props: { kind: res.phase, matches: conv.matchIds.length } });
 
   if (res.phase !== 'engine') return wa.sendText(conv.waId, res.reply);
@@ -251,22 +262,50 @@ async function answerQuestion(conv, text, { firstContact = false } = {}) {
   return offerNext(conv, res.reply);
 }
 
-// After an answer: feedback, plus a soft offer when a matching senior takes calls.
+// After an answer: a soft senior offer (only if one takes calls) + New chat / End chat.
 async function offerNext(conv, answer) {
   const seniors = await loadSeniors(conv.matchIds, conv.userId);
-  if (!seniors.length) return sendWithButtons(conv.waId, answer, FEEDBACK_BUTTONS);
+  if (!seniors.length) return sendWithButtons(conv.waId, answer, CHAT_BUTTONS, 'Keep going, or:');
   return sendWithButtons(conv.waId,
-    `${answer}\n\nWould it help to talk to a senior who's been on this path? I'll show what each one actually has in common with you before you choose.`,
-    [...FEEDBACK_BUTTONS, { id: 'seniors', title: 'Show seniors' }],
-    'Was this useful, or would a senior help?');
+    `${answer}\n\nWant to hear it from a senior who's been on this path? I'll show what each one has in common with you first.`,
+    [{ id: 'seniors', title: 'Show seniors' }, ...CHAT_BUTTONS],
+    'Keep going, or:');
 }
 
+// Old answers still carry 👍/👎 buttons.
 async function recordFeedback(conv, value) {
   await recordAtyantChatFeedback(chatSessionId(conv.waId), conv.lastAnswer, value).catch(() => null);
   logFunnel('wa_feedback', { userId: conv.userId, props: { value } });
   return wa.sendText(conv.waId, value === 'up'
     ? 'Glad that helped. Ask me anything else whenever you\'re ready.'
-    : 'Thanks for telling me. What was missing? Tell me a bit more about your situation and I\'ll try again.');
+    : 'Thanks for telling me. What was missing? Tell me a bit more and I\'ll try again.');
+}
+
+// New chat: fresh topic, but remembered facts stay (and we say which).
+async function startNewChat(conv) {
+  await AtyantConversation.deleteOne({ sessionId: chatSessionId(conv.waId) });
+  conv.lastAnswer = '';
+  conv.matchIds = [];
+  const known = [conv.profile.branch, conv.profile.college].filter(Boolean).join(' at ');
+  logFunnel('wa_new_chat', { userId: conv.userId });
+  return wa.sendText(conv.waId, `Fresh start.${known ? ` I still remember you're ${known} (tell me if that's changed).` : ''} What do you want help with?`);
+}
+
+async function askEndFeedback(conv) {
+  return wa.sendButtons(conv.waId, 'Before you go: was this chat useful?',
+    [{ id: 'end:up', title: '👍 Useful' }, { id: 'end:down', title: '👎 Not useful' }]);
+}
+
+async function endChat(conv, value) {
+  await recordAtyantChatFeedback(chatSessionId(conv.waId), conv.lastAnswer, value).catch(() => null);
+  logFunnel('wa_feedback', { userId: conv.userId, props: { value, at: 'end' } });
+  await AtyantConversation.deleteOne({ sessionId: chatSessionId(conv.waId) });
+  conv.lastAnswer = '';
+  conv.matchIds = [];
+  conv.state = 'chat';
+  return wa.sendText(conv.waId, value === 'up'
+    ? 'Chat closed. All the best! Message me anytime to start a new one.'
+    : 'Chat closed. Sorry it missed the mark. Next time, tell me a bit more about your situation and I\'ll do better. Message me anytime.');
 }
 
 // ─── Seniors → booking ───────────────────────────────────────
@@ -513,6 +552,9 @@ async function route(conv, msg, isFirstContact) {
   if (unsupported) return wa.sendText(conv.waId, 'I can only read text for now. Please type your message.');
 
   if (replyId === 'fb:up' || replyId === 'fb:down') return recordFeedback(conv, replyId === 'fb:up' ? 'up' : 'down');
+  if (replyId === 'chat:new') return startNewChat(conv);
+  if (replyId === 'chat:end') return askEndFeedback(conv);
+  if (replyId === 'end:up' || replyId === 'end:down') return endChat(conv, replyId === 'end:up' ? 'up' : 'down');
   if (replyId === 'seniors') return showSeniors(conv);
   if (replyId?.startsWith('senior:') || replyId?.startsWith('book:')) return showBookingCard(conv, replyId.split(':')[1]);
   if (replyId?.startsWith('slot:')) {
