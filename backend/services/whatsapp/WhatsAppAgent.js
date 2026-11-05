@@ -5,6 +5,9 @@
 // Off-topic requests are declined so the bot stays a career service, not a
 // general-purpose chatbot (Meta policy).
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
 import Razorpay from 'razorpay';
 import User from '../../models/User.js';
@@ -30,6 +33,17 @@ const GREETING_RE = /^\s*(hi+|hello+|hey+|helo|yo|sup|namaste|ok+|okay|thanks?|t
 const LEGACY_STATES = new Set(['email', 'college', 'branch', 'year', 'goal', 'ready']);
 const INTRO = 'Hi, I\'m Atyant. I help engineering students with internships and placements, using advice from seniors who\'ve been there.';
 const CHAT_BUTTONS = [{ id: 'chat:new', title: 'New chat' }, { id: 'chat:end', title: 'End chat' }];
+
+// Stickers: 512×512 WebP files in backend/assets/stickers, served publicly by
+// GET /api/whatsapp/stickers/<name>.webp (Meta fetches them by URL). A missing
+// file is simply skipped, so text replies never depend on a sticker.
+const STICKER_DIR = fileURLToPath(new URL('../../assets/stickers/', import.meta.url));
+const PUBLIC_BASE = (process.env.WA_PUBLIC_BASE_URL || 'https://api.product.atyant.in').replace(/\/+$/, '');
+export const stickerFile = (name) => (/^[a-z-]+$/.test(name) ? path.join(STICKER_DIR, `${name}.webp`) : null);
+async function sendSticker(to, name) {
+  const file = stickerFile(name);
+  if (file && fs.existsSync(file)) await wa.sendSticker(to, `${PUBLIC_BASE}/api/whatsapp/stickers/${name}.webp`);
+}
 
 const razorpay = (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)
   ? new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET })
@@ -218,6 +232,7 @@ async function answerQuestion(conv, text, { firstContact = false } = {}) {
   if (!midIntake) {
     const kind = await classify(text);
     if (kind === 'greeting') {
+      if (firstContact) await sendSticker(conv.waId, 'welcome');
       return wa.sendText(conv.waId, firstContact || !chat?.messages?.length
         ? `${INTRO} What's the one thing you're stuck on?`
         : 'What would you like help with next?');
@@ -225,7 +240,10 @@ async function answerQuestion(conv, text, { firstContact = false } = {}) {
     if (kind === 'off_topic') {
       return wa.sendText(conv.waId, 'I can only help with internships, placements and careers. What\'s the career question on your mind?');
     }
-    if (firstContact) await wa.sendText(conv.waId, INTRO);
+    if (firstContact) {
+      await sendSticker(conv.waId, 'welcome');
+      await wa.sendText(conv.waId, INTRO);
+    }
     conv.lastQuestion = text.slice(0, 1000);
 
     // A senior has already answered almost exactly this: send their own words, labelled as theirs.
@@ -303,6 +321,7 @@ async function endChat(conv, value) {
   conv.lastAnswer = '';
   conv.matchIds = [];
   conv.state = 'chat';
+  if (value === 'up') await sendSticker(conv.waId, 'bye');
   return wa.sendText(conv.waId, value === 'up'
     ? 'Chat closed. All the best! Message me anytime to start a new one.'
     : 'Chat closed. Sorry it missed the mark. Next time, tell me a bit more about your situation and I\'ll do better. Message me anytime.');
@@ -524,6 +543,7 @@ export async function notifyBookingConfirmed(session) {
   if (!conv) return;
   conv.state = 'chat';
   await conv.save();
+  await sendSticker(conv.waId, 'celebrate');
   await wa.sendText(conv.waId,
     `✅ Booked: call with ${session.mentorName}\n${fmtWhen(session.scheduledAt)} IST\n\n${session.meetingLink ? `Join here: ${session.meetingLink}\n\n` : ''}Details are in your email too. Keep asking me anything here.`);
 }
@@ -535,11 +555,13 @@ function readInput(msg) {
   if (reply) return { text: reply.title || '', replyId: reply.id };
   if (msg.type === 'button') return { text: msg.button?.text || '', replyId: msg.button?.payload || null };
   if (msg.type === 'text') return { text: (msg.text?.body || '').trim(), replyId: null };
+  if (msg.type === 'sticker') return { text: '', replyId: null, sticker: true };
+  if (msg.type === 'reaction') return { text: '', replyId: null, reaction: true };
   return { text: '', replyId: null, unsupported: true };
 }
 
 async function route(conv, msg, isFirstContact) {
-  const { text, replyId, unsupported } = readInput(msg);
+  const { text, replyId, unsupported, sticker, reaction } = readInput(msg);
   if (LEGACY_STATES.has(conv.state)) conv.state = 'chat';
 
   // Existing account on this number: link quietly, no questions asked.
@@ -549,7 +571,14 @@ async function route(conv, msg, isFirstContact) {
     if (user) conv.userId = user._id;
   }
 
-  if (unsupported) return wa.sendText(conv.waId, 'I can only read text for now. Please type your message.');
+  if (reaction) return null; // a 👍 on our message needs no reply
+  if (sticker) {
+    await sendSticker(conv.waId, 'reply');
+    return wa.sendText(conv.waId, isFirstContact
+      ? `😄 Love the sticker! ${INTRO} What's the one thing you're stuck on?`
+      : '😄 Got your sticker! What can I help with: internships, placements, your resume?');
+  }
+  if (unsupported) return wa.sendText(conv.waId, 'I can read text and stickers for now. Please type your message.');
 
   if (replyId === 'fb:up' || replyId === 'fb:down') return recordFeedback(conv, replyId === 'fb:up' ? 'up' : 'down');
   if (replyId === 'chat:new') return startNewChat(conv);
@@ -601,6 +630,7 @@ export async function handleInbound(msg, contactName) {
   }
   const isFirstContact = !conv.lastErrorObject?.updatedExisting;
   const doc = conv.value;
+  if (msg.type !== 'reaction') wa.showTyping(msg.id); // instantly, before any AI work
 
   try {
     await route(doc, msg, isFirstContact);

@@ -1,6 +1,7 @@
 import express from 'express';
 import crypto from 'crypto';
-import { handleInbound } from '../services/whatsapp/WhatsAppAgent.js';
+import fs from 'fs';
+import { handleInbound, stickerFile } from '../services/whatsapp/WhatsAppAgent.js';
 
 const router = express.Router();
 
@@ -34,6 +35,14 @@ router.get('/health', (req, res) => {
     payments: has('RAZORPAY_KEY_ID') && has('RAZORPAY_KEY_SECRET'),
     paymentWebhook: has('RAZORPAY_WEBHOOK_SECRET'),
   });
+});
+
+// GET /api/whatsapp/stickers/<name>.webp — public, Meta downloads stickers from here
+router.get('/stickers/:file', (req, res) => {
+  const file = stickerFile(String(req.params.file).replace(/\.webp$/, ''));
+  if (!file || !fs.existsSync(file)) return res.sendStatus(404);
+  res.set({ 'Content-Type': 'image/webp', 'Cache-Control': 'public, max-age=86400' });
+  fs.createReadStream(file).pipe(res);
 });
 
 // GET /api/whatsapp/webhook — Meta's one-time subscription handshake
