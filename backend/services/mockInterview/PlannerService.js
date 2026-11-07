@@ -16,8 +16,6 @@ import { validateJdParse, validateResumeParse } from './parseValidator.js';
 import { buildPlannerInput, buildPlannerMessages, buildCriticMessages, buildReviseMessages, mergeRevision } from './plannerPrompts.js';
 import { validatePlan } from './planValidator.js';
 import { weakAreas } from './retake.js';
-import { pickCodingProblem } from '../../config/codingProblems.js';
-import { pickSqlProblem } from '../../config/sqlProblems.js';
 
 const PARSER_MODEL  = process.env.MOCK_PARSER_MODEL  || 'openai/gpt-oss-120b';
 const PLANNER_MODEL = process.env.MOCK_PLANNER_MODEL || 'openai/gpt-oss-120b';
@@ -275,80 +273,6 @@ export async function generatePlan(context, log = []) {
   return { result, criticRounds };
 }
 
-const SENIORITY_DIFFICULTY = { intern: 2, fresher: 2, experienced: 3 };
-
-// Turns a curated bank problem into a plan question shaped like validator
-// output, reusing the slot (qid/order/phase) of the technical question it
-// replaces. Grading happens through the code/SQL panel, not the voice judge,
-// so follow-ups are empty and the interviewer just reads the prompt aloud.
-function toInjectedQuestion(slot, { type, problem }) {
-  return {
-    ...slot,
-    source        : type,
-    ref           : { type, id: problem.id },
-    bankEntryId   : null,
-    confidenceTier: null,
-    companyContextIds: [],
-    topic         : problem.topics[0],
-    intent        : type === 'coding' ? 'Tests DSA problem-solving with runnable code, not just talking through it.' : 'Tests hands-on SQL, not just talking through it.',
-    difficulty    : problem.difficulty,
-    text          : `${problem.title}. ${problem.prompt} Use the code editor that just opened — run it, and either submit once it passes or let me know if you'd like to move on.`,
-    expectedPoints: [
-      { id: 'p1', point: 'Arrives at a solution that passes the test cases.', weight: 3 },
-      { id: 'p2', point: 'Explains the approach and its complexity/trade-offs if asked.', weight: 2 }
-    ],
-    followUps   : { shallow: '', wrong: '', strongDeeper: '' },
-    maxFollowUps: 0
-  };
-}
-
-// If the interview's category mandates a coding or SQL exercise and the LLM
-// plan doesn't already have one (it never will — planner prompts forbid code),
-// swap the last technical-phase question for one pulled from the curated
-// bank. Done in code so test cases are always real and runnable.
-export function injectCodingExercise(questions, { interviewCategory, seniority, excludeIds = {} }) {
-  const wantsCoding = interviewCategory === 'tech';
-  const wantsSql = interviewCategory === 'analytics';
-  if (!wantsCoding && !wantsSql) return questions;
-
-  const technicalIdx = [...questions.keys()].filter(i => questions[i].phase === 'technical');
-  if (!technicalIdx.length) return questions;
-  const difficulty = SENIORITY_DIFFICULTY[seniority] ?? 2;
-  let out = [...questions];
-  let injectedQid = null;
-
-  if (wantsCoding && !out.some(q => q.ref?.type === 'coding')) {
-    const problem = pickCodingProblem({ difficulty, excludeIds: excludeIds.coding });
-    if (problem) {
-      const slotIdx = technicalIdx[0];
-      out[slotIdx] = toInjectedQuestion(out[slotIdx], { type: 'coding', problem });
-      injectedQid = out[slotIdx].qid;
-    }
-  }
-  if (wantsSql && !out.some(q => q.ref?.type === 'sql_exercise')) {
-    const problem = pickSqlProblem({ difficulty, excludeIds: excludeIds.sql });
-    if (problem) {
-      const slotIdx = technicalIdx[0];
-      out[slotIdx] = toInjectedQuestion(out[slotIdx], { type: 'sql_exercise', problem });
-      injectedQid = out[slotIdx].qid;
-    }
-  }
-  // A "tech"/"analytics" candidate expects the coding challenge to show up
-  // early, not after a full resume deep-dive — move it to right after intro
-  // (before the resume phase) instead of leaving it at the end of technical.
-  if (injectedQid) out = moveRightAfterIntro(out, injectedQid);
-  return out;
-}
-
-function moveRightAfterIntro(questions, qid) {
-  const idx = questions.findIndex(q => q.qid === qid);
-  if (idx === -1) return questions;
-  const [moved] = questions.splice(idx, 1);
-  const introEnd = questions.reduce((last, q, i) => (q.phase === 'intro' ? i + 1 : last), 0);
-  questions.splice(introEnd, 0, moved);
-  return questions.map((q, i) => ({ ...q, order: i + 1 }));
-}
-
 export async function planInterview(interviewId) {
   const interview = await claimStatus(interviewId, 'parsed', 'planning');
   const log = [];
@@ -371,10 +295,8 @@ export async function planInterview(interviewId) {
     const context = { plannerInput, bankCandidates, company: interview.company };
     const { result, criticRounds } = await generatePlan(context, log);
 
-    const questions = injectCodingExercise(result.questions, {
-      interviewCategory: interview.interviewCategory, seniority: interview.seniority
-    });
-    if (questions !== result.questions) log.push(`injected a curated ${interview.interviewCategory} exercise into the technical phase`);
+    // Spoken interview only: no runnable code/SQL exercises are injected.
+    const questions = result.questions;
 
     interview.plan = {
       questions,
