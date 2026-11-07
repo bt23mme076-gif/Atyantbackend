@@ -6,18 +6,33 @@ export const isConfigured = () => !!(process.env.WA_PHONE_NUMBER_ID && process.e
 
 const clip = (s, n) => (String(s || '').length > n ? `${String(s).slice(0, n - 1)}…` : String(s || ''));
 
-async function post(body) {
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// A dropped send = a student staring at a silent chat, so transient failures
+// (network blips, Meta 429/5xx) retry twice with backoff before giving up.
+async function post(body, attempt = 0) {
   if (!isConfigured()) {
     console.warn('⚠️ WhatsApp not configured — message dropped');
     return null;
   }
-  const res = await fetch(`${base()}/${process.env.WA_PHONE_NUMBER_ID}/messages`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messaging_product: 'whatsapp', ...body }),
-    signal: AbortSignal.timeout(15000),
-  });
+  let res;
+  try {
+    res = await fetch(`${base()}/${process.env.WA_PHONE_NUMBER_ID}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', ...body }),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (err) {
+    if (attempt < 2) { await sleep(700 * (attempt + 1)); return post(body, attempt + 1); }
+    console.error(`WhatsApp send failed (network): ${err.message}`);
+    return null;
+  }
   if (!res.ok) {
+    if ((res.status === 429 || res.status >= 500) && attempt < 2) {
+      await sleep(700 * (attempt + 1));
+      return post(body, attempt + 1);
+    }
     const text = await res.text().catch(() => '');
     console.error(`WhatsApp send failed (${res.status}): ${text.slice(0, 300)}`);
     return null;

@@ -32,7 +32,6 @@ const SLOT_DAYS = 7;
 const SUPPORT_EMAIL = 'nitin@atyant.in';
 const REFUND_TERMS = `If the senior doesn't join or cancels, you get a full refund or a free reschedule (email ${SUPPORT_EMAIL}).`;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-const GREETING_RE = /^\s*(hi+|hello+|hey+|helo|yo|sup|namaste|ok+|okay|thanks?|thank you|gm|good (morning|evening|afternoon))\s*[!.]*\s*$/i;
 const LEGACY_STATES = new Set(['email', 'college', 'branch', 'year', 'goal', 'ready']);
 const INTRO = 'Hi, I\'m Atyant. I help engineering students with internships and placements, using advice from seniors who\'ve been there.';
 const CHAT_BUTTONS = [{ id: 'chat:new', title: 'New chat' }, { id: 'chat:end', title: 'End chat' }];
@@ -64,6 +63,22 @@ const displayName = (m = {}) => m.name || m.username || 'A senior';
 const eduOf = (m = {}) => (Array.isArray(m.education) ? m.education[0] : m.education) || {};
 
 // Interactive bodies are capped at 1024 chars: send a long answer as text first.
+// "typing…" lasts ~25 s and vanishes on our first outbound message, so a long
+// answer or an intro sent ahead of it would leave the chat silent. Re-show it.
+const typingFor = new Map(); // waId → id of the message being answered
+const keepTyping = (waId) => { const id = typingFor.get(waId); if (id) wa.showTyping(id); };
+
+// One message at a time per student: parallel turns raced on the same
+// conversation doc (last save wins) and produced duplicate/out-of-order replies.
+const chains = new Map();
+function serialize(key, fn) {
+  const run = (chains.get(key) || Promise.resolve()).then(fn, fn);
+  const tail = run.catch(() => {});
+  chains.set(key, tail);
+  tail.then(() => { if (chains.get(key) === tail) chains.delete(key); });
+  return run;
+}
+
 async function sendWithButtons(to, text, buttons, shortPrompt = 'Was this useful?') {
   if (text.length <= 1000) return wa.sendButtons(to, text, buttons);
   await wa.sendText(to, text);
@@ -85,7 +100,14 @@ function formatCard(content = {}) {
   return parts.join('\n\n');
 }
 
+// Obvious cases skip the LLM round-trip (~0.5 s saved on most messages).
+const GREETING_RE = /^(hi+|hii+|hey+|hel+o+|hola|namaste( ?ji)?|yo|hm+|ok(ay)?|k|sure|thanks?( you| u)?|thanku|thnx|thx|tq|ty|great|nice|cool|good (morning|afternoon|evening|night)|gm|gn)[\s!.,🙏👋😊🙂❤️]*$/i;
+const CAREER_RE = /intern|placement|job|resume|cv\b|interview|career|compan|college|branch|cgpa|backlog|gate\b|cat\b|m\.?tech|ms abroad|higher stud|off.?campus|on.?campus|dsa|dev|aptitude|coding|skill|project|salary|ctc|stipend|offer|referral|linkedin|hackathon|certif|sem(ester)?\b|year (student|btech)|b\.?tech|fresher/i;
+
 async function classify(text) {
+  const t = text.trim();
+  if (GREETING_RE.test(t)) return 'greeting';
+  if (CAREER_RE.test(t)) return 'career';
   try {
     const r = await groqJSON([
       {
@@ -93,7 +115,7 @@ async function classify(text) {
         content: 'You route messages sent to Atyant on WhatsApp. Atyant helps Indian engineering students with internships, placements, jobs, interview prep, resumes, projects, skills, higher studies and booking calls with seniors. Return JSON {"type":"career"|"greeting"|"off_topic"}. career = any question or statement about those topics, including details about themselves (branch, college, year, skills). greeting = hi/thanks/ok with no question. off_topic = anything else, including writing essays or assignments, solving homework or code, general knowledge and chit-chat.',
       },
       { role: 'user', content: text.slice(0, 1000) },
-    ], { maxTokens: 30, timeoutMs: 8000 });
+    ], { maxTokens: 200, timeoutMs: 8000 }); // reasoning model: 30 tokens truncated mid-thought → 400
     return ['career', 'greeting', 'off_topic'].includes(r?.type) ? r.type : 'career';
   } catch {
     return 'career';
@@ -233,6 +255,10 @@ async function answerQuestion(conv, text, { firstContact = false } = {}) {
   let example = null;
 
   if (!midIntake) {
+    // getClarity is DB + embeddings only (no Groq), so run it alongside the classifier.
+    const { college, branch, year, goal } = conv.profile;
+    const clarity = atyantEngine.getClarity(conv.userId || null, text, { studentContext: { college, branch, year, goal }, mentorLimit: 3 });
+    clarity.catch(() => null);
     const kind = await classify(text);
     if (kind === 'greeting') {
       if (firstContact) await sendSticker(conv.waId, 'welcome');
@@ -246,12 +272,12 @@ async function answerQuestion(conv, text, { firstContact = false } = {}) {
     if (firstContact) {
       await sendSticker(conv.waId, 'welcome');
       await wa.sendText(conv.waId, INTRO);
+      keepTyping(conv.waId); // sending the intro cleared "typing…"
     }
     conv.lastQuestion = text.slice(0, 1000);
 
     // A senior has already answered almost exactly this: send their own words, labelled as theirs.
-    const { college, branch, year, goal } = conv.profile;
-    const r = await atyantEngine.getClarity(conv.userId || null, text, { studentContext: { college, branch, year, goal }, mentorLimit: 3 });
+    const r = await clarity;
     const card = r.answerCard;
     if (card && String(card.mentor?._id) !== String(conv.userId)) {
       const body = `*From ${displayName(card.mentor)}'s own experience* (their words, from a similar question):\n\n${formatCard(card.content)}`;
@@ -746,6 +772,11 @@ async function route(conv, msg, isFirstContact) {
 
 export async function handleInbound(msg, contactName) {
   if (!msg?.id || !msg?.from) return;
+  if (msg.type !== 'reaction') wa.showTyping(msg.id); // first thing, before DB or AI work
+  return serialize(msg.from, () => handleOne(msg, contactName));
+}
+
+async function handleOne(msg, contactName) {
   let conv;
   try {
     // Atomic dedupe: WhatsApp retries deliveries, so each message id is handled once.
@@ -764,14 +795,24 @@ export async function handleInbound(msg, contactName) {
   }
   const isFirstContact = !conv.lastErrorObject?.updatedExisting;
   const doc = conv.value;
-  if (msg.type !== 'reaction') wa.showTyping(msg.id); // instantly, before any AI work
+  let refresh = null;
+  if (msg.type !== 'reaction') {
+    typingFor.set(doc.waId, msg.id);
+    keepTyping(doc.waId); // a reply to an earlier queued message may have cleared it
+    refresh = setInterval(() => keepTyping(doc.waId), 20000);
+  }
 
   try {
     await route(doc, msg, isFirstContact);
   } catch (err) {
     console.error('WA route error:', err);
-    await wa.sendText(doc.waId, 'Something went wrong on my side. Please send that again in a minute.').catch(() => null);
+    const busy = (err?.status || err?.response?.status) === 429;
+    await wa.sendText(doc.waId, busy
+      ? 'A lot of students are messaging me right now 😅 Give me a minute, then send that again — I\'ll answer properly.'
+      : 'Something went wrong on my side. Please send that again in a minute.').catch(() => null);
   } finally {
+    clearInterval(refresh);
+    if (typingFor.get(doc.waId) === msg.id) typingFor.delete(doc.waId);
     await doc.save().catch(err => console.error('WA conversation save failed:', err.message));
   }
 }
