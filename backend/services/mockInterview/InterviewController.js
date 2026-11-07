@@ -13,9 +13,10 @@ import { keepsSpecifics } from './directorPrompts.js';
 const TRIGGER_BY_VERDICT = { strong: 'strongDeeper', shallow: 'shallow', wrong: 'wrong', skip: 'shallow' };
 
 // Only used when the judge gives no reaction of its own.
-const ACKS      = ['Okay.', 'Right.', 'Mm-hm.', 'I see.', 'Got it.', 'Hmm, okay.', 'Alright.', 'Sure.'];
+// Real words only: the TTS turns hum sounds ("Hmm", "Mm-hm") into noises.
+const ACKS      = ['Okay.', 'Right.', 'I see.', 'Got it.', 'Alright.', 'Sure.'];
 const SKIP_ACKS = ['No worries.', 'Fair enough.', "That's fine.", "That's okay, happens."];
-const CONTINUES = ['Mm-hm, go on.', 'Take your time.', 'Okay, go ahead.', 'Sure, I\'m listening.', 'Go ahead, no rush.', "I'm with you, go on."];
+const CONTINUES = ['Go on.', 'Take your time.', 'Okay, go ahead.', 'Sure, I\'m listening.', 'Go ahead, no rush.', "I'm with you, go on."];
 
 // An answer that trails off ("It is a...", "so the first thing is") is a
 // thinking pause, not the end. A person would just nod and wait.
@@ -66,7 +67,8 @@ const WANTS_NEXT = /\b(ask|give|try)( me)? (another|a different|some other|the n
 const NOT_HEARD = ["Sorry, I didn't catch that. Could you say it again?", 'You cut out for a second there. One more time?', 'Sorry, missed that. Say that again?'];
 
 // Spoken instantly while the judge reads the answer; '' keeps some turns quiet.
-const THINKING = ['Hmm.', '', 'Okay.', '', 'Right.', ''];
+// Real words only — the TTS can't hum.
+const THINKING = ['Okay.', '', 'Right.', '', 'Alright.', ''];
 
 // A bridge follows the reaction, so a leading "okay" would double it up.
 const tidyBridge = text => {

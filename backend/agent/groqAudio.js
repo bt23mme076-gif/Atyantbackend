@@ -173,10 +173,10 @@ export class GroqTTS extends tts.TTS {
 }
 
 const KOKORO_URL = (process.env.KOKORO_URL || '').replace(/\/+$/, '');
-// hm_omega / hm_psi (male) and hf_alpha / hf_beta (female) are Kokoro's Indian-
-// accent voices — closer to the panels our students actually face than the
-// American am_michael. Set KOKORO_VOICE=am_michael to go back.
-const KOKORO_VOICE = process.env.KOKORO_VOICE || 'hm_omega';
+// af_heart is Kokoro's top-graded English voice. The Hindi voices (hm_omega,
+// hf_alpha…) were tried for an Indian accent and rejected: they read numbers
+// in Hindi ("40" → "chaalees") and chop English badly. Don't use them.
+const KOKORO_VOICE = process.env.KOKORO_VOICE || 'af_heart';
 const KOKORO_TIMEOUT_MS = 12000;
 
 // Kokoro on CPU fails and crawls when sentences arrive in parallel, so they go
