@@ -13,9 +13,9 @@ import { keepsSpecifics } from './directorPrompts.js';
 const TRIGGER_BY_VERDICT = { strong: 'strongDeeper', shallow: 'shallow', wrong: 'wrong', skip: 'shallow' };
 
 // Only used when the judge gives no reaction of its own.
-const ACKS      = ['Okay.', 'Right.', 'Mm-hm.', 'I see.', 'Okay, noted.'];
-const SKIP_ACKS = ['No worries.', 'Fair enough.', "That's fine."];
-const CONTINUES = ['Mm-hm, go on.', 'Take your time.', 'Okay, go ahead.', 'Sure, I\'m listening.', 'Go ahead, no rush.'];
+const ACKS      = ['Okay.', 'Right.', 'Mm-hm.', 'I see.', 'Got it.', 'Hmm, okay.', 'Alright.', 'Sure.'];
+const SKIP_ACKS = ['No worries.', 'Fair enough.', "That's fine.", "That's okay, happens."];
+const CONTINUES = ['Mm-hm, go on.', 'Take your time.', 'Okay, go ahead.', 'Sure, I\'m listening.', 'Go ahead, no rush.', "I'm with you, go on."];
 
 // An answer that trails off ("It is a...", "so the first thing is") is a
 // thinking pause, not the end. A person would just nod and wait.
@@ -23,10 +23,10 @@ const DANGLING = /(\.\.\.|…|\b(a|an|the|and|so|but|or|is|are|was|to|of|with|fo
 const looksUnfinished = text => DANGLING.test(String(text || '').trim());
 
 const TRANSITIONS = {
-  resume    : "Let's look at some of the work on your resume.",
-  technical : 'Now a few technical questions.',
-  behavioral: "Let's switch to a couple of situational questions.",
-  closing   : "We're near the end."
+  resume    : 'Let me pick something from your resume.',
+  technical : "Let's get a little technical now.",
+  behavioral: 'Now a couple of situational ones.',
+  closing   : "We're coming to the end."
 };
 
 const MAX_CLARIFY     = 2;
@@ -65,6 +65,9 @@ const WANTS_NEXT = /\b(ask|give|try)( me)? (another|a different|some other|the n
 // When the judge gives no line of its own for a misheard answer.
 const NOT_HEARD = ["Sorry, I didn't catch that. Could you say it again?", 'You cut out for a second there. One more time?', 'Sorry, missed that. Say that again?'];
 
+// Spoken instantly while the judge reads the answer; '' keeps some turns quiet.
+const THINKING = ['Hmm.', '', 'Okay.', '', 'Right.', ''];
+
 // A bridge follows the reaction, so a leading "okay" would double it up.
 const tidyBridge = text => {
   const t = String(text || '').replace(/^(okay|ok|alright|all right|right|so|sure|got it|mm-?hm|mm)[,.!]?\s+/i, '').trim();
@@ -92,6 +95,8 @@ export class InterviewController {
     this.recentReactions = [];
     // Consecutive answers the candidate couldn't give; the interviewer eases off as it grows.
     this.struggleStreak = 0;
+    this.thinkSeq = 0;      // rotates the thinking sounds below
+    this.timeWarned = false; // "almost at time" is said once
   }
 
   get current() { return this.questions[this.index]; }
@@ -102,9 +107,9 @@ export class InterviewController {
     const first = (this.candidateName || '').trim().split(/\s+/)[0];
     const forRole = this.role ? ` for the ${this.role} role${this.company ? ` at ${this.company}` : ''}` : '';
     const minutes = Math.round(this.durationMs / 60000);
-    const intro = `Hi${first ? ` ${first}` : ''}, thanks for making the time. I'll be your interviewer today${forRole}. `
-      + `We have about ${minutes} minutes. I'll ask about you, a few of your projects and some technical things. `
-      + `Keep it conversational, and feel free to think out loud. So, to start.`;
+    const intro = `Hi${first ? ` ${first}` : ''}, good to meet you. I'll be your interviewer today${forRole}, thanks for making the time. `
+      + `We've got about ${minutes} minutes together, so I'll keep it moving: a bit about you, then your projects, then a few technical things. `
+      + `There's no trick to any of it. Just talk to me like a person, and it's completely fine to pause and think out loud. Okay, let's start.`;
     return `${intro} ${this.#ask(0).text}`;
   }
 
@@ -113,17 +118,19 @@ export class InterviewController {
   resume(index, startedAt) {
     this.startedAt = startedAt.getTime();
     this.endsAt = this.startedAt + this.durationMs;
-    return `Welcome back. Let's continue where we left off. ${this.#ask(index).text}`;
+    return `Welcome back, sorry about the hiccup there. Let's pick up where we left off. ${this.#ask(index).text}`;
   }
 
   // The student dropped and reconnected: they may have missed the question.
   welcomeBack() {
     this.asking.parts = [];
-    return `Welcome back. ${this.asking.text}`;
+    return `Welcome back, no worries, these drops happen. So, ${this.asking.text}`;
   }
 
-  // One finished student turn (end of speech detected).
-  async onAnswer(text) {
+  // One finished student turn (end of speech detected). `onThinking` is called
+  // with a short sound to speak right away while the judge call runs, so the
+  // couple of seconds of scoring never play as dead air.
+  async onAnswer(text, onThinking = null) {
     if (this.finished) return { say: null, end: true, turn: null };
     const clean = (text || '').trim();
     // Noise transcribed as "thank you": say nothing and keep listening.
@@ -143,6 +150,12 @@ export class InterviewController {
       return { say: CONTINUES[this.continueCount++ % CONTINUES.length], end: false, turn: null };
     }
 
+    // A person makes a small sound while they think; silence sounds like a machine.
+    // Every other turn stays quiet so the sound itself doesn't become a pattern.
+    if (onThinking) {
+      const filler = THINKING[this.thinkSeq++ % THINKING.length];
+      if (filler) try { onThinking(filler); } catch { /* speech is best-effort */ }
+    }
     let d = await this.#direct(this.asking.continues < MAX_CONTINUE);
     if (WANTS_NEXT.test(clean)) {
       // They asked for another question: no easier follow-up on this one.
@@ -218,7 +231,7 @@ export class InterviewController {
     const turn = this.asking?.parts.length ? this.#record(null) : null;
     this.finished = true;
     return {
-      say: "We're out of time, so let's stop here. Thank you. Your feedback report will be ready in a few minutes.",
+      say: "Alright, that's time, so we'll stop here. Thanks for taking this seriously. Your feedback report will be ready in a few minutes. All the best!",
       end: true,
       turn
     };
@@ -392,7 +405,12 @@ export class InterviewController {
     // The judge wrote its bridge and spoken wording for the question it expected
     // next; only use them if that is still the one being asked.
     const planned = d && this.plannedNext === nextIndex;
-    const bridge = planned && d.bridge ? tidyBridge(d.bridge) : (!planned && nextQ.phase !== q.phase ? TRANSITIONS[nextQ.phase] || '' : '');
+    let bridge = planned && d.bridge ? tidyBridge(d.bridge) : (!planned && nextQ.phase !== q.phase ? TRANSITIONS[nextQ.phase] || '' : '');
+    // Entering the close on the clock: say so once, like a person watching the time.
+    if (!this.timeWarned && nextQ.phase === 'closing' && q.phase !== 'closing' && this.#remainingMs() < WRAP_UP_MS) {
+      this.timeWarned = true;
+      if (!bridge) bridge = "We're almost at time, so one last thing.";
+    }
     this.#remember(bridge);
     // "Your resume says..." belongs only on questions that really come from the resume.
     const inventsResume = nextQ.phase !== 'resume' && /resume/i.test(d?.nextQuestionSpoken || '') && !/resume/i.test(nextQ.text);
@@ -411,6 +429,6 @@ export class InterviewController {
   #closingLine(answer) {
     const askedSomething = answer.split(/\s+/).length > 6 && !/^(no|nope|nothing|not really)\b/i.test(answer.trim());
     return `${askedSomething ? 'Those are good questions to ask in your real interview. ' : ''}`
-      + "Thank you, that's all from my side. Your feedback report will be ready in a few minutes. All the best!";
+      + "That's all from my side. Thanks for your time today, I enjoyed this. Your feedback report will be ready in a few minutes. All the best!";
   }
 }

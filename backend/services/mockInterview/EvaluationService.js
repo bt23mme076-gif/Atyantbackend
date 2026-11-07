@@ -11,6 +11,7 @@ import { groqJSON } from '../../utils/groqClient.js';
 import { withRateLimitRetry } from './PlannerService.js';
 import { buildAnswerEvalMessages, buildSynthesisMessages, buildSampleRepairMessages } from './evaluationPrompts.js';
 import { retestKey, weakAreas, areaLabel } from './retake.js';
+import { notifyReportReady } from './MockNotify.js';
 
 const EVAL_MODEL   = process.env.MOCK_EVAL_MODEL || 'openai/gpt-oss-120b';
 // Grading runs at temperature 0, and repeat runs gave identical scores in
@@ -348,6 +349,7 @@ export async function evaluateInterview(interviewId) {
         'evaluation.completedAt'  : new Date()
       }
     });
+    notifyReportReady(interview, result.overall); // not awaited: WhatsApp must never delay scoring
     return result;
   } catch (err) {
     const outOfAttempts = interview.evaluation.attempts >= MAX_ATTEMPTS;

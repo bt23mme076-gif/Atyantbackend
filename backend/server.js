@@ -74,6 +74,7 @@ import { sendAutoReply } from './controllers/messageController.js';
 import ReminderCron from './services/ReminderCron.js';
 import TranscriptRecoveryCron from './services/TranscriptRecoveryCron.js';
 import MockEvaluationCron from './services/mockInterview/EvaluationCron.js';
+import CheckoutNudgeCron from './services/mockInterview/CheckoutNudgeCron.js';
 import StalePendingCron from './services/StalePendingCron.js';
 import JobSyncCron from './services/JobSyncCron.js';
 import AutoApplyCron from './services/AutoApplyCron.js';
@@ -227,6 +228,7 @@ mongoose.connect(MONGO_URI, {
     ReminderCron.start();
     TranscriptRecoveryCron.start();
     MockEvaluationCron.start();
+    CheckoutNudgeCron.start();
     StalePendingCron.start();
     JobSyncCron.start();
     AutoApplyCron.start();

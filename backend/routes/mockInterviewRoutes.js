@@ -101,6 +101,32 @@ function runPrep(interviewId, fromStatus) {
 
 const PREPARED_STATUSES = ['planned', 'live', 'evaluating', 'completed'];
 
+// GET /api/mock-interviews/stats — public social proof, real numbers only:
+// interviews actually taken and distinct colleges of the students who took them.
+// Cached 10 min; the page hides each number until it's worth showing.
+let statsCache = { at: 0, value: null };
+router.get('/stats', async (req, res) => {
+  try {
+    if (!statsCache.value || Date.now() - statsCache.at > 10 * 60 * 1000) {
+      const taken = { status: { $in: ['evaluating', 'completed'] } };
+      const [interviews, userIds] = await Promise.all([
+        MockInterview.countDocuments(taken),
+        MockInterview.distinct('userId', taken),
+      ]);
+      const users = await User.find({ _id: { $in: userIds } }).select('education').lean();
+      const colleges = new Set(users
+        .map(u => (u.education?.[0]?.institutionName || u.education?.[0]?.institution || '').trim().toLowerCase())
+        .filter(Boolean));
+      statsCache = { at: Date.now(), value: { interviews, students: userIds.length, colleges: colleges.size } };
+    }
+    res.set('Cache-Control', 'public, max-age=600');
+    res.json(statsCache.value);
+  } catch (err) {
+    console.error('mock stats failed:', err.message);
+    res.json({ interviews: 0, students: 0, colleges: 0 });
+  }
+});
+
 // POST /api/mock-interviews   (multipart/form-data)
 // Fields: jdText or jdFile (PDF); resume (PDF) or useProfileResume=true;
 // optional company, role. Creates the interview and starts prep.
@@ -528,7 +554,7 @@ router.get('/:id/report', protect, async (req, res) => {
 // (first interview only). Returns { paid: true } when already paid.
 router.post('/:id/checkout', protect, async (req, res) => {
   try {
-    res.json({ ok: true, ...(await createEntryOrder(req.params.id, req.user.userId, { bundle: !!req.body?.bundle })) });
+    res.json({ ok: true, ...(await createEntryOrder(req.params.id, req.user.userId)) });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ ok: false, error: err.message });
     console.error('Mock interview checkout error:', err);

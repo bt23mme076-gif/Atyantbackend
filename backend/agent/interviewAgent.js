@@ -75,6 +75,7 @@ export default defineAgent({
     }
     const { interview, startedAt, resuming } = started;
     const questions = interview.plan.questions;
+    const durationMs = INTERVIEW_DURATION_MS;
 
     const roomName = ctx.job.room?.name;
     const studentId = String(interview.userId);
@@ -89,7 +90,7 @@ export default defineAgent({
       candidateName: user?.name || '',
       role         : interview.role,
       company      : interview.company,
-      durationMs   : INTERVIEW_DURATION_MS
+      durationMs
     });
 
     const timers = {};
@@ -159,7 +160,7 @@ export default defineAgent({
     let openingText;
     if (resuming) {
       const index = resumeIndex(interview);
-      if (index <= 0 || index >= questions.length || Date.now() - startedAt.getTime() > INTERVIEW_DURATION_MS) {
+      if (index <= 0 || index >= questions.length || Date.now() - startedAt.getTime() > durationMs) {
         await finish(index >= questions.length ? 'completed' : 'time_up');
         return;
       }
@@ -232,11 +233,16 @@ export default defineAgent({
       step(async () => ({ say: controller.welcomeBack(), end: false, turn: null }));
     });
 
-    const remainingMs = startedAt.getTime() + INTERVIEW_DURATION_MS - Date.now();
+    const remainingMs = startedAt.getTime() + durationMs - Date.now();
     timers.timeUp = setTimeout(() => step(() => controller.onTimeUp(), 'time_up'), remainingMs + TIME_UP_GRACE_MS);
 
     await session.start({
-      agent: new InterviewerAgent({ openingText, onAnswer: text => step(() => controller.onAnswer(text)) }),
+      agent: new InterviewerAgent({
+        openingText,
+        // The thinking sound is spoken at once, outside the step chain, so it
+        // lands during the judge call instead of after it.
+        onAnswer: text => step(() => controller.onAnswer(text, f => { try { session.say(f, { allowInterruptions: false }); } catch { /* best-effort */ } })),
+      }),
       room : ctx.room,
       inputOptions: { participantIdentity: studentId, closeOnDisconnect: false }
     });

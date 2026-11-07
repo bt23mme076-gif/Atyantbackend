@@ -145,14 +145,17 @@ const mockInterviewSchema = new Schema({
     plan      : { type: String, enum: ['locked', 'free_trial', 'paid'], default: 'locked' },
     unlockedAt: { type: Date, default: null }
   },
-  // ₹99 (or ₹149 bundle) to start the interview
+  // ₹10 to start the interview (older interviews: ₹99, or ₹149 bundle)
   entryPayment: {
     orderId  : { type: String, default: null, index: true },
     paymentId: { type: String, default: null },
     amount   : { type: Number, default: null },   // rupees
+    starter  : { type: Boolean, default: false }, // ₹10 plan: 15-minute interview
     reportIncluded: { type: Boolean, default: false }, // the full report came with this payment
     waived   : { type: Boolean, default: false }, // free account: nothing was charged
     status   : { type: String, enum: ['created', 'paid', null], default: null },
+    createdAt: { type: Date, default: null },     // when the order was opened (checkout nudge)
+    nudgedAt : { type: Date, default: null },     // WhatsApp "still waiting" sent
     paidAt   : { type: Date, default: null }
   },
   // ₹49 full-report add-on

@@ -49,6 +49,18 @@ export const showTyping = (messageId) =>
 export const sendText = (to, text) =>
   send(to, { type: 'text', text: { body: clip(text, 4096), preview_url: true } });
 
+// Approved template (the only way to message someone outside the 24 h window).
+// params: positional body variables {{1}}, {{2}}, …
+export const sendTemplate = (to, name, params = [], lang = process.env.WA_TPL_LANG || 'en') =>
+  send(to, {
+    type: 'template',
+    template: {
+      name,
+      language: { code: lang },
+      ...(params.length ? { components: [{ type: 'body', parameters: params.map(p => ({ type: 'text', text: clip(p, 1000) })) }] } : {}),
+    },
+  });
+
 // link: public URL of a 512×512 WebP (static ≤100 KB, animated ≤500 KB).
 export const sendSticker = (to, link) => send(to, { type: 'sticker', sticker: { link } });
 

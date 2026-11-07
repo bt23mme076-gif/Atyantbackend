@@ -1,15 +1,13 @@
 // Mock interview payments (Razorpay: order → checkout → verify, with the shared
 // /api/payments/webhook as a safety net). Prices are server-side only.
 //
-//   Starting an interview costs ₹99. A student's FIRST interview includes the
-//   full report free. From the second interview on, ₹99 buys the interview
-//   with a score preview, or ₹149 buys it together with the full report (the
-//   report can also be added later for ₹49, any time after the interview ends).
+//   Every interview is ₹10: 15 minutes, full report included.
 //   Accounts on the free list (MOCK_FREE_EMAILS) pay nothing.
 //
 // Two independent orders per interview, tracked separately:
-//   entryPayment  the ₹99 / ₹149 needed before the interview can start
-//   payment       the ₹49 report add-on
+//   entryPayment  the ₹10 needed before the interview can start
+//   payment       the ₹49 report add-on (only for older interviews bought
+//                 without the report)
 import crypto from 'crypto';
 import Razorpay from 'razorpay';
 import MockInterview from '../../models/MockInterview.js';
@@ -21,8 +19,7 @@ const razorpay = (RZP_KEY_ID && RZP_KEY_SECRET)
   ? new Razorpay({ key_id: RZP_KEY_ID, key_secret: RZP_KEY_SECRET })
   : null;
 
-export const INTERVIEW_PRICE_INR = Number(process.env.MOCK_INTERVIEW_PRICE_INR) || 99;
-export const BUNDLE_PRICE_INR    = Number(process.env.MOCK_BUNDLE_PRICE_INR) || 149;
+export const INTERVIEW_PRICE_INR = Number(process.env.MOCK_INTERVIEW_PRICE_INR) || 10;
 export const REPORT_PRICE_INR    = Number(process.env.MOCK_REPORT_PRICE_INR) || 49;
 
 // The report add-on can be bought once the interview itself is over.
@@ -61,22 +58,16 @@ function verifySignature(orderId, paymentId, signature) {
   }
 }
 
-// A student's first interview is the first one they have paid to start.
-async function isFirstInterview(userId, interviewId) {
-  return !(await MockInterview.exists({ userId, _id: { $ne: interviewId }, 'entryPayment.status': 'paid' }));
-}
-
 // Prices and what is already paid, for the interview page.
 export async function getPricing(interview) {
-  const [first, free] = await Promise.all([isFirstInterview(interview.userId, interview._id), isFreeUser(interview.userId)]);
   return {
     entryPaid : isEntryPaid(interview),
-    free,
-    first,
+    free      : await isFreeUser(interview.userId),
     interview : INTERVIEW_PRICE_INR,
-    includesReport: first,                        // first interview: full report included free
-    bundle    : first ? null : BUNDLE_PRICE_INR,  // later: ₹149 for interview + report
-    report    : REPORT_PRICE_INR,                 // report add-on after a ₹99 interview
+    durationMin: 15,
+    includesReport: true,                         // every interview includes the full report
+    bundle    : null,
+    report    : REPORT_PRICE_INR,                 // add-on, only for older interviews without the report
     reportUnlocked: isUnlocked(interview)
   };
 }
@@ -119,7 +110,7 @@ async function ensureOrder(interview, path, amount, extra, receiptTag, notes) {
   });
   await MockInterview.updateOne(
     { _id: interview._id },
-    { $set: { [path]: { orderId: order.id, amount, status: 'created', paymentId: null, paidAt: null, ...extra } } }
+    { $set: { [path]: { orderId: order.id, amount, status: 'created', paymentId: null, paidAt: null, createdAt: new Date(), ...extra } } }
   );
   return order.id;
 }
@@ -134,9 +125,9 @@ const checkoutPayload = (orderId, amount, description) => ({
 
 const label = interview => [interview.role, interview.company].filter(Boolean).join(' at ') || 'mock interview';
 
-// ── ₹99 / ₹149 to start the interview ────────────────────────────────────────
+// ── ₹10 to start the interview ───────────────────────────────────────────────
 
-export async function createEntryOrder(interviewId, userId, { bundle = false } = {}) {
+export async function createEntryOrder(interviewId, userId) {
   const interview = await loadOwned(interviewId, userId, 'userId status entryPayment access company role attempt');
   if (isEntryPaid(interview)) return { paid: true };
   if (interview.status === 'planned' && await isFreeUser(interview.userId)) {
@@ -150,19 +141,16 @@ export async function createEntryOrder(interviewId, userId, { bundle = false } =
   }
   if (!razorpay) throw new PaymentError(503, 'Payments not configured');
 
-  // First interview: ₹99 with the report included, so there is nothing to choose.
-  // Later: ₹99 (interview) or ₹149 (interview + report).
-  const first = await isFirstInterview(interview.userId, interview._id);
-  const reportIncluded = first || !!bundle;
-  const amount = first || !bundle ? INTERVIEW_PRICE_INR : BUNDLE_PRICE_INR;
-  const orderId = await ensureOrder(interview, 'entryPayment', amount, { reportIncluded }, 'mockint',
-    { kind: 'mock_interview_entry', reportIncluded: String(reportIncluded) });
+  // One price, one plan: ₹10 for a 15-minute interview with the full report.
+  // `starter` tells the interview agent to run the 15-minute clock.
+  const amount = INTERVIEW_PRICE_INR;
+  const orderId = await ensureOrder(interview, 'entryPayment', amount, { reportIncluded: true, starter: true }, 'mockint',
+    { kind: 'mock_interview_entry', reportIncluded: 'true' });
 
   return {
     paid: false,
-    reportIncluded,
-    ...checkoutPayload(orderId, amount,
-      `Mock interview: ${label(interview)}${reportIncluded ? ' + full report' : ''}`)
+    reportIncluded: true,
+    ...checkoutPayload(orderId, amount, `Mock interview: ${label(interview)} + full report`)
   };
 }
 
@@ -210,7 +198,7 @@ async function confirmOrder(kind, interview, paymentId) {
     [`${path}.paymentId`]: paymentId,
     [`${path}.paidAt`]   : now
   };
-  // The first interview and the ₹149 bundle include the full report.
+  // Entry orders include the full report (older ones only when the bundle was bought).
   if ((kind === 'report' || record.reportIncluded) && !isUnlocked(interview)) {
     set['access.plan'] = 'paid';
     set['access.unlockedAt'] = now;

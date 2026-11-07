@@ -173,7 +173,10 @@ export class GroqTTS extends tts.TTS {
 }
 
 const KOKORO_URL = (process.env.KOKORO_URL || '').replace(/\/+$/, '');
-const KOKORO_VOICE = process.env.KOKORO_VOICE || 'am_michael';
+// hm_omega / hm_psi (male) and hf_alpha / hf_beta (female) are Kokoro's Indian-
+// accent voices — closer to the panels our students actually face than the
+// American am_michael. Set KOKORO_VOICE=am_michael to go back.
+const KOKORO_VOICE = process.env.KOKORO_VOICE || 'hm_omega';
 const KOKORO_TIMEOUT_MS = 12000;
 
 // Kokoro on CPU fails and crawls when sentences arrive in parallel, so they go
