@@ -17,7 +17,7 @@ import AtyantConversation from '../../models/AtyantConversation.js';
 import MentorInvite from '../../models/MentorInvite.js';
 import { findSeniors } from '../SeniorSearchService.js';
 import { createInvite, InviteError, INVITE_REWARD_CREDITS } from '../MentorInviteService.js';
-import atyantEngine, { isSameCollege } from '../AtyantEngine.js';
+import atyantEngine, { isSameCollege, detectGoalIntent } from '../AtyantEngine.js';
 import { processAtyantMessage, recordAtyantChatFeedback } from '../AtyantEngineService.js';
 import { isSameBranch } from '../../utils/collegeNormalizer.js';
 import { groqJSON } from '../../utils/groqClient.js';
@@ -256,7 +256,11 @@ async function answerQuestion(conv, text, { firstContact = false } = {}) {
 
   if (!midIntake) {
     // getClarity is DB + embeddings only (no Groq), so run it alongside the classifier.
-    const { college, branch, year, goal } = conv.profile;
+    const { college, branch, year } = conv.profile;
+    // A saved internship goal must not steer a placement question (or vice versa).
+    const asked = detectGoalIntent(text);
+    const saved = detectGoalIntent(conv.profile.goal);
+    const goal = asked && saved && asked !== saved ? null : conv.profile.goal;
     const clarity = atyantEngine.getClarity(conv.userId || null, text, { studentContext: { college, branch, year, goal }, mentorLimit: 3 });
     clarity.catch(() => null);
     const kind = await classify(text);
@@ -302,8 +306,9 @@ async function answerQuestion(conv, text, { firstContact = false } = {}) {
   // The top matches often don't sell calls; look further down the same ranking.
   if (!(await loadSeniors(conv.matchIds, conv.userId)).length) {
     const { college, branch, year, goal } = conv.profile;
+    const intent = detectGoalIntent(text) || detectGoalIntent(conv.lastQuestion) || detectGoalIntent(goal);
     const more = await atyantEngine.matchMentorsForChat(conv.userId || null,
-      [conv.lastQuestion, goal].filter(Boolean).join('\n'), { college, branch, year, goal }, 15).catch(() => ({ mentors: [] }));
+      [conv.lastQuestion, goal].filter(Boolean).join('\n'), { college, branch, year, goal, intent }, 15).catch(() => ({ mentors: [] }));
     conv.matchIds = [...conv.matchIds, ...(more.mentors || []).map(m => String(m._id))];
   }
   return offerNext(conv, res.reply);

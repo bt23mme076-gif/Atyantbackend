@@ -121,6 +121,15 @@ const GOAL_SIGNAL_TAGS = [
   'research', 'startup', 'foreign', 'abroad', 'gsoc',
 ];
 
+// Internship vs placement, read from ONE message so the current ask decides, not chat history.
+export function detectGoalIntent(text) {
+  const t = String(text || '').toLowerCase();
+  const intern = /\bintern(ship)?s?\b/.test(t);
+  const place = /\bplacements?\b|\bfull[ -]?time\b|\bfte\b|\bjobs?\b/.test(t);
+  if (intern === place) return null;
+  return intern ? 'internship' : 'placement';
+}
+
 // Pull the distinctive goal tokens the student actually named in their GOAL text.
 function extractGoalSignals(goalText) {
   if (!goalText) return [];
@@ -1141,11 +1150,17 @@ class AtyantEngine {
       const sEdu = await resolveStudentEdu(studentId, studentContext);
 
       const queryDetails = await this.detectQueryDetails(questionText);
+      const askedIntent = studentContext?.intent || null;
+      if (askedIntent) { queryDetails.intent = askedIntent; queryDetails.confidence = 1; }
 
       dlog(`\n🤝 ===== FINDING TOP ${limit} MENTORS =====`);
 
       const allMentors = await getActiveMentors();
-      const candidates = getCandidateMentors(allMentors, queryDetails, sEdu); // ← index filter + identity
+      let candidates = getCandidateMentors(allMentors, queryDetails, sEdu); // ← index filter + identity
+      // Internship asks get internship mentors, placement asks placement mentors ('both'/unset stay).
+      if (askedIntent) {
+        candidates = candidates.filter(m => !m.primaryDomain || m.primaryDomain === 'both' || m.primaryDomain === askedIntent);
+      }
 
       const context = {
         questionCategory,
@@ -1445,7 +1460,8 @@ class AtyantEngine {
       console.log(`🎯 [Clarity] goal="${baseContext?.goal || questionText}" → domain=${targetDomain} | embedding=${vector ? 'ok' : 'NULL'}`);
 
       // Thread the classified domain to every scorer via studentContext.
-      const studentContext = baseContext ? { ...baseContext, targetDomain } : (targetDomain ? { targetDomain } : null);
+      const intent = detectGoalIntent(questionText) || detectGoalIntent(baseContext?.goal);
+      const studentContext = baseContext ? { ...baseContext, targetDomain, intent } : (targetDomain || intent ? { targetDomain, intent } : null);
       const inferredCategory = targetDomain;
 
       // ── Run BOTH paths simultaneously ──

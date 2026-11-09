@@ -6,7 +6,7 @@ import User from '../models/User.js';
 // / _3 from SEPARATE Groq accounts in .env to multiply throughput.
 import { groqChat, groqJSON, groqChatStream } from '../utils/groqClient.js';
 import { claudeChatStream } from '../utils/claudeClient.js';
-import atyantEngine, { isSameCollege } from './AtyantEngine.js';
+import atyantEngine, { isSameCollege, detectGoalIntent } from './AtyantEngine.js';
 import { isSameBranch } from '../utils/collegeNormalizer.js';
 import { logFunnel } from '../utils/funnel.js';
 import { extractResumeFromImage } from '../utils/geminiVision.js';
@@ -21,11 +21,21 @@ const callGroq = (messages, opts = {}) => groqChat(messages, { temperature: 0.75
 // through everywhere else, so a `token` event flows out over the existing SSE
 // connection with no route changes needed.
 // Reasoning replies (the final mentor-match wrap-up) run on Claude
-// (utils/claudeClient.js). Everyday intake chat runs on the free Groq tier and
-// falls back to Claude if Groq is down — but only before any token has been
-// shown, so a half-streamed reply is never duplicated.
-const callClaudeStream = (messages, emit, opts = {}) =>
-  claudeChatStream(messages, { ...opts, onToken: (text) => emit({ type: 'token', text }) });
+// (utils/claudeClient.js) and fall back to Groq; everyday intake chat runs on
+// Groq and falls back to Claude. Fallback only happens before any token has
+// been shown, so a half-streamed reply is never duplicated.
+const callClaudeStream = async (messages, emit, { reminder, ...opts } = {}) => {
+  let streamed = false;
+  const onToken = (text) => { streamed = true; emit({ type: 'token', text }); };
+  try {
+    return await claudeChatStream(messages, { reminder, ...opts, onToken });
+  } catch (err) {
+    if (streamed) throw err;
+    console.error('Claude chat failed, falling back to Groq:', err.message);
+    const withReminder = reminder ? [...messages, { role: 'system', content: reminder }] : messages;
+    return groqChatStream(withReminder, { maxTokens: 900, ...opts, onToken });
+  }
+};
 
 const callChatStream = async (messages, emit, { reminder, ...opts } = {}) => {
   let streamed = false;
@@ -62,7 +72,7 @@ Return ONLY a JSON object with these keys:
   "branch": null,         // the student's stated branch/department; else null
   "year": null,           // "1","2","3","4" or "final" if stated; else null
   "cgpa": null,           // the student's stated CGPA as a string; else null
-  "target": null,         // the student's stated goal, INCLUDING any field/domain/role they named in ANY message (e.g. "internship" then later "core, power systems" → "core electrical internship (power systems)"). Never fold their BRANCH into the goal — "internship" from an electrical student stays "internship"; else null
+  "target": null,         // the student's stated goal, INCLUDING any field/domain/role they named in ANY message (e.g. "internship" then later "core, power systems" → "core electrical internship (power systems)"). If a LATER message switches internship ↔ placement/full-time job, use the LATEST one ("SDE internship" then "now placements" → "SDE placement"). Never fold their BRANCH into the goal — "internship" from an electrical student stays "internship"; else null
   "targetCompanies": [],   // companies the student said they're aiming for; [] if none, "not sure" or "any"
   "timeline": null,       // the student's stated timeframe; else null
   "gap": [],               // blockers the student stated, as short strings
@@ -401,8 +411,11 @@ function mergeContext(existing = {}, update) {
   }
 
   // A re-extracted vague goal ("internship") must not wipe one that already
-  // names its field ("internship (core electrical)").
-  if (update.target && !(goalHasField({ target: merged.target }) && !goalHasField({ target: update.target }))) {
+  // names its field ("internship (core electrical)") — unless it switches
+  // internship ↔ placement, which always wins.
+  const newIntent = detectGoalIntent(update.target);
+  const switched = !!newIntent && newIntent !== detectGoalIntent(merged.target);
+  if (update.target && (switched || !(goalHasField({ target: merged.target }) && !goalHasField({ target: update.target })))) {
     merged.target = update.target;
   }
 
@@ -526,12 +539,14 @@ async function keywordMatchMentors(context = {}, limit = 3) {
 // show the student; a mentor ranked on quality signals alone gets null, and the
 // card labels it as a suggestion. Falls back to the keyword match when the
 // scorer qualifies nobody.
-async function matchMentors(context = {}, problemStatement = '', userId = null, limit = 3) {
+async function matchMentors(context = {}, problemStatement = '', userId = null, limit = 3, latestMessage = '') {
   const { identity = {}, target } = context;
   const companies = context.targetCompanies || [];
   const goal = [target, ...companies].filter(Boolean).join(', ');
-  const studentContext = { college: identity.college, branch: identity.branch, year: identity.year, goal };
-  const queryText = [problemStatement, goal].filter(Boolean).join('\n');
+  // What they're asking NOW decides internship vs placement; the stored goal is only the fallback.
+  const intent = detectGoalIntent(latestMessage) || detectGoalIntent(target);
+  const studentContext = { college: identity.college, branch: identity.branch, year: identity.year, goal, intent };
+  const queryText = [latestMessage, problemStatement, goal].filter(Boolean).join('\n');
 
   const { mentors: ranked, targetDomain } = await atyantEngine.matchMentorsForChat(userId, queryText, studentContext, limit);
   if (!ranked.length) return keywordMatchMentors(context, limit);
@@ -816,7 +831,7 @@ ${userWantsMentor ? "\nThe student JUST asked to be connected to a mentor. Ackno
     // instead of the model guessing ("NIT Trichy seniors" when none exist).
     emit({ type: 'progress', stage: 'searching_mentors' });
     try {
-      matchedMentors = await matchMentors(conv.context, conv.problemStatement, conv.userId);
+      matchedMentors = await matchMentors(conv.context, conv.problemStatement, conv.userId, 3, userMessage);
     } catch (err) {
       console.error('Mentor match failed (non-fatal):', err.message);
     }
