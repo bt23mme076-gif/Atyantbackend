@@ -17,7 +17,7 @@ import User from '../models/User.js';
 import liveKitService from '../services/LiveKitService.js';
 import { InterviewController } from '../services/mockInterview/InterviewController.js';
 import {
-  judge, sttPrompt, resumeIndex, startLiveInterview, saveTurn, endLiveInterview
+  judge, sttPrompt, resumeIndex, startLiveInterview, markLiveStart, saveTurn, endLiveInterview
 } from '../services/mockInterview/liveSession.js';
 import { MOCK_AGENT_NAME, INTERVIEW_DURATION_MS, hireParticipantIdentity } from '../services/mockInterview/liveConfig.js';
 import { createGroqSTT, createInterviewTTS } from './groqAudio.js';
@@ -25,6 +25,18 @@ import { createGroqSTT, createInterviewTTS } from './groqAudio.js';
 const SILENCE_MS      = 30 * 1000;       // no speech after the interviewer finishes
 const REJOIN_GRACE_MS  = 3 * 60 * 1000;   // student dropped: wait this long before ending
 const TIME_UP_GRACE_MS = 2 * 60 * 1000;   // hard stop after the planned duration
+const HARD_STOP_EXTRA_MS = 60 * 1000;    // after that: closing line's playout, then leave no matter what
+const JOIN_WAIT_MS = Number(process.env.MOCK_JOIN_WAIT_MS) || 5 * 60 * 1000; // dispatched, candidate never connected
+const CLOSE_TIMEOUT_MS = 15 * 1000;      // cap on each shutdown step so the job always exits
+
+// true if `promise` settles within `ms`, false on timeout (rejections propagate).
+function within(promise, ms) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).then(() => true),
+    new Promise(resolve => { timer = setTimeout(() => resolve(false), ms); })
+  ]).finally(() => clearTimeout(timer));
+}
 
 // End of answer = VAD silence + endpointing delay. Candidates pause while thinking
 // — a real interviewer waits. These defaults are intentionally generous; cut them
@@ -73,7 +85,8 @@ export default defineAgent({
       ctx.shutdown('interview not startable');
       return;
     }
-    const { interview, startedAt, resuming } = started;
+    const { interview, resuming } = started;
+    let { startedAt } = started;
     const questions = interview.plan.questions;
     const durationMs = INTERVIEW_DURATION_MS;
 
@@ -81,7 +94,19 @@ export default defineAgent({
     const hiring = interview.mode === 'hiring';
     const studentId = hiring ? hireParticipantIdentity(interview.hire.applicationId) : String(interview.userId);
     await ctx.connect();
-    await ctx.waitForParticipant(studentId);
+    // The candidate may never arrive (e.g. closed the tab during the network
+    // check). Don't hold a room and a worker process for them: release the
+    // interview so they can start it again later.
+    if (!(await within(ctx.waitForParticipant(studentId), JOIN_WAIT_MS))) {
+      logger.warn({ interviewId }, 'candidate never joined, leaving');
+      await within(endLiveInterview(interviewId, 'no_show'), CLOSE_TIMEOUT_MS)
+        .catch(err => logger.error({ err }, 'failed to release interview'));
+      if (roomName) await liveKitService.deleteRoom(roomName);
+      ctx.shutdown('candidate never joined');
+      return;
+    }
+    // A fresh interview's 15 minutes run from when the candidate is in the room.
+    if (!resuming) startedAt = await markLiveStart(interviewId);
 
     const user = hiring ? null : await User.findById(interview.userId).select('name username').lean();
     const controller = new InterviewController({
@@ -122,12 +147,12 @@ export default defineAgent({
       finished = true;
       Object.values(timers).forEach(clearTimeout);
       try {
-        await lastSave;
-        await endLiveInterview(interviewId, reason);
+        const saved = await within(lastSave.then(() => endLiveInterview(interviewId, reason)), CLOSE_TIMEOUT_MS);
+        if (!saved) logger.error({ interviewId }, 'timed out saving interview end state');
       } catch (err) {
         logger.error({ err }, 'failed to save interview end state');
       }
-      await session?.close().catch(() => {});
+      if (session) await within(session.close(), CLOSE_TIMEOUT_MS).catch(() => {});
       if (roomName) await liveKitService.deleteRoom(roomName);
       ctx.shutdown(reason);
     };
@@ -234,8 +259,11 @@ export default defineAgent({
       step(async () => ({ say: controller.welcomeBack(), end: false, turn: null }));
     });
 
-    const remainingMs = startedAt.getTime() + durationMs - Date.now();
+    const remainingMs = Math.max(0, startedAt.getTime() + durationMs - Date.now());
     timers.timeUp = setTimeout(() => step(() => controller.onTimeUp(), 'time_up'), remainingMs + TIME_UP_GRACE_MS);
+    // Backstop outside the step chain: a hung judge or speech call can't keep
+    // the interview (and this worker) running past the time limit.
+    timers.hardStop = setTimeout(() => finish('time_up'), remainingMs + TIME_UP_GRACE_MS + HARD_STOP_EXTRA_MS);
 
     await session.start({
       agent: new InterviewerAgent({

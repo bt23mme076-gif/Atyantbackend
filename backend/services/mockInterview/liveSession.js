@@ -62,6 +62,14 @@ export async function startLiveInterview(interviewId) {
   return { interview, startedAt, resuming: interview.turns.length > 0 && !!interview.live?.startedAt };
 }
 
+// A fresh interview's clock starts when the candidate is actually in the room,
+// not when the agent was dispatched.
+export async function markLiveStart(interviewId) {
+  const startedAt = new Date();
+  await MockInterview.updateOne({ _id: interviewId }, { $set: { 'live.startedAt': startedAt } });
+  return startedAt;
+}
+
 export function saveTurn(interviewId, turn) {
   return MockInterview.updateOne({ _id: interviewId }, { $push: { turns: turn } });
 }
