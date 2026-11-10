@@ -21,6 +21,7 @@ import mongoose from 'mongoose';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import protect from '../middleware/authMiddleware.js';
+import User from '../models/User.js';
 import HireCompany, { creditsLeft } from '../models/HireCompany.js';
 import HireJob from '../models/HireJob.js';
 import HireApplication from '../models/HireApplication.js';
@@ -90,6 +91,25 @@ function handle(fn) {
   };
 }
 
+// Founder routes are for startup accounts only; student and mentor accounts get
+// NOT_STARTUP. A 'user' account that already created a company (before startup
+// accounts existed) is moved to 'startup' the first time it comes back.
+async function requireStartup(req, res, next) {
+  try {
+    const user = await User.findById(req.user.userId).select('role').lean();
+    if (!user) return fail(res, 401, 'Account not found. Sign in again.');
+    if (user.role === 'startup' || user.role === 'admin') return next();
+    if (user.role === 'user' && await HireCompany.exists({ ownerUserId: req.user.userId })) {
+      await User.updateOne({ _id: req.user.userId }, { $set: { role: 'startup' } });
+      return next();
+    }
+    return fail(res, 403, 'This is a student or mentor account. Atyant Hire needs a separate startup account: sign up with your work email.', { code: 'NOT_STARTUP' });
+  } catch (err) {
+    console.error('Hire requireStartup error:', err);
+    return fail(res, 500, 'Something went wrong. Please try again.');
+  }
+}
+
 // Candidate-facing state, derived from the interview while it is in flight.
 function applicationState(app, interview) {
   if (['completed', 'failed'].includes(app.status)) return app.status;
@@ -150,13 +170,13 @@ const jobView = j => ({
 });
 
 // GET /api/hire/me
-router.get('/me', protect, handle(async (req, res) => {
+router.get('/me', protect, requireStartup, handle(async (req, res) => {
   const company = await ownCompany(req);
   res.json({ ok: true, company: companyView(company) });
 }));
 
 // PUT /api/hire/company   { name, website?, logoUrl?, about?, notifyPhone? }
-router.put('/company', protect, express.json(), handle(async (req, res) => {
+router.put('/company', protect, requireStartup, express.json(), handle(async (req, res) => {
   const name = str(req.body.name, 120);
   if (!name) return fail(res, 400, 'Company name is required');
   const set = {
@@ -176,7 +196,7 @@ router.put('/company', protect, express.json(), handle(async (req, res) => {
 
 // POST /api/hire/jobs   multipart: title, jdText | jdFile, interviewCategory?,
 // mustAsk (JSON array of up to 3 strings)?, maxCandidates?, deadline?, requireCamera?
-router.post('/jobs', protect, single('jdFile'), handle(async (req, res) => {
+router.post('/jobs', protect, requireStartup, single('jdFile'), handle(async (req, res) => {
   const company = await ownCompany(req);
   if (!company) return fail(res, 409, 'Set up your company first');
 
@@ -212,7 +232,7 @@ router.post('/jobs', protect, single('jdFile'), handle(async (req, res) => {
 }));
 
 // GET /api/hire/jobs
-router.get('/jobs', protect, handle(async (req, res) => {
+router.get('/jobs', protect, requireStartup, handle(async (req, res) => {
   const jobs = await HireJob.find({ ownerUserId: req.user.userId })
     .select('-jdText -parsed.log -parsed.jd.companyContext')
     .sort({ createdAt: -1 }).limit(100);
@@ -220,7 +240,7 @@ router.get('/jobs', protect, handle(async (req, res) => {
 }));
 
 // GET /api/hire/jobs/:id
-router.get('/jobs/:id', protect, handle(async (req, res) => {
+router.get('/jobs/:id', protect, requireStartup, handle(async (req, res) => {
   const job = await ownJob(req, res);
   if (!job) return;
   res.json({ ok: true, job: { ...jobView(job), jdText: job.jdText } });
@@ -228,7 +248,7 @@ router.get('/jobs/:id', protect, handle(async (req, res) => {
 
 // PATCH /api/hire/jobs/:id   { title?, status: live|paused|closed?, mustAsk?, maxCandidates?, deadline?, requireCamera? }
 // Changes apply to candidates who apply after the change.
-router.patch('/jobs/:id', protect, express.json(), handle(async (req, res) => {
+router.patch('/jobs/:id', protect, requireStartup, express.json(), handle(async (req, res) => {
   const job = await ownJob(req, res);
   if (!job) return;
   const b = req.body || {};
@@ -261,7 +281,7 @@ router.patch('/jobs/:id', protect, express.json(), handle(async (req, res) => {
 }));
 
 // POST /api/hire/jobs/:id/publish   ready → live
-router.post('/jobs/:id/publish', protect, handle(async (req, res) => {
+router.post('/jobs/:id/publish', protect, requireStartup, handle(async (req, res) => {
   const job = await ownJob(req, res);
   if (!job) return;
   if (job.status === 'parsing') return fail(res, 409, 'Still reading your job description. Try again in a minute.');
@@ -291,7 +311,7 @@ async function withStates(apps) {
 
 // GET /api/hire/jobs/:id/applications?status=&decision=&sort=score|recent
 // Completed candidates ranked by score first, then everyone still in progress.
-router.get('/jobs/:id/applications', protect, handle(async (req, res) => {
+router.get('/jobs/:id/applications', protect, requireStartup, handle(async (req, res) => {
   const job = await ownJob(req, res, '_id');
   if (!job) return;
   const filter = { jobId: job._id };
@@ -311,7 +331,7 @@ router.get('/jobs/:id/applications', protect, handle(async (req, res) => {
 }));
 
 // GET /api/hire/jobs/:id/export.csv
-router.get('/jobs/:id/export.csv', protect, handle(async (req, res) => {
+router.get('/jobs/:id/export.csv', protect, requireStartup, handle(async (req, res) => {
   const job = await ownJob(req, res, '_id title slug');
   if (!job) return;
   const apps = await HireApplication.find({ jobId: job._id }).sort({ 'result.overall': -1, createdAt: -1 }).lean();
@@ -341,7 +361,7 @@ async function ownApplication(req, res) {
 }
 
 // GET /api/hire/applications/:id   full founder report
-router.get('/applications/:id', protect, handle(async (req, res) => {
+router.get('/applications/:id', protect, requireStartup, handle(async (req, res) => {
   const owned = await ownApplication(req, res);
   if (!owned) return;
   const { app, job } = owned;
@@ -379,7 +399,7 @@ router.get('/applications/:id', protect, handle(async (req, res) => {
 }));
 
 // PATCH /api/hire/applications/:id   { decision?: shortlisted|rejected|null, notes? }
-router.patch('/applications/:id', protect, express.json(), handle(async (req, res) => {
+router.patch('/applications/:id', protect, requireStartup, express.json(), handle(async (req, res) => {
   const owned = await ownApplication(req, res);
   if (!owned) return;
   const { app } = owned;
@@ -393,14 +413,14 @@ router.patch('/applications/:id', protect, express.json(), handle(async (req, re
 }));
 
 // POST /api/hire/credits/order   { quantity }
-router.post('/credits/order', protect, express.json(), handle(async (req, res) => {
+router.post('/credits/order', protect, requireStartup, express.json(), handle(async (req, res) => {
   const company = await ownCompany(req);
   if (!company) return fail(res, 409, 'Set up your company first');
   res.json({ ok: true, ...(await createCreditOrder(company, req.body.quantity)) });
 }));
 
 // POST /api/hire/credits/verify   { razorpay_order_id, razorpay_payment_id, razorpay_signature }
-router.post('/credits/verify', protect, express.json(), handle(async (req, res) => {
+router.post('/credits/verify', protect, requireStartup, express.json(), handle(async (req, res) => {
   const company = await ownCompany(req);
   if (!company) return fail(res, 404, 'Company not found');
   await verifyCreditOrder(company, req.body || {});

@@ -371,7 +371,8 @@ const userSchema = new mongoose.Schema({
 
   role: {
     type: String,
-    enum: ['user', 'mentor', 'admin'],
+    // 'startup' = an Atyant Hire company account, kept separate from student ('user') and mentor accounts.
+    enum: ['user', 'mentor', 'admin', 'startup'],
     default: 'user',
     index: true
   },

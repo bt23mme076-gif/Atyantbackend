@@ -519,6 +519,10 @@ const sendWelcomeEmail = (user) => {
 };
 
 // Helper: pick frontend URL based on environment
+// Roles anyone can sign up as. 'admin' is never self-assigned.
+const SIGNUP_ROLES = ['user', 'mentor', 'startup'];
+const signupRole = (role) => (SIGNUP_ROLES.includes(role) ? role : 'user');
+
 const getFrontendUrl = () => {
   if (process.env.NODE_ENV !== 'production' && process.env.LOCAL_FRONTEND_URL) {
     return process.env.LOCAL_FRONTEND_URL;
@@ -589,7 +593,7 @@ router.post('/signup', async (req, res) => {
       email,
       password: hashedPassword,
       phone: cleanPhone,
-      role: role || 'user' // Default to 'user' not 'student'
+      role: signupRole(role)
     });
 
     await newUser.save();
@@ -677,6 +681,13 @@ router.post('/signup-initiate', async (req, res) => {
 
     // Someone already fully signed up with these details — reject as before.
     if (existingUser && existingUser.isVerified) {
+      // Atyant Hire accounts are separate from student and mentor accounts.
+      if (signupRole(role) === 'startup' && existingUser.role !== 'startup' && (existingUser.email === email || existingUser.phone === cleanPhone)) {
+        return res.status(409).json({
+          message: 'This email or mobile number is already a student or mentor account on Atyant. Use your work email and number for Atyant Hire.',
+          code: 'NOT_STARTUP',
+        });
+      }
       if (existingUser.phone === cleanPhone) {
         return res.status(409).json({ message: 'Mobile number already registered' });
       }
@@ -700,7 +711,7 @@ router.post('/signup-initiate', async (req, res) => {
       existingUser.email = email;
       existingUser.password = hashedPassword;
       existingUser.phone = cleanPhone;
-      existingUser.role = role || 'user';
+      existingUser.role = signupRole(role);
       existingUser.signupOTP = otp;
       existingUser.signupOTPExpires = otpExpires;
       await existingUser.save();
@@ -710,7 +721,7 @@ router.post('/signup-initiate', async (req, res) => {
         email,
         password: hashedPassword,
         phone: cleanPhone,
-        role: role || 'user',
+        role: signupRole(role),
         isVerified: false,
         signupOTP: otp,
         signupOTPExpires: otpExpires
@@ -1078,8 +1089,10 @@ router.post('/reset-password', async (req, res) => {
 });
 
 
-router.get('/google',
-  passport.authenticate('google')
+// ?intent=startup comes from Atyant Hire; it travels through Google as `state`
+// so new accounts are created as startups and land back on /hire.
+router.get('/google', (req, res, next) =>
+  passport.authenticate('google', req.query.intent === 'startup' ? { state: 'startup' } : {})(req, res, next)
 );
 
 // OAuth callback
@@ -1103,9 +1116,14 @@ router.get('/google/callback',
         { expiresIn: '7d' }
       );
 
-      // Redirect to frontend with token (frontend lands the user on their profile)
       const frontendUrl = getFrontendUrl();
-      res.redirect(`${frontendUrl}/?token=${token}`);
+      const isStartup = req.user.role === 'startup';
+      // Started from Atyant Hire with a student or mentor account: no Hire sign-in.
+      if (req.query.state === 'startup' && !isStartup && req.user.role !== 'admin') {
+        return res.redirect(`${frontendUrl}/hire?error=account_type`);
+      }
+      // Startup accounts go to Atyant Hire; everyone else to the student app.
+      res.redirect(`${frontendUrl}${isStartup ? '/hire' : '/'}?token=${token}`);
     } catch (error) {
       console.error('OAuth callback error:', error);
       const frontendUrl = getFrontendUrl();

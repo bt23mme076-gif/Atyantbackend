@@ -37,9 +37,10 @@ if (process.env.GOOGLE_CALENDAR_CLIENT_ID &&
           scope: [
             'https://www.googleapis.com/auth/userinfo.profile',
             'https://www.googleapis.com/auth/userinfo.email'
-          ]
+          ],
+          passReqToCallback: true
         },
-        async (accessToken, refreshToken, profile, done) => {
+        async (req, accessToken, refreshToken, profile, done) => {
           try {
             let user = await User.findOne({ googleId: profile.id });
 
@@ -91,7 +92,8 @@ if (process.env.GOOGLE_CALENDAR_CLIENT_ID &&
                   accessToken: accessToken,
                   refreshToken: refreshToken,
                   lastLogin: new Date(),
-                  role: 'user',
+                  // Signed up from Atyant Hire (see GET /api/auth/google)
+                  role: req.query?.state === 'startup' ? 'startup' : 'user',
                   calendarConnected: false,
                   calendarProvider: null
                 });
