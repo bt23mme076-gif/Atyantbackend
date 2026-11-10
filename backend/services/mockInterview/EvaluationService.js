@@ -12,6 +12,7 @@ import { withRateLimitRetry } from './PlannerService.js';
 import { buildAnswerEvalMessages, buildSynthesisMessages, buildSampleRepairMessages } from './evaluationPrompts.js';
 import { retestKey, weakAreas, areaLabel } from './retake.js';
 import { notifyReportReady } from './MockNotify.js';
+import { synthesizeHiring, onHiringEvaluated, onHiringEvaluationFailed } from '../hire/HireEvaluation.js';
 
 const EVAL_MODEL   = process.env.MOCK_EVAL_MODEL || 'openai/gpt-oss-120b';
 // Grading runs at temperature 0, and repeat runs gave identical scores in
@@ -306,6 +307,12 @@ export async function runEvaluation(interview) {
   if (!perAnswer.some(a => a.reached)) throw new Error('no answered questions to evaluate');
   const scores = computeDimensions(interview.plan.questions, perAnswer);
 
+  // Hiring: the founder's verdict replaces the candidate-facing prep path.
+  if (interview.mode === 'hiring') {
+    const hiring = await synthesizeHiring(interview, perAnswer, scores, log, evidenceSupported);
+    return { perAnswer, ...scores, summary: hiring.summary, strengths: [], improvements: [], prepPath: [], hiring, log };
+  }
+
   let synthesis;
   try {
     synthesis = await synthesize(interview, perAnswer, scores, log);
@@ -349,7 +356,12 @@ export async function evaluateInterview(interviewId) {
         'evaluation.completedAt'  : new Date()
       }
     });
-    notifyReportReady(interview, result.overall); // not awaited: WhatsApp must never delay scoring
+    if (interview.mode === 'hiring') {
+      await onHiringEvaluated(interview, result.hiring)
+        .catch(e => console.error(`Hire post-evaluation for ${interviewId} failed:`, e.message));
+    } else {
+      notifyReportReady(interview, result.overall); // not awaited: WhatsApp must never delay scoring
+    }
     return result;
   } catch (err) {
     const outOfAttempts = interview.evaluation.attempts >= MAX_ATTEMPTS;
@@ -359,6 +371,7 @@ export async function evaluateInterview(interviewId) {
         : { 'evaluation.startedAt': null },
       $push: { 'evaluation.log': `attempt ${interview.evaluation.attempts} failed: ${err.message}` }
     });
+    if (outOfAttempts) await onHiringEvaluationFailed(interview).catch(() => {});
     throw err;
   }
 }

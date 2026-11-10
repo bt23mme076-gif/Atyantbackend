@@ -91,6 +91,24 @@ export async function withRateLimitRetry(label, fn, log = [], delaysMs = RETRY_D
 
 // ── Parse ────────────────────────────────────────────────────────────────────
 
+// JD → { meta, jd, dropped }. Shared with Atyant Hire, which parses a job's JD
+// once and reuses it for every candidate.
+export async function parseJd({ jdText, company, role }, log = []) {
+  const jdRaw = await withRateLimitRetry('jd parse', () => groqJSON(
+    buildJdParseMessages({ jdText, company, role, supportedRoleFamilies: SUPPORTED_ROLE_FAMILIES }),
+    { model: PARSER_MODEL, maxTokens: 3000, timeoutMs: 60000 }
+  ), log);
+  const jd = validateJdParse(jdRaw, { jdText, supportedRoleFamilies: SUPPORTED_ROLE_FAMILIES });
+  if (!jd.jd.requiredSkills.length && !jd.jd.niceToHave.length) {
+    // No skills extracted — log it and continue. The planner falls back to a
+    // resume-only interview (same path as "unsupported" role family) rather
+    // than failing the whole interview.
+    log.push(`JD parse: 0 skills extracted (model returned ${(jdRaw?.requiredSkills?.length || 0) + (jdRaw?.niceToHave?.length || 0)}; dropped: ${jd.dropped.slice(0, 5).join(' | ') || 'none'}). Falling back to resume-only interview.`);
+    jd.meta.roleFamily = 'unsupported';
+  }
+  return jd;
+}
+
 export async function parseInterview(interviewId) {
   const interview = await claimStatus(interviewId, 'draft', 'parsing');
   const { jdText, resumeText } = interview.inputs;
@@ -99,19 +117,16 @@ export async function parseInterview(interviewId) {
   try {
     if (!jdText?.trim() || !resumeText?.trim()) throw new Error('JD text and resume text are both required');
 
-    const jdRaw = await withRateLimitRetry('jd parse', () => groqJSON(
-      buildJdParseMessages({ jdText, company: interview.company, role: interview.role, supportedRoleFamilies: SUPPORTED_ROLE_FAMILIES }),
-      { model: PARSER_MODEL, maxTokens: 3000, timeoutMs: 60000 }
-    ), log);
-    const jd = validateJdParse(jdRaw, { jdText, supportedRoleFamilies: SUPPORTED_ROLE_FAMILIES });
+    // Hiring interviews arrive with the job's parsed JD already filled in.
+    const prefilled = interview.mode === 'hiring' && interview.parsed?.jd?.requiredSkills?.length;
+    const jd = prefilled
+      ? {
+        jd     : interview.toObject().parsed.jd,
+        meta   : { company: interview.company, role: interview.role, seniority: interview.seniority, roleFamily: interview.roleFamily },
+        dropped: []
+      }
+      : await parseJd({ jdText, company: interview.company, role: interview.role }, log);
     const jdSkills = [...jd.jd.requiredSkills, ...jd.jd.niceToHave];
-    if (!jdSkills.length) {
-      // No skills extracted — log it and continue. The planner falls back to a
-      // resume-only interview (same path as "unsupported" role family) rather
-      // than failing the whole interview.
-      log.push(`JD parse: 0 skills extracted (model returned ${(jdRaw?.requiredSkills?.length || 0) + (jdRaw?.niceToHave?.length || 0)}; dropped: ${jd.dropped.slice(0, 5).join(' | ') || 'none'}). Falling back to resume-only interview.`);
-      jd.meta.roleFamily = 'unsupported';
-    }
 
     const resumeRaw = await withRateLimitRetry('resume parse', () => groqJSON(
       buildResumeParseMessages({ resumeText, jdSkills }),
@@ -273,6 +288,42 @@ export async function generatePlan(context, log = []) {
   return { result, criticRounds };
 }
 
+// The employer's must-ask questions go right after the intro, so every
+// candidate reaches them before time runs out. The same number of generated
+// questions is dropped (behavioral first, then the last resume/technical
+// ones) to keep the interview inside its 15 minutes.
+const DROP_ORDER = ['behavioral', 'technical', 'resume'];
+
+export function withMustAsk(questions, mustAsk) {
+  if (!mustAsk.length) return questions;
+  const kept = [...questions];
+  for (let n = 0; n < mustAsk.length; n++) {
+    for (const phase of DROP_ORDER) {
+      const idx = kept.map(q => q.phase).lastIndexOf(phase);
+      if (idx !== -1 && kept.filter(q => q.phase === phase).length > 1) { kept.splice(idx, 1); break; }
+    }
+  }
+  const employer = mustAsk.map((m, i) => ({
+    qid           : `m${i + 1}`,
+    order         : 0,
+    phase         : 'behavioral',
+    source        : 'employer',
+    ref           : { type: 'employer', id: `m${i + 1}` },
+    topic         : m.topic || 'Employer question',
+    intent        : m.intent || 'Asked by the hiring team',
+    difficulty    : 3,
+    text          : m.text,
+    expectedPoints: m.expectedPoints?.length
+      ? m.expectedPoints
+      : [{ id: 'p1', point: 'Gives a specific, relevant answer backed by a concrete example', weight: 1 }],
+    followUps     : m.followUps || {},
+    maxFollowUps  : 1
+  }));
+  const introEnd = kept.findIndex(q => q.phase !== 'intro');
+  const at = introEnd === -1 ? kept.length : introEnd;
+  return [...kept.slice(0, at), ...employer, ...kept.slice(at)].map((q, i) => ({ ...q, order: i + 1 }));
+}
+
 export async function planInterview(interviewId) {
   const interview = await claimStatus(interviewId, 'parsed', 'planning');
   const log = [];
@@ -296,7 +347,9 @@ export async function planInterview(interviewId) {
     const { result, criticRounds } = await generatePlan(context, log);
 
     // Spoken interview only: no runnable code/SQL exercises are injected.
-    const questions = result.questions;
+    const questions = interview.mode === 'hiring'
+      ? withMustAsk(result.questions, interview.hire?.mustAsk || [])
+      : result.questions;
 
     interview.plan = {
       questions,

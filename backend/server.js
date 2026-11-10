@@ -58,6 +58,7 @@ import livekitRoutes from './routes/livekitRoutes.js';
 import tpoRoutes from './routes/tpoRoutes.js';
 import jobRoutes from './routes/jobRoutes.js';
 import mockInterviewRoutes from './routes/mockInterviewRoutes.js';
+import hireRoutes from './routes/hireRoutes.js';
 import emailRoutes from './routes/emailRoutes.js';
 import inboundRoutes from './routes/inboundRoutes.js';
 import reviewRoutes from './routes/reviewRoutes.js';
@@ -286,6 +287,7 @@ app.use('/api/livekit', livekitRoutes);   // in-house meet: join token + webhook
 app.use('/api/tpo', tpoRoutes);           // TPO dashboard — VNIT T&P cell
 app.use('/api/jobs', jobRoutes);          // job aggregation — Greenhouse/Lever adapters
 app.use('/api/mock-interviews', mockInterviewRoutes); // AI mock interview: join + agent dispatch
+app.use('/api/hire', hireRoutes);          // Atyant Hire: startup posts JD, candidates take AI screening interview
 app.use('/api/email/inbound', inboundRoutes); // Resend inbound webhook (raw body)
 app.use('/api/email', emailRoutes);        // lifecycle email: page-view beacon + unsubscribe
 app.use('/api/reviews', reviewRoutes);    // ratings: platform feedback + mock interview / session reviews

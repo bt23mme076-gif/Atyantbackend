@@ -10,6 +10,7 @@ import { sendServicePurchaseNotification } from '../utils/emailNotifications.js'
 import { getService } from '../config/serviceCatalog.js';
 import { meetLinkFor } from '../utils/frontendUrl.js';
 import { confirmFromWebhook as confirmMockReportFromWebhook } from '../services/mockInterview/MockPaymentService.js';
+import { confirmHireFromWebhook } from '../services/hire/HirePaymentService.js';
 import { trackEvent } from '../services/email/EmailPipeline.js';
 import { logFunnel } from '../utils/funnel.js';
 import { fetchSubscriptionOrder, activateSubscription } from '../services/SubscriptionService.js';
@@ -387,6 +388,8 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
       // Not a mentor session: it may be a mock interview report unlock.
       if (!session && await confirmMockReportFromWebhook(entity.order_id, entity.id)) {
         console.log(`✅ Webhook confirmed mock interview report order ${entity.order_id}`);
+      } else if (!session && await confirmHireFromWebhook(entity.order_id, entity.id)) {
+        console.log(`✅ Webhook confirmed Atyant Hire credit order ${entity.order_id}`);
       } else if (!session) {
         // Or a Clarity/Pro purchase whose tab closed before /subscriptions/verify ran.
         const sub = await fetchSubscriptionOrder(entity.order_id).catch(() => null);

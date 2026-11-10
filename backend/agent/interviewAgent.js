@@ -19,7 +19,7 @@ import { InterviewController } from '../services/mockInterview/InterviewControll
 import {
   judge, sttPrompt, resumeIndex, startLiveInterview, saveTurn, endLiveInterview
 } from '../services/mockInterview/liveSession.js';
-import { MOCK_AGENT_NAME, INTERVIEW_DURATION_MS } from '../services/mockInterview/liveConfig.js';
+import { MOCK_AGENT_NAME, INTERVIEW_DURATION_MS, hireParticipantIdentity } from '../services/mockInterview/liveConfig.js';
 import { createGroqSTT, createInterviewTTS } from './groqAudio.js';
 
 const SILENCE_MS      = 30 * 1000;       // no speech after the interviewer finishes
@@ -78,16 +78,17 @@ export default defineAgent({
     const durationMs = INTERVIEW_DURATION_MS;
 
     const roomName = ctx.job.room?.name;
-    const studentId = String(interview.userId);
+    const hiring = interview.mode === 'hiring';
+    const studentId = hiring ? hireParticipantIdentity(interview.hire.applicationId) : String(interview.userId);
     await ctx.connect();
     await ctx.waitForParticipant(studentId);
 
-    const user = await User.findById(interview.userId).select('name username').lean();
+    const user = hiring ? null : await User.findById(interview.userId).select('name username').lean();
     const controller = new InterviewController({
       questions,
       judge,
       seniority    : interview.seniority,
-      candidateName: user?.name || '',
+      candidateName: hiring ? interview.hire.candidateName : user?.name || '',
       role         : interview.role,
       company      : interview.company,
       durationMs

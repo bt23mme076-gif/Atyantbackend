@@ -91,7 +91,7 @@ export async function grantFreeReport(interviewId) {
 
 async function loadOwned(interviewId, userId, fields) {
   const interview = await MockInterview.findById(interviewId).select(fields).lean();
-  if (!interview || interview.userId.toString() !== String(userId)) throw new PaymentError(404, 'Interview not found');
+  if (!interview || interview.userId?.toString() !== String(userId)) throw new PaymentError(404, 'Interview not found');
   return interview;
 }
 

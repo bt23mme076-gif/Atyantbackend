@@ -108,7 +108,7 @@ let statsCache = { at: 0, value: null };
 router.get('/stats', async (req, res) => {
   try {
     if (!statsCache.value || Date.now() - statsCache.at > 10 * 60 * 1000) {
-      const taken = { status: { $in: ['evaluating', 'completed'] } };
+      const taken = { status: { $in: ['evaluating', 'completed'] }, mode: { $ne: 'hiring' } };
       const [interviews, userIds] = await Promise.all([
         MockInterview.countDocuments(taken),
         MockInterview.distinct('userId', taken),
@@ -204,7 +204,7 @@ router.post('/:id/retake', protect, async (req, res) => {
     const parent = await MockInterview.findById(req.params.id)
       .select('userId status company role roleFamily interviewCategory seniority inputs parsed rootInterviewId')
       .lean();
-    if (!parent || parent.userId.toString() !== userId) {
+    if (!parent || parent.userId?.toString() !== userId) {
       return res.status(404).json({ ok: false, error: 'Interview not found' });
     }
     if (parent.status !== 'completed') {
@@ -251,7 +251,7 @@ router.post('/:id/retake', protect, async (req, res) => {
 
 async function ownedLiveInterview(req, res) {
   const interview = await MockInterview.findById(req.params.id).select('userId status').lean();
-  if (!interview || interview.userId.toString() !== req.user.userId) {
+  if (!interview || interview.userId?.toString() !== req.user.userId) {
     res.status(404).json({ ok: false, error: 'Interview not found' });
     return null;
   }
@@ -382,7 +382,7 @@ router.get('/:id', protect, async (req, res) => {
     const interview = await MockInterview.findById(req.params.id)
       .select('userId company role roleFamily seniority status failureReason blueprint attempt parentInterviewId prepAttempts access entryPayment createdAt plan.questions.phase')
       .lean();
-    if (!interview || interview.userId.toString() !== req.user.userId) {
+    if (!interview || interview.userId?.toString() !== req.user.userId) {
       return res.status(404).json({ ok: false, error: 'Interview not found' });
     }
     res.json({
@@ -424,7 +424,7 @@ router.post('/:id/prepare', protect, async (req, res) => {
     const interview = await MockInterview.findById(req.params.id)
       .select('userId status failureReason prepAttempts updatedAt parsed.resume.claims')
       .lean();
-    if (!interview || interview.userId.toString() !== req.user.userId) {
+    if (!interview || interview.userId?.toString() !== req.user.userId) {
       return res.status(404).json({ ok: false, error: 'Interview not found' });
     }
 
@@ -474,7 +474,7 @@ router.post('/:id/join', protect, async (req, res) => {
 
     const userId = req.user.userId;
     const interview = await MockInterview.findById(req.params.id).select('userId status entryPayment').lean();
-    if (!interview || interview.userId.toString() !== userId) {
+    if (!interview || interview.userId?.toString() !== userId) {
       return res.status(404).json({ ok: false, error: 'Interview not found' });
     }
     if (!['planned', 'live'].includes(interview.status)) {
@@ -521,7 +521,7 @@ router.post('/:id/join', protect, async (req, res) => {
 router.get('/:id/report', protect, async (req, res) => {
   try {
     const interview = await MockInterview.findById(req.params.id).lean();
-    if (!interview || interview.userId.toString() !== req.user.userId) {
+    if (!interview || interview.userId?.toString() !== req.user.userId) {
       return res.status(404).json({ ok: false, error: 'Interview not found' });
     }
     if (interview.status === 'evaluating') {

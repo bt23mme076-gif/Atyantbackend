@@ -54,9 +54,9 @@ const plannedQuestionSchema = new Schema({
   // Set by planValidator from ref.type, never taken from LLM output. 'coding'
   // and 'sql_exercise' are injected in code from a curated bank (PlannerService),
   // never produced by the planner LLM.
-  source: { type: String, enum: ['bank', 'resume', 'jd', 'core', 'coding', 'sql_exercise'], required: true },
+  source: { type: String, enum: ['bank', 'resume', 'jd', 'core', 'coding', 'sql_exercise', 'employer'], required: true },
   ref   : {
-    type: { type: String, enum: ['bank', 'claim', 'jd_skill', 'core', 'coding', 'sql_exercise'], required: true },
+    type: { type: String, enum: ['bank', 'claim', 'jd_skill', 'core', 'coding', 'sql_exercise', 'employer'], required: true },
     id  : { type: String, required: true }
   },
   bankEntryId      : { type: Schema.Types.ObjectId, ref: 'InterviewBankEntry', default: null },
@@ -111,7 +111,16 @@ const answerEvalSchema = new Schema({
 
 const mockInterviewSchema = new Schema({
 
-  userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  // 'hiring' interviews belong to a HireApplication: the candidate has no
+  // account, so there is no userId and the agent waits for `cand_<applicationId>`.
+  mode: { type: String, enum: ['mock', 'hiring'], default: 'mock', index: true },
+  userId: { type: Schema.Types.ObjectId, ref: 'User', required: function () { return this.mode !== 'hiring'; }, index: true },
+  hire: {
+    jobId        : { type: Schema.Types.ObjectId, ref: 'HireJob', default: null },
+    applicationId: { type: Schema.Types.ObjectId, ref: 'HireApplication', default: null },
+    candidateName: { type: String, default: '' },
+    mustAsk      : { type: Array, default: [] }
+  },
 
   status: {
     type   : String,
@@ -222,7 +231,9 @@ const mockInterviewSchema = new Schema({
       resumeCredibility: { type: Number, default: null },
       behavioral       : { type: Number, default: null },
       communication    : { type: Number, default: null },
-      confidence       : { type: Number, default: null }
+      confidence       : { type: Number, default: null },
+      problemSolving   : { type: Number, default: null },
+      starCompleteness : { type: Number, default: null }
     },
     overall     : { type: Number, default: null },
     summary     : { type: String, default: '' },

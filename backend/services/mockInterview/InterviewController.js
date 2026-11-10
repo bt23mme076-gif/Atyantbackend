@@ -275,8 +275,10 @@ export class InterviewController {
     // Behind schedule after digging: drop later questions of a phase that still has
     // another question left, so every phase is still covered and the close isn't rushed.
     let next = this.index + 1;
+    // Employer must-ask questions (hiring interviews) are never dropped.
     while (next < this.questions.length - 1
       && remaining / (this.questions.length - next) < MIN_PER_QUESTION_MS
+      && this.questions[next].source !== 'employer'
       && this.questions[next + 1].phase === this.questions[next].phase) next++;
     return next;
   }
