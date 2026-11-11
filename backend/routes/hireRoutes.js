@@ -14,7 +14,6 @@
 //   GET    /jobs/:id/export.csv
 //   GET    /applications/:id
 //   PATCH  /applications/:id
-//   POST   /credits/order · /credits/verify
 import express from 'express';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
@@ -22,7 +21,7 @@ import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import protect from '../middleware/authMiddleware.js';
 import User from '../models/User.js';
-import HireCompany, { creditsLeft } from '../models/HireCompany.js';
+import HireCompany from '../models/HireCompany.js';
 import HireJob from '../models/HireJob.js';
 import HireApplication from '../models/HireApplication.js';
 import MockInterview from '../models/MockInterview.js';
@@ -30,7 +29,6 @@ import liveKitService from '../services/LiveKitService.js';
 import { MOCK_AGENT_NAME, mockRoomName, hireParticipantIdentity } from '../services/mockInterview/liveConfig.js';
 import { pdfToText, normalizeDocText } from '../services/mockInterview/documentText.js';
 import { makeSlug, prepareJob, expandMustAsk, openCandidateInterview, runCandidatePrep, MAX_MUST_ASK } from '../services/hire/HireJobService.js';
-import { createCreditOrder, verifyCreditOrder, HIRE_PRICE_INR, MIN_PACK } from '../services/hire/HirePaymentService.js';
 import { publicJobLink } from '../services/hire/HireNotify.js';
 
 const router = express.Router();
@@ -127,7 +125,6 @@ function acceptingCandidates(job, company) {
   if (job.status !== 'live') return { ok: false, reason: 'This role is not accepting interviews right now.' };
   if (job.settings.deadline && job.settings.deadline < new Date()) return { ok: false, reason: 'Applications for this role have closed.' };
   if (job.stats.applied >= job.settings.maxCandidates) return { ok: false, reason: 'This role has reached its application limit.' };
-  if (creditsLeft(company) <= 0) return { ok: false, reason: 'This role is temporarily not accepting interviews. Please check back later.' };
   return { ok: true };
 }
 
@@ -146,9 +143,7 @@ async function ownJob(req, res, select) {
 }
 
 const companyView = c => c && ({
-  id: c._id, name: c.name, website: c.website, logoUrl: c.logoUrl, about: c.about, notifyPhone: c.notifyPhone,
-  credits: { free: c.credits.free, purchased: c.credits.purchased, used: c.credits.used, left: creditsLeft(c) },
-  pricing: { perInterview: HIRE_PRICE_INR, minPack: MIN_PACK }
+  id: c._id, name: c.name, website: c.website, logoUrl: c.logoUrl, about: c.about, notifyPhone: c.notifyPhone
 });
 
 const jobView = j => ({
@@ -412,21 +407,6 @@ router.patch('/applications/:id', protect, requireStartup, express.json(), handl
   res.json({ ok: true, decision: app.decision, notes: app.notes });
 }));
 
-// POST /api/hire/credits/order   { quantity }
-router.post('/credits/order', protect, requireStartup, express.json(), handle(async (req, res) => {
-  const company = await ownCompany(req);
-  if (!company) return fail(res, 409, 'Set up your company first');
-  res.json({ ok: true, ...(await createCreditOrder(company, req.body.quantity)) });
-}));
-
-// POST /api/hire/credits/verify   { razorpay_order_id, razorpay_payment_id, razorpay_signature }
-router.post('/credits/verify', protect, requireStartup, express.json(), handle(async (req, res) => {
-  const company = await ownCompany(req);
-  if (!company) return fail(res, 404, 'Company not found');
-  await verifyCreditOrder(company, req.body || {});
-  res.json({ ok: true, company: companyView(await ownCompany(req)) });
-}));
-
 // ══ Candidate (public) ══════════════════════════════════════════════════════
 
 async function liveJobBySlug(slug) {
@@ -614,8 +594,6 @@ router.post('/a/:token/join', handle(async (req, res) => {
 
   const rejoin = interview.status === 'live' || !!interview.live?.startedAt;
   if (!rejoin) {
-    const company = await HireCompany.findById(job.companyId).select('credits').lean();
-    if (creditsLeft(company) <= 0) return fail(res, 409, 'This role is temporarily not accepting interviews. Please try again later.');
     if (await liveInterviewCount() >= MAX_CONCURRENT) {
       return fail(res, 503, 'All interviewers are busy right now. Please try again in a few minutes.', { code: 'SLOTS_FULL', retryAfterSec: 120 });
     }

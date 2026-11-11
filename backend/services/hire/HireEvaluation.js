@@ -2,7 +2,6 @@
 // tells the founder. Per-question scoring is shared with mock interviews
 // (EvaluationService); only the synthesis and what happens after differ.
 import HireApplication from '../../models/HireApplication.js';
-import HireCompany from '../../models/HireCompany.js';
 import HireJob from '../../models/HireJob.js';
 import { groqJSON } from '../../utils/groqClient.js';
 import { withRateLimitRetry } from '../mockInterview/PlannerService.js';
@@ -13,8 +12,6 @@ const EVAL_MODEL = process.env.MOCK_EVAL_MODEL || 'openai/gpt-oss-120b';
 const VERDICTS = ['no', 'maybe', 'yes', 'strong_yes'];
 // The model's verdict can't be better than the scores support.
 const verdictCap = overall => (overall >= 75 ? 'strong_yes' : overall >= 60 ? 'yes' : overall >= 40 ? 'maybe' : 'no');
-// A candidate who reached under half the questions is not billed.
-const BILLABLE_COVERAGE = 0.5;
 const MAX_ANSWER_CHARS = 900;
 
 const clean = s => (typeof s === 'string' ? s.replace(/[‐‑]/g, '-').trim() : '');
@@ -115,12 +112,10 @@ export async function synthesizeHiring(interview, perAnswer, scores, log, eviden
 }
 
 // After a hiring interview is scored: store the result on the application,
-// bill the company once, and notify the founder.
+// and notify the founder.
 export async function onHiringEvaluated(interview, hiring) {
   const applicationId = interview.hire?.applicationId;
   if (!applicationId) return;
-  const billable = (hiring.coveragePct ?? 0) >= BILLABLE_COVERAGE * 100;
-
   const app = await HireApplication.findOneAndUpdate(
     { _id: applicationId },
     { $set: { status: 'completed', result: { ...hiring, completedAt: new Date() } } },
@@ -128,11 +123,6 @@ export async function onHiringEvaluated(interview, hiring) {
   );
   if (!app) return;
 
-  // Bill exactly once even if evaluation is retried.
-  if (billable) {
-    const claimed = await HireApplication.updateOne({ _id: app._id, billed: false }, { $set: { billed: true } });
-    if (claimed.modifiedCount) await HireCompany.updateOne({ _id: app.companyId }, { $inc: { 'credits.used': 1 } });
-  }
   await HireJob.updateOne({ _id: app.jobId }, { $inc: { 'stats.completed': 1 } });
   notifyFounderReportReady(app); // not awaited: never delays evaluation
 }

@@ -91,7 +91,7 @@ export async function openCandidateInterview({ job, company, application, resume
       candidateName: application.candidate.name,
       mustAsk      : job.settings.mustAsk
     },
-    // Paid by the company's credits, not by the candidate.
+    // Hire is free: nothing is charged to the candidate or the company.
     entryPayment: { status: 'paid', waived: true, amount: 0, paidAt: new Date(), reportIncluded: true },
     access      : { plan: 'paid', unlockedAt: new Date() },
     prepAttempts: 1

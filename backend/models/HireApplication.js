@@ -50,8 +50,7 @@ const hireApplicationSchema = new Schema({
     claims      : [{ claim: String, outcome: String, score: Number, _id: false }],
     nextRoundQuestions: [{ type: String }],
     completedAt : { type: Date, default: null }
-  },
-  billed: { type: Boolean, default: false }
+  }
 }, { timestamps: true });
 
 hireApplicationSchema.index({ jobId: 1, 'candidate.email': 1 }, { unique: true });
