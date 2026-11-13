@@ -119,7 +119,10 @@ const mockInterviewSchema = new Schema({
     jobId        : { type: Schema.Types.ObjectId, ref: 'HireJob', default: null },
     applicationId: { type: Schema.Types.ObjectId, ref: 'HireApplication', default: null },
     candidateName: { type: String, default: '' },
-    mustAsk      : { type: Array, default: [] }
+    mustAsk      : { type: Array, default: [] },
+    // Copied from the job when the candidate applies; null = the 15-minute default.
+    durationMin  : { type: Number, default: null },
+    questionCount: { type: Number, default: null }
   },
 
   status: {

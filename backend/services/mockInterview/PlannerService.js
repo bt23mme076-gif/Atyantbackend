@@ -13,7 +13,7 @@ import { groqJSON } from '../../utils/groqClient.js';
 import { SUPPORTED_ROLE_FAMILIES, CORE_TOPICS, getRoleFamilySheet } from '../../config/mockInterviewTopics.js';
 import { buildJdParseMessages, buildResumeParseMessages } from './parserPrompts.js';
 import { validateJdParse, validateResumeParse } from './parseValidator.js';
-import { buildPlannerInput, buildPlannerMessages, buildCriticMessages, buildReviseMessages, mergeRevision } from './plannerPrompts.js';
+import { buildPlannerInput, hiringComposition, buildPlannerMessages, buildCriticMessages, buildReviseMessages, mergeRevision } from './plannerPrompts.js';
 import { validatePlan } from './planValidator.js';
 import { weakAreas } from './retake.js';
 
@@ -294,10 +294,12 @@ export async function generatePlan(context, log = []) {
 // ones) to keep the interview inside its 15 minutes.
 const DROP_ORDER = ['behavioral', 'technical', 'resume'];
 
-export function withMustAsk(questions, mustAsk) {
+// With a founder-chosen question count the plan already leaves room for them
+// (`drop: false`).
+export function withMustAsk(questions, mustAsk, { drop = true } = {}) {
   if (!mustAsk.length) return questions;
   const kept = [...questions];
-  for (let n = 0; n < mustAsk.length; n++) {
+  for (let n = 0; drop && n < mustAsk.length; n++) {
     for (const phase of DROP_ORDER) {
       const idx = kept.map(q => q.phase).lastIndexOf(phase);
       if (idx !== -1 && kept.filter(q => q.phase === phase).length > 1) { kept.splice(idx, 1); break; }
@@ -331,6 +333,8 @@ export async function planInterview(interviewId) {
   try {
     const bankCandidates = await loadBankCandidates(interview);
     const retake = await loadRetake(interview);
+    const mustAsk = interview.hire?.mustAsk || [];
+    const fixedCount = interview.mode === 'hiring' && interview.hire?.questionCount;
 
     const plannerInput = buildPlannerInput({
       interview,
@@ -338,7 +342,10 @@ export async function planInterview(interviewId) {
       coreTopics: CORE_TOPICS,
       bankCandidates,
       bankSlots: 0,
-      retake
+      retake,
+      composition: fixedCount
+        ? hiringComposition(fixedCount, mustAsk.length, interview.roleFamily, interview.parsed.resume.claims.length)
+        : null
     });
     const { technical, behavioral } = plannerInput.interview.perPhase;
     plannerInput.bank.bankSlots = Math.min(bankCandidates.length, Math.floor((technical + behavioral) / 2));
@@ -348,7 +355,7 @@ export async function planInterview(interviewId) {
 
     // Spoken interview only: no runnable code/SQL exercises are injected.
     const questions = interview.mode === 'hiring'
-      ? withMustAsk(result.questions, interview.hire?.mustAsk || [])
+      ? withMustAsk(result.questions, mustAsk, { drop: !fixedCount })
       : result.questions;
 
     interview.plan = {

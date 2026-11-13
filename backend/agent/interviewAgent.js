@@ -88,10 +88,11 @@ export default defineAgent({
     const { interview, resuming } = started;
     let { startedAt } = started;
     const questions = interview.plan.questions;
-    const durationMs = INTERVIEW_DURATION_MS;
+    const hiring = interview.mode === 'hiring';
+    // Hiring interviews run for the founder-chosen length (5-15 min).
+    const durationMs = hiring && interview.hire?.durationMin ? interview.hire.durationMin * 60 * 1000 : INTERVIEW_DURATION_MS;
 
     const roomName = ctx.job.room?.name;
-    const hiring = interview.mode === 'hiring';
     const studentId = hiring ? hireParticipantIdentity(interview.hire.applicationId) : String(interview.userId);
     await ctx.connect();
     // The candidate may never arrive (e.g. closed the tab during the network
@@ -105,7 +106,7 @@ export default defineAgent({
       ctx.shutdown('candidate never joined');
       return;
     }
-    // A fresh interview's 15 minutes run from when the candidate is in the room.
+    // A fresh interview's clock runs from when the candidate is in the room.
     if (!resuming) startedAt = await markLiveStart(interviewId);
 
     const user = hiring ? null : await User.findById(interview.userId).select('name username').lean();

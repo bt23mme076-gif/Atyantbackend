@@ -89,7 +89,9 @@ export async function openCandidateInterview({ job, company, application, resume
       jobId        : job._id,
       applicationId: application._id,
       candidateName: application.candidate.name,
-      mustAsk      : job.settings.mustAsk
+      mustAsk      : job.settings.mustAsk,
+      durationMin  : job.settings.durationMin || 15,
+      questionCount: job.settings.questionCount || null
     },
     // Hire is free: nothing is charged to the candidate or the company.
     entryPayment: { status: 'paid', waived: true, amount: 0, paidAt: new Date(), reportIncluded: true },

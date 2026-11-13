@@ -9,11 +9,13 @@
 //   GET    /jobs                        POST /a/:token/prepare     retry failed prep
 //   GET    /jobs/:id                    POST /a/:token/join        LiveKit token
 //   PATCH  /jobs/:id                    POST /a/:token/integrity   tab switch etc.
+//   DELETE /jobs/:id
 //   POST   /jobs/:id/publish
 //   GET    /jobs/:id/applications
 //   GET    /jobs/:id/export.csv
 //   GET    /applications/:id
 //   PATCH  /applications/:id
+//   DELETE /applications/:id
 import express from 'express';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
@@ -43,6 +45,8 @@ const DISPATCH_RETRY_MS = 60 * 1000;
 const MAX_PREP_ATTEMPTS = 3;
 const STUCK_PREP_MS    = 5 * 60 * 1000;
 const CATEGORIES = ['tech', 'analytics', 'core', 'business', 'product', 'hr'];
+const MIN_DURATION = 5, MAX_DURATION = 15;
+const MIN_QUESTIONS = 3, MAX_QUESTIONS = 10;
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -121,6 +125,36 @@ function applicationState(app, interview) {
   }
 }
 
+const badRequest = message => Object.assign(new Error(message), { status: 400 });
+const given = v => v !== undefined && v !== null && v !== '';
+const maxQuestionsFor = durationMin => Math.min(MAX_QUESTIONS, durationMin);
+const defaultQuestionsFor = durationMin => Math.min(maxQuestionsFor(durationMin), Math.max(MIN_QUESTIONS, Math.round(durationMin * 2 / 3)));
+
+// Founder-chosen interview length: 5-15 minutes and 3-10 questions (about a
+// minute per question at least). Questions include the intro and must-ask
+// ones; every must-ask leaves room for the intro and one generated question.
+// Changing only the duration keeps the question count, trimmed to fit.
+function interviewLength(body, current, mustAskCount) {
+  const durationMin = given(body.durationMin) ? Math.round(Number(body.durationMin)) : current.durationMin;
+  if (!(durationMin >= MIN_DURATION && durationMin <= MAX_DURATION)) {
+    throw badRequest(`Interview length must be ${MIN_DURATION} to ${MAX_DURATION} minutes`);
+  }
+  const max = maxQuestionsFor(durationMin);
+  let questionCount;
+  if (given(body.questionCount)) {
+    questionCount = Math.round(Number(body.questionCount));
+    if (!(questionCount >= MIN_QUESTIONS && questionCount <= max)) {
+      throw badRequest(`A ${durationMin}-minute interview can have ${MIN_QUESTIONS} to ${max} questions`);
+    }
+  } else {
+    questionCount = Math.min(max, current.questionCount ?? defaultQuestionsFor(durationMin));
+  }
+  if (mustAskCount > questionCount - 2) {
+    throw badRequest(`With ${questionCount} questions you can add up to ${Math.max(0, questionCount - 2)} must-ask questions`);
+  }
+  return { durationMin, questionCount };
+}
+
 function acceptingCandidates(job, company) {
   if (job.status !== 'live') return { ok: false, reason: 'This role is not accepting interviews right now.' };
   if (job.settings.deadline && job.settings.deadline < new Date()) return { ok: false, reason: 'Applications for this role have closed.' };
@@ -159,7 +193,9 @@ const jobView = j => ({
     mustAsk      : (j.settings.mustAsk || []).map(m => m.text),
     maxCandidates: j.settings.maxCandidates,
     deadline     : j.settings.deadline,
-    requireCamera: j.settings.requireCamera
+    requireCamera: j.settings.requireCamera,
+    durationMin  : j.settings.durationMin ?? 15,
+    questionCount: j.settings.questionCount ?? 10
   },
   stats: j.stats, publishedAt: j.publishedAt, createdAt: j.createdAt
 });
@@ -190,7 +226,8 @@ router.put('/company', protect, requireStartup, express.json(), handle(async (re
 }));
 
 // POST /api/hire/jobs   multipart: title, jdText | jdFile, interviewCategory?,
-// mustAsk (JSON array of up to 3 strings)?, maxCandidates?, deadline?, requireCamera?
+// mustAsk (JSON array of up to 3 strings)?, maxCandidates?, deadline?, requireCamera?,
+// durationMin (5-15, default 15)?, questionCount (3-10, default from duration)?
 router.post('/jobs', protect, requireStartup, single('jdFile'), handle(async (req, res) => {
   const company = await ownCompany(req);
   if (!company) return fail(res, 409, 'Set up your company first');
@@ -208,6 +245,8 @@ router.post('/jobs', protect, requireStartup, single('jdFile'), handle(async (re
   let mustAsk = [];
   try { mustAsk = JSON.parse(req.body.mustAsk || '[]'); } catch { return fail(res, 400, 'mustAsk must be a JSON array'); }
   if (!Array.isArray(mustAsk) || mustAsk.length > MAX_MUST_ASK) return fail(res, 400, `Add up to ${MAX_MUST_ASK} must-ask questions`);
+  const mustAskCount = mustAsk.filter(t => str(t, 400)).length;
+  const length = interviewLength(req.body, { durationMin: MAX_DURATION }, mustAskCount);
 
   const job = await HireJob.create({
     companyId: company._id,
@@ -219,7 +258,8 @@ router.post('/jobs', protect, requireStartup, single('jdFile'), handle(async (re
     settings: {
       maxCandidates: Math.min(5000, Math.max(1, Number(req.body.maxCandidates) || 200)),
       deadline     : req.body.deadline && !isNaN(Date.parse(req.body.deadline)) ? new Date(req.body.deadline) : null,
-      requireCamera: req.body.requireCamera !== 'false'
+      requireCamera: req.body.requireCamera !== 'false',
+      ...length
     }
   });
   prepareJob(job._id, mustAsk);
@@ -241,7 +281,8 @@ router.get('/jobs/:id', protect, requireStartup, handle(async (req, res) => {
   res.json({ ok: true, job: { ...jobView(job), jdText: job.jdText } });
 }));
 
-// PATCH /api/hire/jobs/:id   { title?, status: live|paused|closed?, mustAsk?, maxCandidates?, deadline?, requireCamera? }
+// PATCH /api/hire/jobs/:id   { title?, status: live|paused|closed?, mustAsk?, maxCandidates?, deadline?, requireCamera?,
+//                              durationMin?, questionCount? }
 // Changes apply to candidates who apply after the change.
 router.patch('/jobs/:id', protect, requireStartup, express.json(), handle(async (req, res) => {
   const job = await ownJob(req, res);
@@ -259,10 +300,20 @@ router.patch('/jobs/:id', protect, requireStartup, express.json(), handle(async 
     job.status = b.status;
     if (b.status === 'live' && !job.publishedAt) job.publishedAt = new Date();
   }
-  if (b.mustAsk !== undefined) {
-    if (!Array.isArray(b.mustAsk) || b.mustAsk.length > MAX_MUST_ASK) return fail(res, 400, `Add up to ${MAX_MUST_ASK} must-ask questions`);
+  if (b.mustAsk !== undefined && (!Array.isArray(b.mustAsk) || b.mustAsk.length > MAX_MUST_ASK)) {
+    return fail(res, 400, `Add up to ${MAX_MUST_ASK} must-ask questions`);
+  }
+  const nextMustAsk = b.mustAsk !== undefined ? b.mustAsk.map(t => str(t, 400)).filter(Boolean) : null;
+  const length = interviewLength(b, {
+    durationMin  : job.settings.durationMin ?? MAX_DURATION,
+    questionCount: job.settings.questionCount ?? MAX_QUESTIONS
+  }, nextMustAsk ? nextMustAsk.length : job.settings.mustAsk.length);
+  job.settings.durationMin = length.durationMin;
+  job.settings.questionCount = length.questionCount;
+
+  if (nextMustAsk) {
     const current = job.settings.mustAsk.map(m => m.text);
-    const next = b.mustAsk.map(t => str(t, 400)).filter(Boolean);
+    const next = nextMustAsk;
     if (JSON.stringify(current) !== JSON.stringify(next)) {
       job.settings.mustAsk = await expandMustAsk(next, { role: job.title, seniority: job.parsed?.seniority });
     }
@@ -273,6 +324,25 @@ router.patch('/jobs/:id', protect, requireStartup, express.json(), handle(async 
 
   await job.save();
   res.json({ ok: true, job: jobView(job) });
+}));
+
+// DELETE /api/hire/jobs/:id   removes the job, every candidate and their
+// interviews and reports. The job is closed first so nobody new can join; if a
+// candidate is mid-interview, the delete is refused until they finish.
+router.delete('/jobs/:id', protect, requireStartup, handle(async (req, res) => {
+  const job = await ownJob(req, res, '_id status');
+  if (!job) return;
+  if (job.status !== 'closed') await HireJob.updateOne({ _id: job._id }, { $set: { status: 'closed' } });
+
+  const apps = await HireApplication.find({ jobId: job._id }).select('interviewId').lean();
+  const interviewIds = apps.map(a => a.interviewId).filter(Boolean);
+  if (await MockInterview.exists({ _id: { $in: interviewIds }, ...inInterviewNow() })) {
+    return fail(res, 409, 'A candidate is in their interview right now. We closed the job so no one new can start. Delete it again once they finish.', { code: 'INTERVIEW_LIVE' });
+  }
+  await MockInterview.deleteMany({ _id: { $in: interviewIds }, mode: 'hiring' });
+  await HireApplication.deleteMany({ jobId: job._id });
+  await HireJob.deleteOne({ _id: job._id });
+  res.json({ ok: true, deletedCandidates: apps.length });
 }));
 
 // POST /api/hire/jobs/:id/publish   ready → live
@@ -407,6 +477,25 @@ router.patch('/applications/:id', protect, requireStartup, express.json(), handl
   res.json({ ok: true, decision: app.decision, notes: app.notes });
 }));
 
+// DELETE /api/hire/applications/:id   removes the candidate, their interview and
+// report. Frees their slot, so the same email/phone can apply again.
+router.delete('/applications/:id', protect, requireStartup, handle(async (req, res) => {
+  const owned = await ownApplication(req, res);
+  if (!owned) return;
+  const { app } = owned;
+  if (app.interviewId) {
+    if (await MockInterview.exists({ _id: app.interviewId, ...inInterviewNow() })) {
+      return fail(res, 409, 'This candidate is in their interview right now. Delete it once they finish.', { code: 'INTERVIEW_LIVE' });
+    }
+    await MockInterview.deleteOne({ _id: app.interviewId, mode: 'hiring' });
+  }
+  await HireApplication.deleteOne({ _id: app._id });
+  await HireJob.updateOne({ _id: app.jobId }, {
+    $inc: { 'stats.applied': -1, ...(app.status === 'completed' ? { 'stats.completed': -1 } : {}) }
+  });
+  res.json({ ok: true });
+}));
+
 // ══ Candidate (public) ══════════════════════════════════════════════════════
 
 async function liveJobBySlug(slug) {
@@ -427,7 +516,8 @@ router.get('/p/:slug', handle(async (req, res) => {
       title: job.title,
       company: { name: company.name, logoUrl: company.logoUrl, website: company.website, about: company.about },
       skills: job.parsed.jd.requiredSkills.map(s => s.name),
-      durationMin: 15,
+      durationMin: job.settings.durationMin ?? 15,
+      questionCount: job.settings.questionCount ?? 10,
       requireCamera: job.settings.requireCamera,
       deadline: job.settings.deadline,
       accepting: open.ok,
@@ -519,7 +609,7 @@ async function candidateByToken(req, res) {
   if (!app) { fail(res, 404, 'Interview not found'); return null; }
   const [job, interview] = await Promise.all([
     HireJob.findById(app.jobId).select('title status companyId settings.requireCamera settings.deadline').lean(),
-    app.interviewId ? MockInterview.findById(app.interviewId).select('status failureReason prepAttempts updatedAt live parsed.resume.claims').lean() : null
+    app.interviewId ? MockInterview.findById(app.interviewId).select('status failureReason prepAttempts updatedAt live parsed.resume.claims hire.durationMin').lean() : null
   ]);
   return { app, job, interview };
 }
@@ -540,7 +630,7 @@ router.get('/a/:token', handle(async (req, res) => {
       jobTitle: job.title,
       company: { name: company?.name, logoUrl: company?.logoUrl },
       state,
-      durationMin: 15,
+      durationMin: interview?.hire?.durationMin || 15,
       requireCamera: job.settings.requireCamera,
       canRetryPrep: (prepFailed || stuck) && (interview?.prepAttempts || 0) < MAX_PREP_ATTEMPTS
     }
@@ -570,13 +660,17 @@ router.post('/a/:token/prepare', handle(async (req, res) => {
 
 // Live interviews right now, plus ones dispatched in the last minute that
 // haven't gone live yet (their agent is still joining).
-async function liveInterviewCount() {
-  return MockInterview.countDocuments({
+function inInterviewNow() {
+  return {
     $or: [
       { status: 'live' },
       { status: 'planned', 'live.dispatchedAt': { $gte: new Date(Date.now() - DISPATCH_RETRY_MS) } }
     ]
-  });
+  };
+}
+
+async function liveInterviewCount() {
+  return MockInterview.countDocuments(inInterviewNow());
 }
 
 // POST /api/hire/a/:token/join

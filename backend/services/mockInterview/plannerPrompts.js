@@ -20,6 +20,26 @@ export function interviewComposition(roleFamily, claimCount) {
   return { ...INTERVIEW_COMPOSITION, resume, technical: 0, behavioral: INTERVIEW_COMPOSITION.behavioral + wanted - resume };
 }
 
+// Hiring interviews with a founder-chosen length: `total` questions (intro and
+// must-ask included, closing excluded), of which `mustAskCount` are the
+// employer's. Slots fill in this order so resume stays >= 40% of
+// resume+technical (CLAIM_QUOTA) at every size; 9 slots = the default 3/4/2.
+const SLOT_ORDER = ['resume', 'technical', 'resume', 'technical', 'behavioral', 'technical', 'resume', 'technical', 'behavioral', 'resume', 'technical', 'behavioral'];
+
+export function hiringComposition(total, mustAskCount, roleFamily, claimCount) {
+  const slots = Math.max(1, total - mustAskCount - 1);
+  const perPhase = { intro: 1, resume: 0, technical: 0, behavioral: 0, closing: 1 };
+  for (let i = 0; i < slots; i++) perPhase[SLOT_ORDER[i % SLOT_ORDER.length]]++;
+  if (!roleFamily || roleFamily === 'unsupported') {
+    perPhase.resume += perPhase.technical;
+    perPhase.technical = 0;
+  }
+  const resume = Math.min(perPhase.resume, claimCount);
+  perPhase.behavioral += perPhase.resume - resume;
+  perPhase.resume = resume;
+  return perPhase;
+}
+
 export const CLAIM_QUOTA = 0.4;
 
 const PLANNER_SYSTEM = `You are the question planner for a spoken mock interview. You design the full plan before the interview starts. You do not conduct the interview.
@@ -150,10 +170,10 @@ export function selectResumeClaims(claims, slots, priorityIds = []) {
     .map(({ c }) => c.id);
 }
 
-export function buildPlannerInput({ interview, roleFamilySheet, coreTopics, bankCandidates, bankSlots, retake }) {
+export function buildPlannerInput({ interview, roleFamilySheet, coreTopics, bankCandidates, bankSlots, retake, composition }) {
   const { parsed, seniority, roleFamily, interviewCategory } = interview;
   const supported = roleFamily && roleFamily !== 'unsupported';
-  const perPhase = interviewComposition(roleFamily, parsed.resume.claims.length);
+  const perPhase = composition || interviewComposition(roleFamily, parsed.resume.claims.length);
   // Spans, risk reasons and the raw skills list only matter for parsing; leaving
   // them out keeps every prep request under the per-request token cap.
   const skill = s => ({ id: s.id, name: s.name });

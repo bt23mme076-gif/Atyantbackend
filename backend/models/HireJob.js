@@ -60,7 +60,11 @@ const hireJobSchema = new Schema({
     mustAsk      : { type: [mustAskSchema], default: [] },
     maxCandidates: { type: Number, default: 200, min: 1, max: 5000 },
     deadline     : { type: Date, default: null },
-    requireCamera: { type: Boolean, default: true }
+    requireCamera: { type: Boolean, default: true },
+    // Founder-chosen interview length. questionCount counts every question the
+    // candidate answers (intro and must-ask included, the closing one excluded).
+    durationMin  : { type: Number, default: 15, min: 5, max: 15 },
+    questionCount: { type: Number, default: 10, min: 3, max: 10 }
   },
 
   stats: {
