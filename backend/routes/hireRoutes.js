@@ -32,6 +32,7 @@ import { MOCK_AGENT_NAME, mockRoomName, hireParticipantIdentity } from '../servi
 import { pdfToText, normalizeDocText } from '../services/mockInterview/documentText.js';
 import { makeSlug, prepareJob, expandMustAsk, openCandidateInterview, runCandidatePrep, MAX_MUST_ASK } from '../services/hire/HireJobService.js';
 import { publicJobLink } from '../services/hire/HireNotify.js';
+import { startVoicing, deleteAudioFolders } from '../services/voice/VoiceService.js';
 
 const router = express.Router();
 
@@ -44,6 +45,8 @@ const MAX_CONCURRENT   = Number(process.env.HIRE_MAX_CONCURRENT) || 8;
 const DISPATCH_RETRY_MS = 60 * 1000;
 const MAX_PREP_ATTEMPTS = 3;
 const STUCK_PREP_MS    = 5 * 60 * 1000;
+const PREP_STATUSES    = ['draft', 'parsing', 'planning', 'voicing'];
+const RETRYABLE_FAILURE = /^(parse|plan|voice):/;
 const CATEGORIES = ['tech', 'analytics', 'core', 'business', 'product', 'hr'];
 const MIN_DURATION = 5, MAX_DURATION = 15;
 const MIN_QUESTIONS = 3, MAX_QUESTIONS = 10;
@@ -116,7 +119,7 @@ async function requireStartup(req, res, next) {
 function applicationState(app, interview) {
   if (['completed', 'failed'].includes(app.status)) return app.status;
   switch (interview?.status) {
-    case 'planned'   : return 'ready';
+    case 'ready'     : return 'ready';
     case 'live'      : return 'in_progress';
     case 'evaluating':
     case 'completed' : return 'evaluating';
@@ -339,6 +342,8 @@ router.delete('/jobs/:id', protect, requireStartup, handle(async (req, res) => {
   if (await MockInterview.exists({ _id: { $in: interviewIds }, ...inInterviewNow() })) {
     return fail(res, 409, 'A candidate is in their interview right now. We closed the job so no one new can start. Delete it again once they finish.', { code: 'INTERVIEW_LIVE' });
   }
+  const withAudio = await MockInterview.find({ _id: { $in: interviewIds }, 'voice.folder': { $nin: ['', null] } }).select('voice.folder').lean();
+  await deleteAudioFolders(withAudio.map(iv => iv.voice.folder));
   await MockInterview.deleteMany({ _id: { $in: interviewIds }, mode: 'hiring' });
   await HireApplication.deleteMany({ jobId: job._id });
   await HireJob.deleteOne({ _id: job._id });
@@ -487,6 +492,8 @@ router.delete('/applications/:id', protect, requireStartup, handle(async (req, r
     if (await MockInterview.exists({ _id: app.interviewId, ...inInterviewNow() })) {
       return fail(res, 409, 'This candidate is in their interview right now. Delete it once they finish.', { code: 'INTERVIEW_LIVE' });
     }
+    const iv = await MockInterview.findById(app.interviewId).select('voice.folder').lean();
+    await deleteAudioFolders([iv?.voice?.folder]);
     await MockInterview.deleteOne({ _id: app.interviewId, mode: 'hiring' });
   }
   await HireApplication.deleteOne({ _id: app._id });
@@ -620,9 +627,14 @@ router.get('/a/:token', handle(async (req, res) => {
   if (!found) return;
   const { app, job, interview } = found;
   const company = await HireCompany.findById(job.companyId).select('name logoUrl').lean();
+  // Planned without audio (prepared before pre-made audio): record it now.
+  if (interview?.status === 'planned') {
+    startVoicing(interview._id);
+    interview.status = 'voicing';
+  }
   const state = applicationState(app, interview);
-  const prepFailed = interview?.status === 'failed' && /^(parse|plan):/.test(interview.failureReason || '');
-  const stuck = ['draft', 'parsing', 'planning'].includes(interview?.status) && interview.updatedAt < new Date(Date.now() - STUCK_PREP_MS);
+  const prepFailed = interview?.status === 'failed' && RETRYABLE_FAILURE.test(interview.failureReason || '');
+  const stuck = PREP_STATUSES.includes(interview?.status) && interview.updatedAt < new Date(Date.now() - STUCK_PREP_MS);
   res.json({
     ok: true,
     interview: {
@@ -644,17 +656,19 @@ router.post('/a/:token/prepare', handle(async (req, res) => {
   const { interview } = found;
   if (!interview) return fail(res, 409, 'Nothing to prepare');
   const { status } = interview;
-  const stuck = ['draft', 'parsing', 'planning'].includes(status) && interview.updatedAt < new Date(Date.now() - STUCK_PREP_MS);
-  const retryable = status === 'failed' && /^(parse|plan):/.test(interview.failureReason || '');
+  const stuck = PREP_STATUSES.includes(status) && interview.updatedAt < new Date(Date.now() - STUCK_PREP_MS);
+  const retryable = status === 'failed' && RETRYABLE_FAILURE.test(interview.failureReason || '');
   if (!(stuck || retryable)) return fail(res, 409, `Interview is ${status}`);
   if (interview.prepAttempts >= MAX_PREP_ATTEMPTS) return fail(res, 429, 'We could not prepare your interview. Please contact the company.');
 
+  // A voice failure keeps the plan and only records the audio again.
+  const resetTo = status === 'voicing' || /^voice:/.test(interview.failureReason || '') ? 'planned' : 'draft';
   const claimed = await MockInterview.updateOne(
     { _id: interview._id, status, updatedAt: interview.updatedAt },
-    { $set: { status: 'draft', failureReason: '' }, $inc: { prepAttempts: 1 } }
+    { $set: { status: resetTo, failureReason: '' }, $inc: { prepAttempts: 1 } }
   );
   if (!claimed.modifiedCount) return fail(res, 409, 'Already restarting');
-  runCandidatePrep(interview._id);
+  runCandidatePrep(interview._id, resetTo);
   res.status(202).json({ ok: true, state: 'applied' });
 }));
 
@@ -664,7 +678,7 @@ function inInterviewNow() {
   return {
     $or: [
       { status: 'live' },
-      { status: 'planned', 'live.dispatchedAt': { $gte: new Date(Date.now() - DISPATCH_RETRY_MS) } }
+      { status: { $in: ['ready', 'planned'] }, 'live.dispatchedAt': { $gte: new Date(Date.now() - DISPATCH_RETRY_MS) } }
     ]
   };
 }
@@ -680,7 +694,11 @@ router.post('/a/:token/join', handle(async (req, res) => {
   if (!found) return;
   const { app, job, interview } = found;
   if (!interview) return fail(res, 409, 'Your interview is still being prepared.');
-  if (!['planned', 'live'].includes(interview.status)) {
+  if (interview.status === 'planned') {
+    startVoicing(interview._id);
+    return fail(res, 409, 'Your interview is still being prepared.', { state: 'applied' });
+  }
+  if (!['ready', 'live'].includes(interview.status)) {
     return fail(res, 409, interview.status === 'evaluating' || interview.status === 'completed'
       ? 'You have already completed this interview.' : 'Your interview is still being prepared.', { state: applicationState(app, interview) });
   }

@@ -130,11 +130,13 @@ const label = interview => [interview.role, interview.company].filter(Boolean).j
 export async function createEntryOrder(interviewId, userId) {
   const interview = await loadOwned(interviewId, userId, 'userId status entryPayment access company role attempt');
   if (isEntryPaid(interview)) return { paid: true };
-  if (interview.status === 'planned' && await isFreeUser(interview.userId)) {
+  // Payable once the plan exists; the audio may still be recording.
+  const prepared = ['planned', 'voicing', 'ready'].includes(interview.status);
+  if (prepared && await isFreeUser(interview.userId)) {
     await waiveEntry(interview._id);
     return { paid: true, free: true };
   }
-  if (interview.status !== 'planned') {
+  if (!prepared) {
     throw new PaymentError(409, interview.status === 'live'
       ? 'This interview is already running.'
       : 'Your interview is still being prepared. You can pay once it is ready.');

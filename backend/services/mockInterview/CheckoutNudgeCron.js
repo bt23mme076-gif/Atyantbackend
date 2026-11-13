@@ -22,7 +22,7 @@ class CheckoutNudgeCron {
     try {
       const now = Date.now();
       const due = await MockInterview.find({
-        status: 'planned',
+        status: { $in: ['planned', 'voicing', 'ready'] },
         'entryPayment.status': 'created',
         'entryPayment.nudgedAt': null,
         'entryPayment.createdAt': { $gte: new Date(now - UNTIL_MS), $lte: new Date(now - AFTER_MS) },

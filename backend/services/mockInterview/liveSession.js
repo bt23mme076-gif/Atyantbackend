@@ -49,7 +49,10 @@ export function resumeIndex(interview) {
 // Claims the interview for a live session. Returns null if it isn't startable.
 export async function startLiveInterview(interviewId) {
   const interview = await MockInterview.findOneAndUpdate(
-    { _id: interviewId, status: { $in: ['planned', 'live'] } },
+    // 'planned' only while an older backend (no pre-made audio) is still
+    // deployed: the agent then speaks every line live. The current backend
+    // only dispatches ready interviews.
+    { _id: interviewId, status: { $in: ['ready', 'planned', 'live'] } },
     { $set: { status: 'live' } },
     { new: true }
   ).lean();
@@ -74,12 +77,22 @@ export function saveTurn(interviewId, turn) {
   return MockInterview.updateOne({ _id: interviewId }, { $push: { turns: turn } });
 }
 
+// Candidate's end of speech → interviewer's first audio, for every reply.
+export function saveTurnGap(interviewId, gap) {
+  return MockInterview.updateOne({ _id: interviewId }, { $push: { 'live.turnGaps': gap } });
+}
+
+// The interview voice failed on a live line and the other one was used.
+export function recordVoiceSwitch(interviewId, entry) {
+  return MockInterview.updateOne({ _id: interviewId }, { $push: { 'live.voiceSwitches': entry } });
+}
+
 // Nothing answered (dropped during the greeting): leave it startable again.
 // Otherwise hand it to the evaluation cron.
 export async function endLiveInterview(interviewId, reason) {
   const answered = await MockInterview.exists({ _id: interviewId, 'turns.0': { $exists: true } });
   const update = answered
     ? { status: 'evaluating', 'live.endedAt': new Date(), 'live.endReason': reason }
-    : { status: 'planned', 'live.startedAt': null, 'live.dispatchedAt': null, 'live.endReason': reason };
+    : { status: 'ready', 'live.startedAt': null, 'live.dispatchedAt': null, 'live.endReason': reason };
   await MockInterview.updateOne({ _id: interviewId }, { $set: update });
 }

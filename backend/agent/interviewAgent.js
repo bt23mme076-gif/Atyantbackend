@@ -6,7 +6,10 @@
 // The API dispatches this agent by name into room mock_<interviewId> when the
 // student joins (routes/mockInterviewRoutes.js). There is no LLM in the voice
 // loop: InterviewController decides every line from the pre-built plan, and
-// the only live model call is the fast judge after each answer.
+// the only live model call is the fast judge after each answer. Planned lines
+// play from audio recorded before the interview (services/voice/VoiceService.js);
+// only follow-ups built from the candidate's words are synthesized live, in the
+// same voice (voicePlayer.js).
 import 'dotenv/config';
 import { fileURLToPath } from 'node:url';
 import mongoose from 'mongoose';
@@ -17,10 +20,12 @@ import User from '../models/User.js';
 import liveKitService from '../services/LiveKitService.js';
 import { InterviewController } from '../services/mockInterview/InterviewController.js';
 import {
-  judge, sttPrompt, resumeIndex, startLiveInterview, markLiveStart, saveTurn, endLiveInterview
+  judge, sttPrompt, resumeIndex, startLiveInterview, markLiveStart, saveTurn, endLiveInterview, saveTurnGap, recordVoiceSwitch
 } from '../services/mockInterview/liveSession.js';
-import { MOCK_AGENT_NAME, INTERVIEW_DURATION_MS, hireParticipantIdentity } from '../services/mockInterview/liveConfig.js';
-import { createGroqSTT, createInterviewTTS } from './groqAudio.js';
+import { MOCK_AGENT_NAME, interviewDurationMs, hireParticipantIdentity } from '../services/mockInterview/liveConfig.js';
+import { voiceConfig } from '../services/voice/voiceLines.js';
+import { createGroqSTT } from './groqAudio.js';
+import { VoicePlayer, loadInterviewAudio } from './voicePlayer.js';
 
 const SILENCE_MS      = 30 * 1000;       // no speech after the interviewer finishes
 const REJOIN_GRACE_MS  = 3 * 60 * 1000;   // student dropped: wait this long before ending
@@ -28,6 +33,7 @@ const TIME_UP_GRACE_MS = 2 * 60 * 1000;   // hard stop after the planned duratio
 const HARD_STOP_EXTRA_MS = 60 * 1000;    // after that: closing line's playout, then leave no matter what
 const JOIN_WAIT_MS = Number(process.env.MOCK_JOIN_WAIT_MS) || 5 * 60 * 1000; // dispatched, candidate never connected
 const CLOSE_TIMEOUT_MS = 15 * 1000;      // cap on each shutdown step so the job always exits
+const TTS_IDLE_TIMEOUT_MS = 30 * 1000;   // wait for a live line's audio (it may retry in the other voice)
 
 // true if `promise` settles within `ms`, false on timeout (rejections propagate).
 function within(promise, ms) {
@@ -48,21 +54,24 @@ const ENDPOINTING = {
 };
 
 class InterviewerAgent extends voice.Agent {
-  constructor({ openingText, onAnswer }) {
+  constructor({ onEnter, onAnswer }) {
     super({
       instructions: 'Scripted mock interviewer. Every reply comes from InterviewController, not an LLM.',
       allowInterruptions: false
     });
-    this.openingText = openingText;
+    this.enter = onEnter;
     this.onAnswer = onAnswer;
   }
 
   async onEnter() {
-    this.session.say(this.openingText, { allowInterruptions: false });
+    this.enter();
   }
 
+  // The controller speaks the reply itself; StopResponse stops LiveKit from also
+  // asking an LLM for one ("trying to generate reply without an LLM model").
   async onUserTurnCompleted(_chatCtx, message) {
     await this.onAnswer(message.textContent ?? '');
+    throw new voice.StopResponse();
   }
 }
 
@@ -89,8 +98,15 @@ export default defineAgent({
     let { startedAt } = started;
     const questions = interview.plan.questions;
     const hiring = interview.mode === 'hiring';
-    // Hiring interviews run for the founder-chosen length (5-15 min).
-    const durationMs = hiring && interview.hire?.durationMin ? interview.hire.durationMin * 60 * 1000 : INTERVIEW_DURATION_MS;
+    const durationMs = interviewDurationMs(interview);
+    // Recorded before the interview; an interview without it (shouldn't happen:
+    // joining needs status ready) speaks every line live in the main voice.
+    if (!interview.voice?.model) {
+      logger.error({ interviewId }, 'interview has no recorded audio, speaking every line live');
+      interview.voice = { ...voiceConfig().main, clips: [] };
+    }
+    // Downloads while the candidate is still joining.
+    const audioReady = loadInterviewAudio(interview, logger);
 
     const roomName = ctx.job.room?.name;
     const studentId = hiring ? hireParticipantIdentity(interview.hire.applicationId) : String(interview.userId);
@@ -108,6 +124,7 @@ export default defineAgent({
     }
     // A fresh interview's clock runs from when the candidate is in the room.
     if (!resuming) startedAt = await markLiveStart(interviewId);
+    const { clips, spec } = await audioReady;
 
     const user = hiring ? null : await User.findById(interview.userId).select('name username').lean();
     const controller = new InterviewController({
@@ -124,6 +141,24 @@ export default defineAgent({
     let session;
     let finished = false;
     let announcedQid = null;
+
+    // Candidate's end of speech → interviewer's first audio, for every reply.
+    let turnEndedAt = null;
+    const player = new VoicePlayer({
+      clips, spec, interviewId, logger,
+      onVoiceSwitch: entry => recordVoiceSwitch(interviewId, entry).catch(err => logger.error({ err }, 'failed to log voice switch')),
+      onFallback   : () => controller.usedFallback()
+    });
+    const speak = segments => player.speak(session, segments, {
+      onFirstAudio: ({ first, voices }) => {
+        if (!turnEndedAt) return;
+        const detectedMs = Date.now() - turnEndedAt;
+        turnEndedAt = null;
+        const gap = { at: new Date(), qid: controller.current?.qid, gapMs: detectedMs + VAD_MIN_SILENCE_MS, detectedMs, voice: voices.join(',') || null, first };
+        logger.info(gap, 'timing: turn gap');
+        saveTurnGap(interviewId, gap).catch(err => logger.error({ err }, 'failed to save turn gap'));
+      }
+    });
 
     // Tells the student's browser to show/hide the code panel for the
     // question currently being asked. Sent over LiveKit's data channel so it
@@ -173,35 +208,39 @@ export default defineAgent({
         if (result.turn) {
           lastSave = saveTurn(interviewId, result.turn).catch(err => logger.error({ err }, 'failed to save turn'));
         }
-        if (!result.say) {
+        if (!result.segments?.length) {
           if (result.end) await finish(endReason);
           return;
         }
         // Not awaited: waiting for playout inside a speech task deadlocks the session.
-        const handle = session.say(result.say, { allowInterruptions: false });
+        const handle = speak(result.segments);
         if (result.end) handle.waitForPlayout().then(() => finish(endReason), () => finish(endReason));
       }).catch(err => logger.error({ err }, 'interview step failed'));
       return chain;
     };
 
-    let openingText;
+    let opening;
     if (resuming) {
       const index = resumeIndex(interview);
       if (index <= 0 || index >= questions.length || Date.now() - startedAt.getTime() > durationMs) {
         await finish(index >= questions.length ? 'completed' : 'time_up');
         return;
       }
-      openingText = controller.resume(index, startedAt);
+      opening = controller.resume(index, startedAt);
     } else {
-      openingText = controller.opening();
+      opening = controller.opening();
     }
     announceQuestionPanel();
 
     session = new voice.AgentSession({
       vad: ctx.proc.userData.vad,
       stt: createGroqSTT({ prompt: sttPrompt(interview) }),
-      tts: createInterviewTTS(),
+      // No TTS: every line is played as audio by VoicePlayer, in the interview's one voice.
       userAwayTimeout: null,
+      // LiveKit drops a line after 10 s without audio. A live line that retries
+      // in the other voice can need longer than that.
+      ttsReadIdleTimeout     : TTS_IDLE_TIMEOUT_MS,
+      forwardAudioIdleTimeout: TTS_IDLE_TIMEOUT_MS,
       turnHandling: {
         turnDetection: 'vad',
         endpointing  : ENDPOINTING,
@@ -218,7 +257,8 @@ export default defineAgent({
       else clearTimeout(timers.silence);
     });
     session.on(voice.AgentSessionEventTypes.UserStateChanged, ev => {
-      if (ev.newState === 'speaking') clearTimeout(timers.silence);
+      if (ev.newState === 'speaking') { clearTimeout(timers.silence); turnEndedAt = null; }
+      else if (ev.oldState === 'speaking') turnEndedAt = ev.createdAt || Date.now();
     });
     session.on(voice.AgentSessionEventTypes.Error, ev => logger.error({ error: ev.error }, 'session error'));
     // An unrecoverable error (e.g. speech still failing after retries) closes the
@@ -251,13 +291,13 @@ export default defineAgent({
     ctx.room.on(RoomEvent.ParticipantDisconnected, participant => {
       if (participant.identity !== studentId) return;
       clearTimeout(timers.silence);
-      timers.rejoin = setTimeout(() => step(async () => ({ say: null, end: true, turn: null }), 'student_left'), REJOIN_GRACE_MS);
+      timers.rejoin = setTimeout(() => step(async () => ({ say: null, segments: [], end: true, turn: null }), 'student_left'), REJOIN_GRACE_MS);
     });
     ctx.room.on(RoomEvent.ParticipantConnected, participant => {
       if (participant.identity !== studentId || !timers.rejoin) return;
       clearTimeout(timers.rejoin);
       timers.rejoin = null;
-      step(async () => ({ say: controller.welcomeBack(), end: false, turn: null }));
+      step(async () => controller.welcomeBack());
     });
 
     const remainingMs = Math.max(0, startedAt.getTime() + durationMs - Date.now());
@@ -268,10 +308,10 @@ export default defineAgent({
 
     await session.start({
       agent: new InterviewerAgent({
-        openingText,
-        // The thinking sound is spoken at once, outside the step chain, so it
-        // lands during the judge call instead of after it.
-        onAnswer: text => step(() => controller.onAnswer(text, f => { try { session.say(f, { allowInterruptions: false }); } catch { /* best-effort */ } })),
+        onEnter : () => speak(opening.segments),
+        // The reaction is played at once, outside the step chain, so it lands
+        // during the judge call instead of after it.
+        onAnswer: text => step(() => controller.onAnswer(text, seg => { try { speak([seg]); } catch { /* best-effort */ } })),
       }),
       room : ctx.room,
       inputOptions: { participantIdentity: studentId, closeOnDisconnect: false }

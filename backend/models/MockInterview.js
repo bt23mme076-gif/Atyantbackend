@@ -127,7 +127,8 @@ const mockInterviewSchema = new Schema({
 
   status: {
     type   : String,
-    enum   : ['draft', 'parsing', 'parsed', 'planning', 'planned', 'ready', 'live', 'evaluating', 'completed', 'failed'],
+    // planned → voicing (pre-made audio is recorded) → ready → live
+    enum   : ['draft', 'parsing', 'parsed', 'planning', 'planned', 'voicing', 'ready', 'live', 'evaluating', 'completed', 'failed'],
     default: 'draft',
     index  : true
   },
@@ -220,7 +221,33 @@ const mockInterviewSchema = new Schema({
     dispatchedAt: { type: Date, default: null },
     startedAt   : { type: Date, default: null },
     endedAt  : { type: Date, default: null },
-    endReason: { type: String, enum: ['completed', 'time_up', 'student_left', 'error', null], default: null }
+    endReason: { type: String, enum: ['completed', 'time_up', 'student_left', 'error', 'no_show', 'stale', null], default: null },
+    // One entry per interviewer reply: candidate's end of speech → first audio.
+    // gapMs counts from when they actually stopped (VAD detection minus its
+    // silence window); detectedMs from when the agent noticed.
+    turnGaps: [{
+      at        : Date,
+      qid       : String,
+      gapMs     : Number,
+      detectedMs: Number,
+      voice     : String,
+      first     : { type: String, enum: ['clip', 'live'] },
+      _id       : false
+    }],
+    // The interview voice failed on a live line and the other voice was used.
+    voiceSwitches: [{ at: Date, from: String, to: String, reason: String, _id: false }]
+  },
+
+  // One voice for the whole interview, picked and recorded before it starts.
+  voice: {
+    role      : { type: String, enum: ['main', 'backup', null], default: null },
+    model     : { type: String, default: '' },
+    voice     : { type: String, default: '' },
+    healthMs  : { type: Number, default: null },
+    folder    : { type: String, default: '' },  // Cloudinary prefix holding this interview's clips
+    clips     : [{ key: String, text: String, url: String, sampleRate: Number, _id: false }],
+    voicedAt  : { type: Date, default: null },
+    log       : [{ type: String }]
   },
 
   turns: [turnSchema],

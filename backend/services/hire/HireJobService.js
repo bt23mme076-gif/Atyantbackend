@@ -6,6 +6,7 @@ import MockInterview from '../../models/MockInterview.js';
 import { groqJSON } from '../../utils/groqClient.js';
 import { parseJd, withRateLimitRetry, prepareInterview } from '../mockInterview/PlannerService.js';
 import { buildMustAskMessages } from './hiringPrompts.js';
+import { voiceInterview } from '../voice/VoiceService.js';
 
 const MODEL = process.env.MOCK_PARSER_MODEL || 'openai/gpt-oss-120b';
 export const MAX_MUST_ASK = 3;
@@ -102,6 +103,8 @@ export async function openCandidateInterview({ job, company, application, resume
   return interview;
 }
 
-export function runCandidatePrep(interviewId) {
-  prepareInterview(interviewId).catch(err => console.error(`Hire interview ${interviewId} prep failed:`, err.message));
+// fromStatus 'planned' re-records only the audio (the plan is kept).
+export function runCandidatePrep(interviewId, fromStatus = 'draft') {
+  const run = fromStatus === 'planned' ? voiceInterview : prepareInterview;
+  run(interviewId).catch(err => console.error(`Hire interview ${interviewId} prep failed:`, err.message));
 }

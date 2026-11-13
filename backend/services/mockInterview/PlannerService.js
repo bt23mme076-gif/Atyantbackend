@@ -4,6 +4,7 @@
 //   prepareInterview(id)
 //     parseInterview  draft  → parsing  → parsed   (JD parse, resume parse, gap)
 //     planInterview   parsed → planning → planned  (bank, planner, validator, critic, revise)
+//     voiceInterview  planned → voicing → ready    (pre-made audio, services/voice/VoiceService.js)
 //
 // Each step claims its status with an atomic update, so a double click or a
 // retry can't run the same step twice at once.
@@ -16,6 +17,7 @@ import { validateJdParse, validateResumeParse } from './parseValidator.js';
 import { buildPlannerInput, hiringComposition, buildPlannerMessages, buildCriticMessages, buildReviseMessages, mergeRevision } from './plannerPrompts.js';
 import { validatePlan } from './planValidator.js';
 import { weakAreas } from './retake.js';
+import { voiceInterview } from '../voice/VoiceService.js';
 
 const PARSER_MODEL  = process.env.MOCK_PARSER_MODEL  || 'openai/gpt-oss-120b';
 const PLANNER_MODEL = process.env.MOCK_PLANNER_MODEL || 'openai/gpt-oss-120b';
@@ -377,7 +379,13 @@ export async function planInterview(interviewId) {
   }
 }
 
+// Pre-made audio is recorded right after planning (planned → voicing → ready).
+export async function planAndVoiceInterview(interviewId) {
+  await planInterview(interviewId);
+  await voiceInterview(interviewId);
+}
+
 export async function prepareInterview(interviewId) {
   await parseInterview(interviewId);
-  return planInterview(interviewId);
+  return planAndVoiceInterview(interviewId);
 }

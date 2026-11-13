@@ -1,34 +1,28 @@
-import { keepsSpecifics } from './directorPrompts.js';
+import {
+  lib, REACTIONS, CONTINUES, REPEATS, SKIP_ACKS, TRANSITIONS, GREETING_KEY, questionKey, followUpKey, greetingText
+} from '../voice/voiceLines.js';
 
 // Decides what the interviewer says next. Pure logic: no LiveKit, no DB.
-// The agent feeds it student turns and silences, speaks whatever `say` it
-// returns, and persists any `turn` it returns.
+// The agent feeds it student turns and silences, speaks whatever it returns,
+// and persists any `turn` it returns.
+//
+// Every reply is { say, segments, end, turn }. `segments` is what to play, in
+// order: { key, text } is a pre-made clip (services/voice/voiceLines.js),
+// { key: null, text, fallback? } is spoken live; `fallback` is what to play
+// instead if the live line can't be spoken. `say` is the same words as text.
 //
 // The order of planned questions, the time budget and the follow-up limits live
-// here. The words of each reaction and follow-up come from `judge` (see
-// directorPrompts.js), which reads what the candidate actually said. If the
-// judge is unavailable the interview keeps going with the follow-ups that were
-// written at planning time.
+// here. Planned questions and follow-ups are always spoken as planned (from
+// their pre-made audio); only follow-ups and rephrasings built from what the
+// candidate just said are spoken live. If the judge is unavailable the
+// interview keeps going with the follow-ups written at planning time.
 
 const TRIGGER_BY_VERDICT = { strong: 'strongDeeper', shallow: 'shallow', wrong: 'wrong', skip: 'shallow' };
-
-// Only used when the judge gives no reaction of its own.
-// Real words only: the TTS turns hum sounds ("Hmm", "Mm-hm") into noises.
-const ACKS      = ['Okay.', 'Right.', 'I see.', 'Got it.', 'Alright.', 'Sure.'];
-const SKIP_ACKS = ['No worries.', 'Fair enough.', "That's fine.", "That's okay, happens."];
-const CONTINUES = ['Go on.', 'Take your time.', 'Okay, go ahead.', 'Sure, I\'m listening.', 'Go ahead, no rush.', "I'm with you, go on."];
 
 // An answer that trails off ("It is a...", "so the first thing is") is a
 // thinking pause, not the end. A person would just nod and wait.
 const DANGLING = /(\.\.\.|…|\b(a|an|the|and|so|but|or|is|are|was|to|of|with|for|in|on|that|because|since|although|however|like|um+|uh+|actually|basically|essentially|so\s+basically|i\s+think),?)$/i;
 const looksUnfinished = text => DANGLING.test(String(text || '').trim());
-
-const TRANSITIONS = {
-  resume    : 'Let me pick something from your resume.',
-  technical : "Let's get a little technical now.",
-  behavioral: 'Now a couple of situational ones.',
-  closing   : "We're coming to the end."
-};
 
 const MAX_CLARIFY     = 2;
 const MAX_CONTINUE    = 3;
@@ -63,21 +57,14 @@ const REPEAT_OVERLAP = 0.7;
 // whatever the judge says.
 const WANTS_NEXT = /\b(ask|give|try)( me)? (another|a different|some other|the next|one more) question\b|\bmove on\b|\bnext question,? please\b|\b(can|could|may) (we|i) skip\b|\bskip (this|that)( one| question)\b|\bask( me)? something else\b/i;
 
-// When the judge gives no line of its own for a misheard answer.
-const NOT_HEARD = ["Sorry, I didn't catch that. Could you say it again?", 'You cut out for a second there. One more time?', 'Sorry, missed that. Say that again?'];
-
-// Spoken instantly while the judge reads the answer; '' keeps some turns quiet.
-// Real words only — the TTS can't hum.
-const THINKING = ['Okay.', '', 'Right.', '', 'Alright.', ''];
-
-// A bridge follows the reaction, so a leading "okay" would double it up.
-const tidyBridge = text => {
-  const t = String(text || '').replace(/^(okay|ok|alright|all right|right|so|sure|got it|mm-?hm|mm)[,.!]?\s+/i, '').trim();
-  if (!t || /moving on|switching topics|next topic|let's move on/i.test(t)) return '';
-  return t.charAt(0).toUpperCase() + t.slice(1);
-};
-
 const words = text => (String(text || '').toLowerCase().match(/[a-z]{5,}/g) || []).filter(w => !STOPWORDS.has(w));
+
+const live = (text, fallback = null) => ({ key: null, text, ...(fallback?.length ? { fallback } : {}) });
+
+const reply = (segments, end = false, turn = null) => {
+  const segs = segments.filter(Boolean);
+  return { say: segs.length ? segs.map(s => s.text).join(' ') : null, segments: segs, end, turn };
+};
 
 export class InterviewController {
   constructor({ questions, judge, seniority = 'fresher', candidateName = '', role = '', company = '',
@@ -92,13 +79,12 @@ export class InterviewController {
     this.durationMs = durationMs;
     this.now        = now;
     this.finished   = false;
-    this.ackCount   = 0;
-    this.continueCount = 0;
-    this.recentReactions = [];
+    this.rotation   = new Map(); // pool → next index, so stock lines rotate
+    this.lastReaction = null;    // never the same reaction twice in a row
     // Consecutive answers the candidate couldn't give; the interviewer eases off as it grows.
     this.struggleStreak = 0;
-    this.thinkSeq = 0;      // rotates the thinking sounds below
-    this.timeWarned = false; // "almost at time" is said once
+    this.warmed     = false;     // the "no pressure" line, once per streak
+    this.timeWarned = false;     // "almost at time" is said once
   }
 
   get current() { return this.questions[this.index]; }
@@ -106,13 +92,14 @@ export class InterviewController {
   opening() {
     this.startedAt = this.now();
     this.endsAt = this.startedAt + this.durationMs;
-    const first = (this.candidateName || '').trim().split(/\s+/)[0];
-    const forRole = this.role ? ` for the ${this.role} role${this.company ? ` at ${this.company}` : ''}` : '';
-    const minutes = Math.round(this.durationMs / 60000);
-    const intro = `Hi${first ? ` ${first}` : ''}, good to meet you. I'll be your interviewer today${forRole}, thanks for making the time. `
-      + `We've got about ${minutes} minutes together, so I'll keep it moving: a bit about you, then your projects, then a few technical things. `
-      + `There's no trick to any of it. Just talk to me like a person, and it's completely fine to pause and think out loud. Okay, let's start.`;
-    return `${intro} ${this.#ask(0).text}`;
+    const greeting = greetingText({
+      candidateName: this.candidateName,
+      role         : this.role,
+      company      : this.company,
+      minutes      : Math.round(this.durationMs / 60000)
+    });
+    this.#ask(0);
+    return reply([{ key: GREETING_KEY, text: greeting }, this.#askingSegment()]);
   }
 
   // After an agent restart mid-interview: continue at `index`, keeping the
@@ -120,28 +107,27 @@ export class InterviewController {
   resume(index, startedAt) {
     this.startedAt = startedAt.getTime();
     this.endsAt = this.startedAt + this.durationMs;
-    return `Welcome back, sorry about the hiccup there. Let's pick up where we left off. ${this.#ask(index).text}`;
+    this.#ask(index);
+    return reply([lib('back.resume'), this.#askingSegment()]);
   }
 
   // The student dropped and reconnected: they may have missed the question.
   welcomeBack() {
     this.asking.parts = [];
-    return `Welcome back, no worries, these drops happen. So, ${this.asking.text}`;
+    return reply([lib('back.drop'), this.#askingSegment()]);
   }
 
   // One finished student turn (end of speech detected). `onThinking` is called
-  // with a short sound to speak right away while the judge call runs, so the
-  // couple of seconds of scoring never play as dead air.
+  // with a reaction segment to play right away while the judge call runs, so
+  // the couple of seconds of judging never play as dead air.
   async onAnswer(text, onThinking = null) {
-    if (this.finished) return { say: null, end: true, turn: null };
+    if (this.finished) return reply([], true);
     const clean = (text || '').trim();
     // Noise transcribed as "thank you": say nothing and keep listening.
-    if (isPhantom(clean)) return { say: null, end: false, turn: null };
+    if (isPhantom(clean)) return reply([]);
 
     if (clean.split(/\s+/).filter(Boolean).length < 2 && !/\b(no|yes|nope|yep|skip|pass|never|agree|done|correct|right|sure|okay|fine)\b/i.test(clean)) {
-      if (this.asking.notHeard++ < MAX_NOT_HEARD) {
-        return { say: "Sorry, I didn't catch that. Could you say that again?", end: false, turn: null };
-      }
+      if (this.asking.notHeard++ < MAX_NOT_HEARD) return reply([this.#rotate(REPEATS)]);
     }
     this.asking.parts.push(clean);
 
@@ -149,19 +135,20 @@ export class InterviewController {
 
     if (looksUnfinished(clean) && this.asking.continues < MAX_CONTINUE) {
       this.asking.continues++;
-      return { say: CONTINUES[this.continueCount++ % CONTINUES.length], end: false, turn: null };
+      return reply([this.#rotate(CONTINUES)]);
     }
 
-    // A person makes a small sound while they think; silence sounds like a machine.
-    // Every other turn stays quiet so the sound itself doesn't become a pattern.
+    // A person acknowledges as soon as you stop talking; silence sounds like a machine.
+    this.reacted = false;
     if (onThinking) {
-      const filler = THINKING[this.thinkSeq++ % THINKING.length];
-      if (filler) try { onThinking(filler); } catch { /* speech is best-effort */ }
+      try { onThinking(this.#reaction()); this.reacted = true; } catch { /* speech is best-effort */ }
     }
     let d = await this.#direct(this.asking.continues < MAX_CONTINUE);
+    let leadIn = null;
     if (WANTS_NEXT.test(clean)) {
       // They asked for another question: no easier follow-up on this one.
-      d = { ...(d || {}), verdict: 'skip', followUp: null, reaction: d?.reaction || "Sure, let's try something else." };
+      d = { ...(d || {}), verdict: 'skip', followUp: null };
+      leadIn = lib('next.sure');
     }
     // "What do you mean?" is short. A long answer labelled clarify is a
     // misjudgement; asking the same question again would sound broken.
@@ -172,40 +159,37 @@ export class InterviewController {
 
     if (verdict === 'incomplete') {
       this.asking.continues++;
-      return { say: CONTINUES[this.continueCount++ % CONTINUES.length], end: false, turn: null };
+      return reply([this.#rotate(CONTINUES)]);
     }
     if (verdict === 'clarify') {
       this.asking.parts = [];
       if (this.asking.clarifies++ < MAX_CLARIFY) {
-        return { say: d.rephrase || `Sure. ${this.asking.text}`, end: false, turn: null };
+        const plain = [lib('clarify.sure'), this.#askingSegment()];
+        return reply(d.rephrase ? [live(d.rephrase, plain)] : plain);
       }
       return this.#respond({ verdict: 'skip' });
     }
     if (verdict === 'garbled') {
       // Probably misheard: drop it and ask again, but never loop on it.
       this.asking.parts.pop();
-      if (this.asking.notHeard++ < MAX_NOT_HEARD) {
-        const say = d.reaction ? `${d.reaction} Could you say it again?` : NOT_HEARD[this.continueCount++ % NOT_HEARD.length];
-        return { say, end: false, turn: null };
-      }
+      if (this.asking.notHeard++ < MAX_NOT_HEARD) return reply([this.#rotate(REPEATS)]);
       return this.#respond({ verdict: 'skip' }, null, 'uncertain');
     }
-    return this.#respond(d);
+    return this.#respond(d, leadIn);
   }
 
   // The student has been silent for the session's away timeout.
   async onSilence() {
-    if (this.finished) return { say: null, end: true, turn: null };
+    if (this.finished) return reply([], true);
+    this.reacted = false;
     if (this.asking.parts.length) {
       if (this.current.phase === 'closing') return this.#finishClosing();
       const d = await this.#direct(false);
       return this.#respond(['clarify', 'garbled', 'incomplete'].includes(d?.verdict) ? { verdict: 'skip' } : d);
     }
-    if (this.asking.silences++ === 0) {
-      return { say: "Take your time. Let me know if you'd like me to repeat the question.", end: false, turn: null };
-    }
+    if (this.asking.silences++ === 0) return reply([lib('silence.take')]);
     if (this.current.phase === 'closing') return this.#finishClosing();
-    return this.#respond({ verdict: 'skip' }, "Let's move on for now.");
+    return this.#respond({ verdict: 'skip' }, lib('moveon'));
   }
 
   // A coding/SQL exercise question was graded (or the candidate asked to move
@@ -213,42 +197,37 @@ export class InterviewController {
   // maps straight to a verdict and the interview advances the same way a
   // spoken answer would.
   onCodingResult({ passed, total, skipped }) {
-    if (this.finished) return { say: null, end: true, turn: null };
+    if (this.finished) return reply([], true);
+    this.reacted = false;
     const allPassed = !skipped && total > 0 && passed === total;
     const verdict = skipped ? 'skip' : allPassed ? 'strong' : passed > 0 ? 'shallow' : 'wrong';
     this.asking.parts.push(skipped
       ? 'Asked to move on without a working solution.'
       : `Code submitted: ${passed}/${total} test cases passed.`);
-    const reaction = skipped
-      ? "No worries, let's keep moving."
-      : allPassed
-        ? 'Nice, that passes all the tests.'
-        : passed > 0
-          ? `That gets ${passed} out of ${total}. Let's move on for now.`
-          : "That's not passing yet, but let's move on for now.";
-    return this.#respond({ verdict, reaction }, null, skipped ? 'skipped' : 'captured');
+    const leadIn = skipped ? lib('code.skip')
+      : allPassed ? lib('code.pass')
+        : passed > 0 ? live(`That gets ${passed} out of ${total}. Let's move on for now.`, [lib('code.fail')])
+          : lib('code.fail');
+    return this.#respond({ verdict }, leadIn, skipped ? 'skipped' : 'captured');
   }
 
   onTimeUp() {
     const turn = this.asking?.parts.length ? this.#record(null) : null;
     this.finished = true;
-    return {
-      say: "Alright, that's time, so we'll stop here. Thanks for taking this seriously. Your feedback report will be ready in a few minutes. All the best!",
-      end: true,
-      turn
-    };
+    return reply([lib('timeup')], true, turn);
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
 
-  // Asks the planned question at `index`, or a follow-up ({ text, trigger })
-  // on the current one.
+  // Asks the planned question at `index`, or a follow-up ({ text, trigger, key })
+  // on the current one. `key` is the follow-up's clip, null when it is live.
   #ask(index, followUp = null) {
     const q = this.questions[index];
     const same = index === this.index && this.asking;
     this.index = index;
     this.asking = {
       text     : followUp ? followUp.text : q.text,
+      clip     : followUp ? followUp.key ?? null : questionKey(q.qid),
       kind     : followUp ? 'follow_up' : 'planned',
       trigger  : followUp ? followUp.trigger : null,
       askedAt  : new Date(this.now()),
@@ -265,8 +244,26 @@ export class InterviewController {
     return this.asking;
   }
 
-  // Asks the judge what to say about the current answer. Returns
-  // { verdict, reaction, followUp, rephrase } or null when the judge is down.
+  // What is being asked right now, as something to play again.
+  #askingSegment() {
+    return this.asking.clip ? { key: this.asking.clip, text: this.asking.text } : live(this.asking.text);
+  }
+
+  // Next line from a pool of library keys, in rotation.
+  #rotate(pool) {
+    const i = this.rotation.get(pool) || 0;
+    this.rotation.set(pool, i + 1);
+    return lib(pool[i % pool.length]);
+  }
+
+  // A neutral acknowledgement, never the same one twice in a row.
+  #reaction() {
+    const choices = REACTIONS.filter(k => k !== this.lastReaction);
+    const key = choices[Math.floor(Math.random() * choices.length)];
+    this.lastReaction = key;
+    return lib(key);
+  }
+
   // Which planned question comes next if the interview moves on now.
   #nextIndex() {
     const closing = this.#closingIndex();
@@ -283,8 +280,9 @@ export class InterviewController {
     return next;
   }
 
+  // Asks the judge about the current answer. Returns { verdict, followUp,
+  // rephrase } or null when the judge is down.
   async #direct(allowIncomplete) {
-    this.plannedNext = this.#nextIndex();
     try {
       const out = await this.judge({
         question       : this.current,
@@ -297,13 +295,10 @@ export class InterviewController {
         allowFollowUp  : this.#canFollowUp(this.current),
         isFollowUp     : this.asking.kind === 'follow_up',
         history        : this.asking.history,
-        priorReactions : this.recentReactions.slice(-5),
-        candidateFirstName: (this.candidateName || '').trim().split(/\s+/)[0] || null,
-        struggleStreak : this.struggleStreak,
-        nextQuestion   : this.questions[this.plannedNext] || null
+        struggleStreak : this.struggleStreak
       });
       // A judge that only returns a verdict string still works.
-      const d = typeof out === 'string' ? { verdict: out, reaction: '', followUp: null, rephrase: null } : out;
+      const d = typeof out === 'string' ? { verdict: out, followUp: null, rephrase: null } : out;
       if (!d?.verdict) return null;
       if (!allowIncomplete && d.verdict === 'incomplete') return { ...d, verdict: 'shallow' };
       return d;
@@ -352,14 +347,19 @@ export class InterviewController {
     return new Set(words(followUp).filter(w => guard.has(w) && !known.has(w))).size >= 2;
   }
 
-  #stockAck(verdict) {
-    const pool = verdict === 'skip' ? SKIP_ACKS : ACKS;
-    return pool[this.ackCount++ % pool.length];
-  }
-
-  #remember(reaction) {
-    if (reaction) this.recentReactions.push(reaction);
-    if (this.recentReactions.length > 8) this.recentReactions.shift();
+  // What comes before the next line: an explicit lead-in, else a plain
+  // acknowledgement if none was played yet this turn. Someone who couldn't
+  // answer gets a "no worries", and after several in a row one gentle line.
+  #lead(verdict, leadIn) {
+    if (leadIn) return [leadIn];
+    if (verdict === 'skip') {
+      if (this.struggleStreak >= 2 && !this.warmed) {
+        this.warmed = true;
+        return [lib('warm')];
+      }
+      return [this.#rotate(SKIP_ACKS)];
+    }
+    return this.reacted ? [] : [this.#reaction()];
   }
 
   // The answer is done: follow up on it, or move to the next planned question.
@@ -367,72 +367,71 @@ export class InterviewController {
     const verdict = d?.verdict ?? null;
     const turn = this.#record(verdict, capture);
     const q = this.current;
-    // The same "Got it." twice in a row sounds canned; asking straight away doesn't.
-    const reaction = d?.reaction && !this.recentReactions.slice(-3).some(r => r.toLowerCase() === d.reaction.toLowerCase()) ? d.reaction : '';
     if (verdict === 'skip') this.struggleStreak++;
-    else if (verdict) this.struggleStreak = 0;
+    else if (verdict) { this.struggleStreak = 0; this.warmed = false; }
 
     if (this.#canFollowUp(q)) {
       const trigger = TRIGGER_BY_VERDICT[verdict];
-      let text = null;
       const askedBefore = [this.asking.text, ...this.asking.history.map(h => h.interviewer)];
-      if (d?.followUp && askedBefore.some(a => overlap(a, d.followUp) >= REPEAT_OVERLAP)) {
-        // Asking the same thing again sounds like a machine; move on instead.
-        d = { ...d, followUp: null };
-      }
-      if (d?.followUp) {
-        // The judge wrote it from the candidate's own words. If it hints at the answer, fall back to the planned one.
-        // An easier way in after "I don't know" naturally names the topic, so only real answers are checked.
-        text = verdict !== 'skip' && this.#leaks(d.followUp) ? null : d.followUp;
-      }
-      // Planned follow-up only when the judge gave nothing usable, and never the same one twice.
-      if (!text && trigger && !this.asking.usedTriggers.has(trigger)) text = q.followUps?.[trigger] || null;
-      if (text && askedBefore.some(a => overlap(a, text) >= REPEAT_OVERLAP)) text = null;
-      if (text && trigger) {
+      const fresh = text => text && !askedBefore.some(a => overlap(a, text) >= REPEAT_OVERLAP);
+      // The planned follow-up for this kind of answer, never the same one twice.
+      const plannedText = trigger && !this.asking.usedTriggers.has(trigger) ? q.followUps?.[trigger] || null : null;
+      const planned = fresh(plannedText) ? { text: plannedText, trigger, key: followUpKey(q.qid, trigger) } : null;
+      // The judge's follow-up is built from the candidate's own words; it is
+      // dropped if it repeats an earlier question or hints at the answer (an
+      // easier way in after "I don't know" naturally names the topic, so only
+      // real answers are checked).
+      const judged = fresh(d?.followUp) && !(verdict !== 'skip' && this.#leaks(d.followUp))
+        ? { text: d.followUp, trigger, key: null } : null;
+      const followUp = trigger ? judged || planned : null;
+      if (followUp) {
+        const lead = this.#lead(verdict, leadIn);
         this.asking.followUpsUsed++;
         this.asking.usedTriggers.add(trigger);
-        this.#remember(reaction);
-        const lead = reaction ? `${reaction} ` : '';
-        return { say: `${lead}${this.#ask(this.index, { text, trigger }).text}`.trim(), end: false, turn };
+        this.#ask(this.index, followUp);
+        // A live follow-up that can't be spoken falls back to the planned one.
+        const ask = followUp.key ? { key: followUp.key, text: followUp.text }
+          : live(followUp.text, planned ? [{ key: planned.key, text: planned.text }] : null);
+        if (!followUp.key && planned) this.asking.fallback = planned;
+        return reply([...lead, ask], false, turn);
       }
     }
 
     const nextIndex = this.#nextIndex();
     if (nextIndex >= this.questions.length) {
       this.finished = true;
-      return { say: this.#closingLine(''), end: true, turn };
+      return reply(this.#closingLine(''), true, turn);
     }
 
     const nextQ = this.questions[nextIndex];
-    const lead = leadIn || reaction || this.#stockAck(verdict);
-    this.#remember(reaction);
-    // The judge wrote its bridge and spoken wording for the question it expected
-    // next; only use them if that is still the one being asked.
-    const planned = d && this.plannedNext === nextIndex;
-    let bridge = planned && d.bridge ? tidyBridge(d.bridge) : (!planned && nextQ.phase !== q.phase ? TRANSITIONS[nextQ.phase] || '' : '');
+    const lead = this.#lead(verdict, leadIn);
+    let bridge = nextQ.phase !== q.phase && TRANSITIONS[nextQ.phase] ? lib(TRANSITIONS[nextQ.phase]) : null;
     // Entering the close on the clock: say so once, like a person watching the time.
     if (!this.timeWarned && nextQ.phase === 'closing' && q.phase !== 'closing' && this.#remainingMs() < WRAP_UP_MS) {
       this.timeWarned = true;
-      if (!bridge) bridge = "We're almost at time, so one last thing.";
+      bridge = lib('time.warn');
     }
-    this.#remember(bridge);
-    // "Your resume says..." belongs only on questions that really come from the resume.
-    const inventsResume = nextQ.phase !== 'resume' && /resume/i.test(d?.nextQuestionSpoken || '') && !/resume/i.test(nextQ.text);
-    const spoken = planned && !inventsResume && keepsSpecifics(nextQ.text, d.nextQuestionSpoken) ? d.nextQuestionSpoken : nextQ.text;
     this.#ask(nextIndex);
-    this.asking.text = spoken;
-    return { say: `${lead} ${bridge} ${spoken}`.replace(/\s+/g, ' ').trim(), end: false, turn };
+    return reply([...lead, bridge, this.#askingSegment()], false, turn);
+  }
+
+  // The agent played the planned follow-up instead of the live one.
+  usedFallback() {
+    const f = this.asking?.fallback;
+    if (!f) return;
+    this.asking.text = f.text;
+    this.asking.clip = f.key;
+    this.asking.fallback = null;
   }
 
   #finishClosing() {
     const turn = this.#record(null);
     this.finished = true;
-    return { say: this.#closingLine(turn.answer), end: true, turn };
+    return reply(this.#closingLine(turn.answer), true, turn);
   }
 
   #closingLine(answer) {
     const askedSomething = answer.split(/\s+/).length > 6 && !/^(no|nope|nothing|not really)\b/i.test(answer.trim());
-    return `${askedSomething ? 'Those are good questions to ask in your real interview. ' : ''}`
-      + "That's all from my side. Thanks for your time today, I enjoyed this. Your feedback report will be ready in a few minutes. All the best!";
+    return [askedSomething ? lib('close.good') : null, lib('close.end')];
   }
 }

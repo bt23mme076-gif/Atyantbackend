@@ -11,7 +11,8 @@ import {
   createEntryOrder, verifyEntryPayment, createUnlockOrder, verifyUnlockPayment,
   isUnlocked, isEntryPaid, isFreeUser, grantFreeReport, getPricing, REPORT_PRICE_INR
 } from '../services/mockInterview/MockPaymentService.js';
-import { prepareInterview, planInterview } from '../services/mockInterview/PlannerService.js';
+import { prepareInterview, planAndVoiceInterview } from '../services/mockInterview/PlannerService.js';
+import { voiceInterview, startVoicing } from '../services/voice/VoiceService.js';
 import { pdfToText, fetchProfileResumeText, normalizeDocText } from '../services/mockInterview/documentText.js';
 import { getCodingProblem } from '../config/codingProblems.js';
 import { getSqlProblem } from '../config/sqlProblems.js';
@@ -56,6 +57,9 @@ function userFacingFailure(reason = '') {
   if (/checkable claims/.test(reason)) {
     return 'Your resume needs more specific detail (projects, internships, results) to build a resume round. Add more detail and try again.';
   }
+  if (/^voice:/.test(reason)) {
+    return "We couldn't record your interviewer's voice just now. Please try again in a minute.";
+  }
   return 'Something went wrong while preparing your interview. Please try again.';
 }
 
@@ -95,11 +99,12 @@ async function creationBlocked(userId) {
 }
 
 function runPrep(interviewId, fromStatus) {
-  const run = fromStatus === 'parsed' ? planInterview : prepareInterview;
+  const run = { parsed: planAndVoiceInterview, planned: voiceInterview }[fromStatus] || prepareInterview;
   run(interviewId).catch(err => console.error(`Mock interview ${interviewId} prep failed:`, err.message));
 }
 
-const PREPARED_STATUSES = ['planned', 'live', 'evaluating', 'completed'];
+const PREPARED_STATUSES = ['planned', 'voicing', 'ready', 'live', 'evaluating', 'completed'];
+const RETRYABLE_FAILURE = /^(parse|plan|voice):/;
 
 // GET /api/mock-interviews/stats — public social proof, real numbers only:
 // interviews actually taken and distinct colleges of the students who took them.
@@ -385,6 +390,12 @@ router.get('/:id', protect, async (req, res) => {
     if (!interview || interview.userId?.toString() !== req.user.userId) {
       return res.status(404).json({ ok: false, error: 'Interview not found' });
     }
+    // Planned without audio (prepared before pre-made audio, or its audio was
+    // given back): record it now.
+    if (interview.status === 'planned') {
+      startVoicing(interview._id);
+      interview.status = 'voicing';
+    }
     res.json({
       ok: true,
       interview: {
@@ -406,7 +417,7 @@ router.get('/:id', protect, async (req, res) => {
         blueprint : PREPARED_STATUSES.includes(interview.status) ? interview.blueprint : null,
         error     : interview.status === 'failed' ? userFacingFailure(interview.failureReason) : null,
         canRetryPrep: interview.status === 'failed'
-          && /^(parse|plan):/.test(interview.failureReason || '')
+          && RETRYABLE_FAILURE.test(interview.failureReason || '')
           && interview.prepAttempts < MAX_PREP_ATTEMPTS
       }
     });
@@ -429,8 +440,8 @@ router.post('/:id/prepare', protect, async (req, res) => {
     }
 
     const { status } = interview;
-    const stuck = ['parsing', 'planning'].includes(status) && interview.updatedAt < new Date(Date.now() - STUCK_PREP_MS);
-    const retryableFailure = status === 'failed' && /^(parse|plan):/.test(interview.failureReason || '');
+    const stuck = ['parsing', 'planning', 'voicing'].includes(status) && interview.updatedAt < new Date(Date.now() - STUCK_PREP_MS);
+    const retryableFailure = status === 'failed' && RETRYABLE_FAILURE.test(interview.failureReason || '');
     if (!(status === 'draft' || stuck || retryableFailure)) {
       return res.status(409).json({ ok: false, error: `Interview is ${status}`, status });
     }
@@ -438,9 +449,11 @@ router.post('/:id/prepare', protect, async (req, res) => {
       return res.status(429).json({ ok: false, error: 'This interview failed to prepare too many times. Create a new one.' });
     }
 
+    // Resume from the last step that succeeded: a voice failure keeps the plan.
+    const planOk = status === 'voicing' || /^voice:/.test(interview.failureReason || '');
     const parsedOk = interview.parsed?.resume?.claims?.length > 0
       && (status === 'planning' || /^plan:/.test(interview.failureReason || ''));
-    const resetTo = parsedOk ? 'parsed' : 'draft';
+    const resetTo = planOk ? 'planned' : parsedOk ? 'parsed' : 'draft';
 
     // Atomic on the status we just read, so two clicks can't start two preps.
     const claimed = await MockInterview.updateOne(
@@ -477,7 +490,11 @@ router.post('/:id/join', protect, async (req, res) => {
     if (!interview || interview.userId?.toString() !== userId) {
       return res.status(404).json({ ok: false, error: 'Interview not found' });
     }
-    if (!['planned', 'live'].includes(interview.status)) {
+    if (interview.status === 'planned') {
+      startVoicing(interview._id);
+      return res.status(409).json({ ok: false, error: 'Your interview is still being prepared.', status: 'voicing' });
+    }
+    if (!['ready', 'live'].includes(interview.status)) {
       return res.status(409).json({ ok: false, error: `Interview is ${interview.status}`, status: interview.status });
     }
     // Nothing joins (and no interviewer is dispatched) until the interview is paid for.

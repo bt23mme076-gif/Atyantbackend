@@ -4,6 +4,7 @@ import { evaluateInterview } from './EvaluationService.js';
 import { endLiveInterview } from './liveSession.js';
 import { INTERVIEW_DURATION_MS } from './liveConfig.js';
 import liveKitService from '../LiveKitService.js';
+import { deleteInterviewAudio, sweepAbandonedAudio } from '../voice/VoiceService.js';
 
 // An agent ends its interview by 15 min + 2 min grace + 1 min hard stop. An
 // interview still "live" well past that lost its agent (crash, redeploy) and
@@ -12,8 +13,11 @@ const STALE_LIVE_MS = INTERVIEW_DURATION_MS + 10 * 60 * 1000;
 
 // The interview agent ends an interview by setting status 'evaluating'; this
 // picks those up. One at a time, so evaluations don't compete for Groq quota.
+const SWEEP_EVERY_MS = 60 * 60 * 1000;
+
 class MockEvaluationCron {
   running = false;
+  lastSweep = 0;
 
   start() {
     this._tick();
@@ -37,6 +41,12 @@ class MockEvaluationCron {
         } catch (err) {
           console.error(`Mock interview ${_id} evaluation failed:`, err.message);
         }
+        // The interview is over: its pre-made audio is no longer needed.
+        await deleteInterviewAudio(_id).catch(err => console.error(`Mock interview ${_id} audio cleanup failed:`, err.message));
+      }
+      if (Date.now() - this.lastSweep > SWEEP_EVERY_MS) {
+        this.lastSweep = Date.now();
+        await sweepAbandonedAudio();
       }
     } catch (err) {
       console.error('Mock evaluation cron error:', err.message);
