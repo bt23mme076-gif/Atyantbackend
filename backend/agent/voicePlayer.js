@@ -15,8 +15,13 @@ import { LIBRARY, voiceId } from '../services/voice/voiceLines.js';
 
 const DOWNLOAD_CONCURRENCY = 8;
 const DOWNLOAD_TIMEOUT_MS = 15000;
-// Each live-line attempt waits this long for audio; two attempts, then the fallback.
-const LIVE_ATTEMPT_MS = Number(process.env.TTS_LIVE_ATTEMPT_MS) || 5000;
+// A live line gets its first audio within LIVE_DEADLINE_MS or the recorded
+// fallback plays. If the first request is silent for HEDGE_MS (or fails), a
+// second one is sent alongside it and whichever speaks first is used: Kokoro
+// on OpenRouter is usually ~1 s but now and then takes over 5 s.
+const LIVE_DEADLINE_MS = Number(process.env.TTS_LIVE_DEADLINE_MS) || 5000;
+const HEDGE_MS = Number(process.env.TTS_LIVE_HEDGE_MS) || 1500;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 // Clips are handed to LiveKit in slices, so a long clip never blocks the audio loop.
 const SLICE_BYTES = 24000 * 2 * 0.4; // 400 ms at 24 kHz
 
@@ -78,24 +83,59 @@ export class VoicePlayer {
     this.onFallback = onFallback;
   }
 
+  // One request for a live line, resolved once its first audio chunk arrives.
+  #request(text, timeoutMs) {
+    const abort = new AbortController();
+    const it = streamSpeech(text, this.spec, { signal: abort.signal, timeoutMs, retryWaitsMs: [] })[Symbol.asyncIterator]();
+    const first = it.next().then(r => {
+      if (r.done) throw new Error('no audio');
+      return { it, chunk: r.value, abort };
+    });
+    first.catch(() => {}); // a hedged request that loses or fails is not an error
+    return { first, abort };
+  }
+
+  // First audio from one request, or from a second one sent alongside it when
+  // the first is slow or fails; the slower one is cancelled.
+  async #firstAudio(text, t0) {
+    const a = this.#request(text, LIVE_DEADLINE_MS);
+    let b = null;
+    let won = false;
+    const hedge = Promise.race([sleep(HEDGE_MS), a.first.catch(() => {})]).then(() => {
+      if (won) return new Promise(() => {}); // A already spoke: no second request
+      b = this.#request(text, Math.max(1000, LIVE_DEADLINE_MS - (Date.now() - t0)));
+      return b.first.then(r => ({ ...r, hedged: true }));
+    });
+    try {
+      const winner = await Promise.any([a.first, hedge]);
+      won = true;
+      (winner.hedged ? a : b)?.abort.abort();
+      return winner;
+    } catch (err) {
+      won = true;
+      throw err.errors?.find(e => e?.message) || err;
+    }
+  }
+
   // Starts synthesizing a live segment now; chunks land in the returned queue.
   #live(seg, info) {
     const queue = new ChunkQueue();
     (async () => {
       let started = false;
+      const t0 = Date.now();
       try {
-        for await (const chunk of streamSpeech(seg.text, this.spec, { timeoutMs: LIVE_ATTEMPT_MS })) {
-          if (!started) {
-            started = true;
-            info.voices.add(voiceId(this.spec));
-            this.logger.info({ ms: chunk.firstAudioMs, chars: seg.text.length, voice: voiceId(this.spec) }, 'timing: live line first audio');
-          }
-          queue.push({ pcm: chunk.pcm, sampleRate: chunk.sampleRate });
+        const { it, chunk, hedged } = await this.#firstAudio(seg.text, t0);
+        started = true;
+        info.voices.add(voiceId(this.spec));
+        this.logger.info({ ms: Date.now() - t0, hedged: !!hedged, chars: seg.text.length, voice: voiceId(this.spec) }, 'timing: live line first audio');
+        queue.push({ pcm: chunk.pcm, sampleRate: chunk.sampleRate });
+        for (let r = await it.next(); !r.done; r = await it.next()) {
+          queue.push({ pcm: r.value.pcm, sampleRate: r.value.sampleRate });
         }
         queue.close();
         return;
       } catch (err) {
-        this.logger.warn({ voice: voiceId(this.spec), err: err.message, started, text: seg.text }, 'live line failed');
+        this.logger.warn({ voice: voiceId(this.spec), err: err.message, started, ms: Date.now() - t0, text: seg.text }, 'live line failed');
         if (started) { queue.close(); return; } // part of it played: don't restart it
         // Same voice, pre-recorded: the planned line this live one was replacing.
         const fallback = (seg.fallback || []).map(f => this.clips.get(f.key)).filter(Boolean);

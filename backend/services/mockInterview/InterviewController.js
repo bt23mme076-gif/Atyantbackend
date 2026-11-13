@@ -490,8 +490,11 @@ export class InterviewController {
     const deferral = lib(this.hiring ? 'close.defer.hire' : 'close.good');
     const goodbye = lib(this.hiring ? 'close.end.hire' : 'close.end');
     const words = answer.split(/\s+/).filter(Boolean).length;
-    // "No", "nothing", "I'm good, thanks": no question to answer.
-    const clearlyNone = !answer.includes('?') && (words <= 4 || /^(no|nope|nothing|not really|i'?m good|i think (that'?s|you covered))\b/i.test(answer));
+    // "No", "nothing", "I'm good, thanks": no question to answer. Speech-to-text
+    // often drops the "?", so any question word means they may be asking.
+    const mayAsk = answer.includes('?')
+      || /\b(what|what'?s|how|how'?s|when|where|where'?s|why|who|who'?s|which|is there|are there|is it|do you|do i|does|did i|can i|could|will i|would|should i|i wanted to ask|i want to know|tell me about)\b/i.test(answer);
+    const clearlyNone = !mayAsk && (words <= 4 || /^(no|nope|nothing|not really|i'?m good|i think (that'?s|you covered))\b/i.test(answer));
     if (clearlyNone || !this.closer) {
       return reply([!clearlyNone && words > 6 ? deferral : null, goodbye], true, turn);
     }
