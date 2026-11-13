@@ -160,8 +160,11 @@ export class VoicePlayer {
     const sources = segments.map(seg => {
       const clip = seg.key ? this.clips.get(seg.key) : null;
       if (clip && clip.text === seg.text) return { kind: 'clip', clip, offset: 0 };
-      if (seg.key) this.logger.warn({ key: seg.key }, 'clip missing, speaking it live');
-      return { kind: 'live', queue: this.#live(seg, info) };
+      if (seg.key) this.logger.warn({ key: seg.key, outdated: !!clip }, 'clip missing or outdated, speaking it live');
+      // An outdated recording (e.g. a greeting recorded before a wording fix)
+      // still beats silence if the live line can't be spoken.
+      const fallback = clip ? [{ key: seg.key, text: clip.text }] : seg.fallback;
+      return { kind: 'live', queue: this.#live({ ...seg, fallback }, info) };
     });
     const first = sources[0]?.kind || 'clip';
     const text = segments.map(s => s.text).join(' ');

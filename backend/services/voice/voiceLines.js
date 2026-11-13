@@ -80,8 +80,22 @@ export const questionKey = qid => `q.${qid}`;
 export const followUpKey = (qid, trigger) => `f.${qid}.${trigger}`;
 export const GREETING_KEY = 'greeting';
 
+// The first name as it should be spoken. The voice spells out words in capitals
+// ("NITIN" → "N-I-T-I-N") and initials ("R."), so: the first part with at
+// least two letters, without symbols, and in normal case unless it was typed
+// in mixed case on purpose ("McKenzie").
+const TITLES = /^(dr|mr|mrs|ms|miss|prof|er|sri|shri|smt|ca|adv)$/i;
+export function spokenFirstName(name) {
+  const first = String(name || '').trim().split(/\s+/)
+    .map(p => p.replace(/[^\p{L}'-]/gu, ''))
+    .find(p => p.replace(/[^\p{L}]/gu, '').length >= 2 && !TITLES.test(p.replace(/[^\p{L}]/gu, ''))) || '';
+  // Lower case plus a capital after the first letter means it was typed that way on purpose.
+  if (/\p{Ll}/u.test(first) && /\p{Lu}/u.test(first.slice(1))) return first;
+  return first.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase()).join('-');
+}
+
 export function greetingText({ candidateName = '', role = '', company = '', minutes = 15 }) {
-  const first = String(candidateName || '').trim().split(/\s+/)[0];
+  const first = spokenFirstName(candidateName);
   const forRole = role ? ` for the ${role} role${company ? ` at ${company}` : ''}` : '';
   return `Hi${first ? ` ${first}` : ''}, good to meet you. I'll be your interviewer today${forRole}, thanks for making the time. `
     + `We've got about ${minutes} minutes together, so I'll keep it moving: a bit about you, then your projects, then a few technical things. `
