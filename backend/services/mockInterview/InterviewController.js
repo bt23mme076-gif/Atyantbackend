@@ -72,10 +72,12 @@ const reply = (segments, end = false, turn = null) => {
 
 export class InterviewController {
   constructor({ questions, judge, seniority = 'fresher', candidateName = '', role = '', company = '',
-    durationMs = 30 * 60 * 1000, now = Date.now, askAll = false }) {
+    durationMs = 30 * 60 * 1000, now = Date.now, askAll = false, hiring = false, closer = null }) {
     if (!questions?.length) throw new Error('Interview has no planned questions');
     this.questions  = questions;
     this.askAll     = askAll;
+    this.hiring     = hiring;   // a real screening: no report for the candidate, questions go to the team
+    this.closer     = closer;   // answers the candidate's own questions at the end (liveSession.answerCandidateQuestions)
     if (askAll) {
       // Time kept back for the closing question, and the time each planned
       // question is assumed to need. Follow-ups only use what is left over.
@@ -148,12 +150,12 @@ export class InterviewController {
     }
     this.asking.parts.push(clean);
 
-    if (this.current.phase === 'closing') return this.#finishClosing();
-
     if (looksUnfinished(clean) && this.asking.continues < MAX_CONTINUE) {
       this.asking.continues++;
       return reply([this.#rotate(CONTINUES)]);
     }
+
+    if (this.current.phase === 'closing') return this.#finishClosing(onThinking);
 
     // A person acknowledges as soon as you stop talking; silence sounds like a machine.
     this.reacted = false;
@@ -231,7 +233,7 @@ export class InterviewController {
   onTimeUp() {
     const turn = this.asking?.parts.length ? this.#record(null) : null;
     this.finished = true;
-    return reply([lib('timeup')], true, turn);
+    return reply([lib(this.hiring ? 'timeup.hire' : 'timeup')], true, turn);
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -449,7 +451,7 @@ export class InterviewController {
     const nextIndex = this.#nextIndex();
     if (nextIndex >= this.questions.length) {
       this.finished = true;
-      return reply(this.#closingLine(''), true, turn);
+      return reply(this.#closingLine(), true, turn);
     }
 
     const nextQ = this.questions[nextIndex];
@@ -477,14 +479,37 @@ export class InterviewController {
     this.asking.clip = f.key;
   }
 
-  #finishClosing() {
+  // The candidate answered "Do you have any questions for us?". Their questions
+  // get a real reply (only from the JD and company profile; anything else is
+  // passed on to the team or, in a mock, left for the real interview), then the
+  // goodbye. A reaction plays while the reply is written.
+  async #finishClosing(onThinking = null) {
     const turn = this.#record(null);
     this.finished = true;
-    return reply(this.#closingLine(turn.answer), true, turn);
+    const answer = turn.answer.trim();
+    const deferral = lib(this.hiring ? 'close.defer.hire' : 'close.good');
+    const goodbye = lib(this.hiring ? 'close.end.hire' : 'close.end');
+    const words = answer.split(/\s+/).filter(Boolean).length;
+    // "No", "nothing", "I'm good, thanks": no question to answer.
+    const clearlyNone = !answer.includes('?') && (words <= 4 || /^(no|nope|nothing|not really|i'?m good|i think (that'?s|you covered))\b/i.test(answer));
+    if (clearlyNone || !this.closer) {
+      return reply([!clearlyNone && words > 6 ? deferral : null, goodbye], true, turn);
+    }
+    if (onThinking) {
+      try { onThinking(this.#reaction()); } catch { /* speech is best-effort */ }
+    }
+    let answered = null;
+    try {
+      answered = await this.closer({ candidateSaid: answer });
+    } catch {
+      answered = null; // model down: fall back to the recorded line
+    }
+    if (answered && !answered.asked) return reply([goodbye], true, turn);
+    const response = answered?.reply ? live(answered.reply, [deferral]) : (words > 6 ? deferral : null);
+    return reply([response, goodbye], true, turn);
   }
 
-  #closingLine(answer) {
-    const askedSomething = answer.split(/\s+/).length > 6 && !/^(no|nope|nothing|not really)\b/i.test(answer.trim());
-    return [askedSomething ? lib('close.good') : null, lib('close.end')];
+  #closingLine() {
+    return [lib(this.hiring ? 'close.end.hire' : 'close.end')];
   }
 }

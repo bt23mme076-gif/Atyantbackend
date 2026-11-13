@@ -3,6 +3,9 @@
 import MockInterview from '../../models/MockInterview.js';
 import { groqJSON } from '../../utils/groqClient.js';
 import { buildDirectorMessages, normalizeDirection } from './directorPrompts.js';
+import { buildClosingMessages, normalizeClosing } from './closingPrompts.js';
+import HireJob from '../../models/HireJob.js';
+import HireCompany from '../../models/HireCompany.js';
 
 // The quality model writes what the interviewer says; the smaller one takes over
 // if it is rate-limited or down, so a busy moment never leaves a silent interviewer.
@@ -24,6 +27,32 @@ export async function judge(args) {
     }
   }
   throw lastError;
+}
+
+// The candidate's questions at the end: { asked, reply } (see closingPrompts.js).
+export async function answerCandidateQuestions(args) {
+  const messages = buildClosingMessages(args);
+  let lastError;
+  for (const model of [DIRECTOR_MODEL, DIRECTOR_FALLBACK]) {
+    try {
+      return normalizeClosing(await groqJSON(messages, { model, maxTokens: 600, timeoutMs: 6000 }), args.mode);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
+// What the interviewer may tell the candidate about the company: the JD, and
+// for hiring interviews the founder's company profile.
+export async function companyFacts(interview) {
+  let companyAbout = '';
+  if (interview.mode === 'hiring' && interview.hire?.jobId) {
+    const job = await HireJob.findById(interview.hire.jobId).select('companyId').lean();
+    const company = job && await HireCompany.findById(job.companyId).select('about website').lean();
+    companyAbout = [company?.about, company?.website && `Website: ${company.website}`].filter(Boolean).join(' ');
+  }
+  return { company: interview.company, role: interview.role, jdText: interview.inputs?.jdText || '', companyAbout };
 }
 
 // Whisper spelling hints: skills, company, role and project names.

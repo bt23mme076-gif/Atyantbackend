@@ -20,7 +20,8 @@ import User from '../models/User.js';
 import liveKitService from '../services/LiveKitService.js';
 import { InterviewController } from '../services/mockInterview/InterviewController.js';
 import {
-  judge, sttPrompt, resumeIndex, startLiveInterview, markLiveStart, saveTurn, endLiveInterview, saveTurnGap, recordLiveLineFailure
+  judge, sttPrompt, resumeIndex, startLiveInterview, markLiveStart, saveTurn, endLiveInterview, saveTurnGap, recordLiveLineFailure,
+  answerCandidateQuestions, companyFacts
 } from '../services/mockInterview/liveSession.js';
 import { MOCK_AGENT_NAME, interviewDurationMs, hireParticipantIdentity } from '../services/mockInterview/liveConfig.js';
 import { voiceConfig } from '../services/voice/voiceLines.js';
@@ -127,6 +128,10 @@ export default defineAgent({
     const { clips, spec } = await audioReady;
 
     const user = hiring ? null : await User.findById(interview.userId).select('name username').lean();
+    const facts = await companyFacts(interview).catch(err => {
+      logger.warn({ err: err.message }, 'company facts unavailable; candidate questions will be passed on');
+      return { company: interview.company, role: interview.role, jdText: interview.inputs?.jdText || '', companyAbout: '' };
+    });
     const controller = new InterviewController({
       questions,
       judge,
@@ -136,7 +141,10 @@ export default defineAgent({
       company      : interview.company,
       durationMs,
       // The founder sees every planned question, so a hiring interview asks them all.
-      askAll       : hiring
+      askAll       : hiring,
+      hiring,
+      // The candidate's own questions at the end, answered only from these facts.
+      closer       : args => answerCandidateQuestions({ ...args, ...facts, mode: hiring ? 'hiring' : 'mock' })
     });
 
     const timers = {};

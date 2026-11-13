@@ -47,9 +47,15 @@ export const LIBRARY = {
   'trans.closing'   : "We're coming to the end.",
   'time.warn'       : "We're almost at time, so one last thing.",
 
-  'close.good': 'Those are good questions to ask in your real interview.',
-  'close.end' : "That's all from my side. Thanks for your time today, I enjoyed this. Your feedback report will be ready in a few minutes. All the best!",
-  'timeup'    : "Alright, that's time, so we'll stop here. Thanks for taking this seriously. Your feedback report will be ready in a few minutes. All the best!",
+  // Closing. Mock interviews are practice, so a question the interviewer can't
+  // answer is one to ask in the real interview. Hire candidates are in the real
+  // one and get no report, so their questions go to the hiring team.
+  'close.good'      : 'Those are good questions to ask in your real interview.',
+  'close.end'       : "That's all from my side. Thanks for your time today, I enjoyed this. Your feedback report will be ready in a few minutes. All the best!",
+  'timeup'          : "Alright, that's time, so we'll stop here. Thanks for taking this seriously. Your feedback report will be ready in a few minutes. All the best!",
+  'close.defer.hire': "I don't have the details on that, but I'll pass it on to the team, and they'll get back to you.",
+  'close.end.hire'  : "That's all from my side. Thanks for your time today. The hiring team will go through your interview and get back to you. All the best!",
+  'timeup.hire'     : "Alright, that's time, so we'll stop here. Thanks for your time today. The hiring team will go through your interview and get back to you. All the best!",
 
   'back.resume': "Welcome back, sorry about the hiccup there. Let's pick up where we left off.",
   'back.drop'  : 'Welcome back, no worries, these drops happen.',
