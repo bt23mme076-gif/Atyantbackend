@@ -27,8 +27,12 @@ const looksUnfinished = text => DANGLING.test(String(text || '').trim());
 const MAX_CLARIFY     = 2;
 const MAX_CONTINUE    = 3;
 const MAX_NOT_HEARD   = 3;
+// Pacing for the 15-minute mock interview: digs deep and may drop later questions.
 const WRAP_UP_MS      = 3 * 60 * 1000;
 const MIN_PER_QUESTION_MS = 90 * 1000;
+// Hiring interviews (askAll) ask every planned question, because the founder
+// chose them; timing scales with the founder-chosen length.
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 // How far the interviewer may dig into one topic. A real interview goes deep on
 // a few things rather than skimming many, so this is more than the plan's default.
 const DIG_DEPTH = { intro: 2, closing: 0 };
@@ -68,9 +72,20 @@ const reply = (segments, end = false, turn = null) => {
 
 export class InterviewController {
   constructor({ questions, judge, seniority = 'fresher', candidateName = '', role = '', company = '',
-    durationMs = 30 * 60 * 1000, now = Date.now }) {
+    durationMs = 30 * 60 * 1000, now = Date.now, askAll = false }) {
     if (!questions?.length) throw new Error('Interview has no planned questions');
     this.questions  = questions;
+    this.askAll     = askAll;
+    if (askAll) {
+      // Time kept back for the closing question, and the time each planned
+      // question is assumed to need. Follow-ups only use what is left over.
+      const asked = questions.filter(q => q.phase !== 'closing').length || 1;
+      this.wrapUpMs      = clamp(durationMs * 0.12, 30 * 1000, 90 * 1000);
+      this.perQuestionMs = clamp((durationMs - this.wrapUpMs) / asked, 30 * 1000, MIN_PER_QUESTION_MS);
+    } else {
+      this.wrapUpMs      = WRAP_UP_MS;
+      this.perQuestionMs = MIN_PER_QUESTION_MS;
+    }
     this.judge      = judge;
     this.seniority  = seniority;
     this.candidateName = candidateName;
@@ -85,6 +100,8 @@ export class InterviewController {
     this.struggleStreak = 0;
     this.warmed     = false;     // the "no pressure" line, once per streak
     this.timeWarned = false;     // "almost at time" is said once
+    this.exchanges  = 0;         // answered asks so far, and the time they took (pacing)
+    this.exchangeMsTotal = 0;
   }
 
   get current() { return this.questions[this.index]; }
@@ -268,6 +285,12 @@ export class InterviewController {
   #nextIndex() {
     const closing = this.#closingIndex();
     const remaining = this.#remainingMs();
+    if (this.askAll) {
+      // Every planned question is asked. Only the closing is given up, and only
+      // once the interview is already past its length.
+      const next = this.index + 1;
+      return next === closing && remaining <= 0 ? this.questions.length : next;
+    }
     if (remaining < WRAP_UP_MS && closing > this.index) return closing;
     // Behind schedule after digging: drop later questions of a phase that still has
     // another question left, so every phase is still covered and the close isn't rushed.
@@ -332,7 +355,14 @@ export class InterviewController {
     if (q.ref?.type === 'coding' || q.ref?.type === 'sql_exercise') return false;
     if (this.asking.followUpsUsed >= (DIG_DEPTH[q.phase] ?? DEFAULT_DIG_DEPTH)) return false;
     const remaining = this.#remainingMs();
-    if (remaining < WRAP_UP_MS) return false;
+    if (remaining < this.wrapUpMs) return false;
+    if (this.askAll) {
+      // Only with time to spare after every question still to come, at the
+      // pace this candidate is actually going (until measured: the budget).
+      const ahead = this.questions.slice(this.index + 1).filter(x => x.phase !== 'closing').length;
+      const pace = this.exchanges ? clamp(this.exchangeMsTotal / this.exchanges, 20 * 1000, this.perQuestionMs) : this.perQuestionMs;
+      return remaining - this.wrapUpMs - ahead * pace >= pace;
+    }
     // Later questions can be dropped, so only the phases still ahead need time.
     const phasesLeft = new Set(this.questions.slice(this.index + 1).map(x => x.phase)).size;
     return remaining - phasesLeft * MIN_PER_QUESTION_MS >= MIN_PER_QUESTION_MS;
@@ -367,6 +397,11 @@ export class InterviewController {
     const verdict = d?.verdict ?? null;
     const turn = this.#record(verdict, capture);
     const q = this.current;
+    // The greeting is spoken before the first question, so that one isn't a fair sample.
+    if (this.index > 0 || this.asking.kind === 'follow_up') {
+      this.exchanges++;
+      this.exchangeMsTotal += this.now() - this.asking.askedAt.getTime();
+    }
     if (verdict === 'skip') this.struggleStreak++;
     else if (verdict) { this.struggleStreak = 0; this.warmed = false; }
 
@@ -386,13 +421,27 @@ export class InterviewController {
       const followUp = trigger ? judged || planned : null;
       if (followUp) {
         const lead = this.#lead(verdict, leadIn);
+        // A live follow-up that can't be spoken is replaced by something
+        // pre-recorded in the same voice: the planned follow-up, or else the
+        // next planned question.
+        let fallback = null;
+        if (!followUp.key) {
+          if (planned) {
+            fallback = { segments: [{ key: planned.key, text: planned.text }], state: { text: planned.text, key: planned.key } };
+          } else {
+            const next = this.#nextIndex();
+            const nq = this.questions[next];
+            if (nq) {
+              const bridge = nq.phase !== q.phase && TRANSITIONS[nq.phase] ? lib(TRANSITIONS[nq.phase]) : null;
+              fallback = { segments: [bridge, { key: questionKey(nq.qid), text: nq.text }].filter(Boolean), state: { advanceTo: next } };
+            }
+          }
+        }
         this.asking.followUpsUsed++;
         this.asking.usedTriggers.add(trigger);
         this.#ask(this.index, followUp);
-        // A live follow-up that can't be spoken falls back to the planned one.
         const ask = followUp.key ? { key: followUp.key, text: followUp.text }
-          : live(followUp.text, planned ? [{ key: planned.key, text: planned.text }] : null);
-        if (!followUp.key && planned) this.asking.fallback = planned;
+          : { ...live(followUp.text, fallback?.segments), ...(fallback ? { fallbackState: { ...fallback.state, asking: this.asking } } : {}) };
         return reply([...lead, ask], false, turn);
       }
     }
@@ -407,7 +456,7 @@ export class InterviewController {
     const lead = this.#lead(verdict, leadIn);
     let bridge = nextQ.phase !== q.phase && TRANSITIONS[nextQ.phase] ? lib(TRANSITIONS[nextQ.phase]) : null;
     // Entering the close on the clock: say so once, like a person watching the time.
-    if (!this.timeWarned && nextQ.phase === 'closing' && q.phase !== 'closing' && this.#remainingMs() < WRAP_UP_MS) {
+    if (!this.timeWarned && nextQ.phase === 'closing' && q.phase !== 'closing' && this.#remainingMs() < this.wrapUpMs) {
       this.timeWarned = true;
       bridge = lib('time.warn');
     }
@@ -415,13 +464,17 @@ export class InterviewController {
     return reply([...lead, bridge, this.#askingSegment()], false, turn);
   }
 
-  // The agent played the planned follow-up instead of the live one.
-  usedFallback() {
-    const f = this.asking?.fallback;
-    if (!f) return;
+  // The agent played a live segment's recorded fallback instead of it. Applies
+  // only if that segment's question is still the one being asked.
+  usedFallback(segment) {
+    const f = segment?.fallbackState;
+    if (!f || f.asking !== this.asking) return;
+    if (f.advanceTo != null) {
+      this.#ask(f.advanceTo);
+      return;
+    }
     this.asking.text = f.text;
     this.asking.clip = f.key;
-    this.asking.fallback = null;
   }
 
   #finishClosing() {

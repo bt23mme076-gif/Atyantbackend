@@ -82,9 +82,9 @@ export function saveTurnGap(interviewId, gap) {
   return MockInterview.updateOne({ _id: interviewId }, { $push: { 'live.turnGaps': gap } });
 }
 
-// The interview voice failed on a live line and the other one was used.
-export function recordVoiceSwitch(interviewId, entry) {
-  return MockInterview.updateOne({ _id: interviewId }, { $push: { 'live.voiceSwitches': entry } });
+// A live line couldn't be spoken; its recorded fallback (same voice) played instead.
+export function recordLiveLineFailure(interviewId, entry) {
+  return MockInterview.updateOne({ _id: interviewId }, { $push: { 'live.liveLineFailures': entry } });
 }
 
 // Nothing answered (dropped during the greeting): leave it startable again.

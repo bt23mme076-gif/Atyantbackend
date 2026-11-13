@@ -1,19 +1,24 @@
 // Plays the interviewer's lines: pre-made clips from memory, live lines through
-// OpenRouter, all in the interview's one voice.
+// OpenRouter, always in the interview's one voice. The voice never changes
+// mid-interview.
 //
 // A line is a list of segments from InterviewController ({ key, text } = clip,
 // { key: null, text, fallback? } = live). Live segments start synthesizing the
 // moment the line is queued, so they render while the clips before them play.
-// A live line that fails is retried, then tried once in the other voice (a
-// logged last resort), then replaced by its planned fallback clip.
+// A live line that fails is retried in the same voice, then replaced by its
+// pre-recorded fallback (the planned follow-up, or the next question), which
+// is in the same voice too.
 import { AudioByteStream } from '@livekit/agents';
-import { AudioResampler } from '@livekit/rtc-node';
 import VoiceClip from '../models/VoiceClip.js';
 import { pcmFromWav, streamSpeech } from '../services/voice/openRouterSpeech.js';
-import { LIBRARY, voiceConfig, voiceId } from '../services/voice/voiceLines.js';
+import { LIBRARY, voiceId } from '../services/voice/voiceLines.js';
 
 const DOWNLOAD_CONCURRENCY = 8;
 const DOWNLOAD_TIMEOUT_MS = 15000;
+// Each live-line attempt waits this long for audio; two attempts, then the fallback.
+const LIVE_ATTEMPT_MS = Number(process.env.TTS_LIVE_ATTEMPT_MS) || 5000;
+// Clips are handed to LiveKit in slices, so a long clip never blocks the audio loop.
+const SLICE_BYTES = 24000 * 2 * 0.4; // 400 ms at 24 kHz
 
 const toArrayBuffer = buf => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 
@@ -52,13 +57,6 @@ export async function loadInterviewAudio(interview, logger) {
   return { clips, spec };
 }
 
-// The other configured voice, for a live line the interview voice can't speak.
-function otherVoice(spec) {
-  const { main, backup } = voiceConfig();
-  const other = spec.role === 'backup' ? main : backup;
-  return other.model && other.voice && voiceId(other) !== voiceId(spec) ? other : null;
-}
-
 // Minimal async queue of PCM chunks, filled by a producer task.
 class ChunkQueue {
   constructor() { this.items = []; this.waiters = []; this.done = false; }
@@ -72,13 +70,11 @@ class ChunkQueue {
 }
 
 export class VoicePlayer {
-  constructor({ clips, spec, interviewId, logger, onVoiceSwitch, onFallback }) {
+  constructor({ clips, spec, logger, onLiveFailure, onFallback }) {
     this.clips = clips;
     this.spec = spec;
-    this.other = otherVoice(spec);
-    this.interviewId = interviewId;
     this.logger = logger;
-    this.onVoiceSwitch = onVoiceSwitch;
+    this.onLiveFailure = onLiveFailure;
     this.onFallback = onFallback;
   }
 
@@ -86,38 +82,33 @@ export class VoicePlayer {
   #live(seg, info) {
     const queue = new ChunkQueue();
     (async () => {
-      const attempts = [this.spec, this.other].filter(Boolean);
-      for (const voice of attempts) {
-        let started = false;
-        try {
-          for await (const chunk of streamSpeech(seg.text, voice)) {
-            if (!started) {
-              started = true;
-              if (voice !== this.spec) {
-                this.logger.warn({ from: voiceId(this.spec), to: voiceId(voice), text: seg.text }, 'interview voice failed on a live line; used the other voice');
-                this.onVoiceSwitch?.({ at: new Date(), from: voiceId(this.spec), to: voiceId(voice), reason: info.lastError || 'live line failed' });
-              }
-              info.voices.add(voiceId(voice));
-              this.logger.info({ ms: chunk.firstAudioMs, chars: seg.text.length, voice: voiceId(voice) }, 'timing: live line first audio');
-            }
-            queue.push({ pcm: chunk.pcm, sampleRate: chunk.sampleRate });
+      let started = false;
+      try {
+        for await (const chunk of streamSpeech(seg.text, this.spec, { timeoutMs: LIVE_ATTEMPT_MS })) {
+          if (!started) {
+            started = true;
+            info.voices.add(voiceId(this.spec));
+            this.logger.info({ ms: chunk.firstAudioMs, chars: seg.text.length, voice: voiceId(this.spec) }, 'timing: live line first audio');
           }
-          queue.close();
-          return;
-        } catch (err) {
-          info.lastError = err.message;
-          this.logger.warn({ voice: voiceId(voice), err: err.message, started }, 'live line failed');
-          if (started) { queue.close(); return; } // part of it played: don't restart it
+          queue.push({ pcm: chunk.pcm, sampleRate: chunk.sampleRate });
         }
+        queue.close();
+        return;
+      } catch (err) {
+        this.logger.warn({ voice: voiceId(this.spec), err: err.message, started, text: seg.text }, 'live line failed');
+        if (started) { queue.close(); return; } // part of it played: don't restart it
+        // Same voice, pre-recorded: the planned line this live one was replacing.
+        const fallback = (seg.fallback || []).map(f => this.clips.get(f.key)).filter(Boolean);
+        for (const clip of fallback) queue.push(clip);
+        if (fallback.length) {
+          info.voices.add(voiceId(this.spec));
+          this.onFallback?.(seg);
+        } else {
+          this.logger.error({ text: seg.text }, 'live line could not be spoken and has no recorded fallback');
+        }
+        this.onLiveFailure?.({ at: new Date(), text: seg.text, reason: err.message, fallback: fallback.length ? 'recorded' : 'none' });
+        queue.close();
       }
-      // Neither voice could say it: play the planned line instead, if there is one.
-      for (const f of seg.fallback || []) {
-        const clip = this.clips.get(f.key);
-        if (clip) queue.push(clip);
-      }
-      if (seg.fallback?.length) this.onFallback?.(seg);
-      else this.logger.error({ text: seg.text }, 'live line could not be spoken and has no fallback');
-      queue.close();
     })().catch(err => { this.logger.error({ err }, 'live line task crashed'); queue.close(); });
     return queue;
   }
@@ -125,51 +116,36 @@ export class VoicePlayer {
   // Speaks one line. `onFirstAudio({ first, voices })` fires when its first
   // audio frame is handed to LiveKit for playout.
   speak(session, segments, { onFirstAudio } = {}) {
-    const info = { voices: new Set(), lastError: null };
+    const info = { voices: new Set() };
     const sources = segments.map(seg => {
       const clip = seg.key ? this.clips.get(seg.key) : null;
-      if (clip && clip.text === seg.text) return { kind: 'clip', clip };
+      if (clip && clip.text === seg.text) return { kind: 'clip', clip, offset: 0 };
       if (seg.key) this.logger.warn({ key: seg.key }, 'clip missing, speaking it live');
       return { kind: 'live', queue: this.#live(seg, info) };
     });
     const first = sources[0]?.kind || 'clip';
     const text = segments.map(s => s.text).join(' ');
 
-    let targetRate = null;
     let i = 0;
     let started = false;
     const frames = [];
     const self = this;
-    // Converts a PCM chunk to frames at one rate for the whole line.
-    const toFrames = (pcm, sampleRate, state) => {
-      targetRate ??= sampleRate;
-      state.bytes ??= new AudioByteStream(sampleRate, 1);
-      let out = state.bytes.write(toArrayBuffer(pcm));
-      if (sampleRate !== targetRate) {
-        state.resampler ??= new AudioResampler(sampleRate, targetRate, 1);
-        out = out.flatMap(f => state.resampler.push(f));
-      }
-      return out;
-    };
-    const flushFrames = state => {
-      let out = state.bytes ? state.bytes.flush() : [];
-      if (state.resampler) out = [...out.flatMap(f => state.resampler.push(f)), ...state.resampler.flush()];
-      return out;
-    };
-
     const audio = new ReadableStream({
       async pull(controller) {
         while (!frames.length) {
           if (i >= sources.length) { controller.close(); return; }
           const src = sources[i];
-          const state = (src.state ??= {});
           if (src.kind === 'clip') {
-            frames.push(...toFrames(src.clip.pcm, src.clip.sampleRate, state), ...flushFrames(state));
-            i++;
+            src.bytes ??= new AudioByteStream(src.clip.sampleRate, 1);
+            const slice = src.clip.pcm.subarray(src.offset, src.offset + SLICE_BYTES);
+            src.offset += slice.length;
+            frames.push(...src.bytes.write(toArrayBuffer(slice)));
+            if (src.offset >= src.clip.pcm.length) { frames.push(...src.bytes.flush()); i++; }
           } else {
             const { value, done } = await src.queue.next();
-            if (done) { frames.push(...flushFrames(state)); i++; }
-            else frames.push(...toFrames(value.pcm, value.sampleRate, state));
+            src.bytes ??= value ? new AudioByteStream(value.sampleRate, 1) : null;
+            if (done) { if (src.bytes) frames.push(...src.bytes.flush()); i++; }
+            else frames.push(...src.bytes.write(toArrayBuffer(value.pcm)));
           }
         }
         if (!started) {

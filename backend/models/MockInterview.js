@@ -234,8 +234,9 @@ const mockInterviewSchema = new Schema({
       first     : { type: String, enum: ['clip', 'live'] },
       _id       : false
     }],
-    // The interview voice failed on a live line and the other voice was used.
-    voiceSwitches: [{ at: Date, from: String, to: String, reason: String, _id: false }]
+    // A live line couldn't be spoken; its recorded fallback (same voice) played
+    // instead. The voice never changes within an interview.
+    liveLineFailures: [{ at: Date, text: String, reason: String, fallback: { type: String, enum: ['recorded', 'none'] }, _id: false }]
   },
 
   // One voice for the whole interview, picked and recorded before it starts.

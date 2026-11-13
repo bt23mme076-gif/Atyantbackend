@@ -179,13 +179,15 @@ export async function synthesize(text, voiceSpec, { timeoutMs = 30000, retryWait
 }
 
 // Streams PCM chunks as they arrive, for live lines. Yields
-// { pcm, sampleRate, firstAudioMs? }. One quick retry before the first byte;
-// after audio has started, a failure ends the line rather than restarting it.
-export async function* streamSpeech(text, voiceSpec, { signal, timeoutMs = 8000, retryWaitsMs = [300] } = {}) {
+// { pcm, sampleRate, firstAudioMs? }. Each attempt gets its own `timeoutMs`
+// (a slow first try must not eat the retry's time); after audio has started,
+// a failure ends the line rather than restarting it.
+export async function* streamSpeech(text, voiceSpec, { signal, timeoutMs = 5000, retryWaitsMs = [200] } = {}) {
   const t0 = Date.now();
-  const timeout = AbortSignal.timeout(timeoutMs);
-  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  const res = await withRetry(() => speechRequest(text, voiceSpec, combined), retryWaitsMs);
+  const res = await withRetry(() => {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    return speechRequest(text, voiceSpec, signal ? AbortSignal.any([signal, timeout]) : timeout);
+  }, retryWaitsMs);
   const reader = new PcmReader(pcmFormat(res.headers.get('content-type')));
   let first = true;
   let bytes = 0;

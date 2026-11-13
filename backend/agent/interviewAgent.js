@@ -20,7 +20,7 @@ import User from '../models/User.js';
 import liveKitService from '../services/LiveKitService.js';
 import { InterviewController } from '../services/mockInterview/InterviewController.js';
 import {
-  judge, sttPrompt, resumeIndex, startLiveInterview, markLiveStart, saveTurn, endLiveInterview, saveTurnGap, recordVoiceSwitch
+  judge, sttPrompt, resumeIndex, startLiveInterview, markLiveStart, saveTurn, endLiveInterview, saveTurnGap, recordLiveLineFailure
 } from '../services/mockInterview/liveSession.js';
 import { MOCK_AGENT_NAME, interviewDurationMs, hireParticipantIdentity } from '../services/mockInterview/liveConfig.js';
 import { voiceConfig } from '../services/voice/voiceLines.js';
@@ -134,7 +134,9 @@ export default defineAgent({
       candidateName: hiring ? interview.hire.candidateName : user?.name || '',
       role         : interview.role,
       company      : interview.company,
-      durationMs
+      durationMs,
+      // The founder sees every planned question, so a hiring interview asks them all.
+      askAll       : hiring
     });
 
     const timers = {};
@@ -145,9 +147,9 @@ export default defineAgent({
     // Candidate's end of speech → interviewer's first audio, for every reply.
     let turnEndedAt = null;
     const player = new VoicePlayer({
-      clips, spec, interviewId, logger,
-      onVoiceSwitch: entry => recordVoiceSwitch(interviewId, entry).catch(err => logger.error({ err }, 'failed to log voice switch')),
-      onFallback   : () => controller.usedFallback()
+      clips, spec, logger,
+      onLiveFailure: entry => recordLiveLineFailure(interviewId, entry).catch(err => logger.error({ err }, 'failed to log live line failure')),
+      onFallback   : seg => controller.usedFallback(seg)
     });
     const speak = segments => player.speak(session, segments, {
       onFirstAudio: ({ first, voices }) => {
