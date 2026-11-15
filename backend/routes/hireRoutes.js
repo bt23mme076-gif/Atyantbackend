@@ -16,6 +16,9 @@
 //   GET    /applications/:id
 //   PATCH  /applications/:id
 //   DELETE /applications/:id
+//
+//   Public intern-requirement form (brochure QR / link)
+//   POST   /requirements
 import express from 'express';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
@@ -26,12 +29,13 @@ import User from '../models/User.js';
 import HireCompany from '../models/HireCompany.js';
 import HireJob from '../models/HireJob.js';
 import HireApplication from '../models/HireApplication.js';
+import HireLead from '../models/HireLead.js';
 import MockInterview from '../models/MockInterview.js';
 import liveKitService from '../services/LiveKitService.js';
 import { MOCK_AGENT_NAME, mockRoomName, hireParticipantIdentity } from '../services/mockInterview/liveConfig.js';
 import { pdfToText, normalizeDocText } from '../services/mockInterview/documentText.js';
 import { makeSlug, prepareJob, expandMustAsk, openCandidateInterview, runCandidatePrep, MAX_MUST_ASK } from '../services/hire/HireJobService.js';
-import { publicJobLink } from '../services/hire/HireNotify.js';
+import { publicJobLink, notifyTeamNewLead } from '../services/hire/HireNotify.js';
 import { startVoicing, deleteAudioFolders } from '../services/voice/VoiceService.js';
 
 const router = express.Router();
@@ -68,6 +72,8 @@ const single = field => (req, res, next) => upload.single(field)(req, res, err =
 
 const applyLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false,
   message: { ok: false, error: 'Too many applications from this network. Try again in an hour.' } });
+const leadLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false,
+  message: { ok: false, error: 'Too many submissions from this network. Try again in an hour, or email support@atyant.in.' } });
 
 const fail = (res, status, error, extra = {}) => res.status(status).json({ ok: false, error, ...extra });
 const oid = id => mongoose.isValidObjectId(id);
@@ -746,6 +752,38 @@ router.post('/a/:token/integrity', express.json(), handle(async (req, res) => {
   if (!inc) return fail(res, 400, 'Unknown event');
   await HireApplication.updateOne({ _id: app._id }, { $inc: inc });
   res.json({ ok: true });
+}));
+
+// POST /api/hire/requirements   JSON intern requirement from the public form.
+// A resubmit of the same role from the same phone within an hour updates it.
+const LEAD_RESUBMIT_MS = 60 * 60 * 1000;
+router.post('/requirements', leadLimiter, express.json({ limit: '20kb' }), handle(async (req, res) => {
+  const b = req.body || {};
+  if (str(b.website, 200)) return res.json({ ok: true }); // honeypot
+
+  const lead = {
+    company    : str(b.company, 120),
+    contactName: str(b.contactName, 120),
+    phone      : normalizePhone(b.phone),
+    email      : str(b.email, 200).toLowerCase(),
+    role       : str(b.role, 120),
+    source     : str(b.source, 40).toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'link',
+  };
+  // `field` lets the form show the message next to the right input.
+  const bad = (field, msg) => fail(res, 400, msg, { field });
+  if (!lead.company) return bad('company', "Enter your startup's name.");
+  if (!lead.contactName) return bad('contactName', 'Enter the name of the person we should contact.');
+  if (!lead.phone) return bad('phone', 'Enter a 10-digit mobile number.');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email)) return bad('email', 'Enter a valid email, like name@startup.com.');
+  if (!lead.role) return bad('role', "Tell us the role you're hiring for.");
+
+  const recent = await HireLead.findOne({ phone: lead.phone, role: lead.role, createdAt: { $gte: new Date(Date.now() - LEAD_RESUBMIT_MS) } })
+    .collation({ locale: 'en', strength: 2 }).sort({ createdAt: -1 });
+  const doc = recent
+    ? await HireLead.findByIdAndUpdate(recent._id, { $set: lead }, { new: true })
+    : await HireLead.create(lead);
+  notifyTeamNewLead(doc, { updated: !!recent });
+  res.status(recent ? 200 : 201).json({ ok: true, id: doc._id });
 }));
 
 export default router;

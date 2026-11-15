@@ -20,6 +20,42 @@ const getResend = () => {
   return resend;
 };
 
+// New intern requirement from the public form → the partnerships inbox.
+export async function notifyTeamNewLead(lead, { updated = false } = {}) {
+  try {
+    const to = (process.env.HIRE_LEADS_EMAIL || 'support@atyant.in').split(',').map(s => s.trim()).filter(Boolean);
+    if (!to.length || !getResend()) return;
+    const rows = [
+      ['Company', lead.company],
+      ['Contact', lead.contactName],
+      ['Phone', lead.phone],
+      ['Email', lead.email],
+      ['Role', lead.role],
+      ['Source', lead.source],
+    ];
+    const tel = lead.phone.length === 10 ? `tel:+91${lead.phone}` : `tel:+${lead.phone}`;
+    const subject = `${updated ? 'Updated' : 'New'} Hire requirement: ${lead.role} intern at ${lead.company}`;
+    await getResend().emails.send({
+      from: 'Atyant Hire <notifications@atyant.in>',
+      replyTo: lead.email,
+      to,
+      subject,
+      text: `${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\nCall to settle stipend, seats, duration and start date: ${tel}`,
+      html: renderLayout({
+        tag: 'Atyant Hire',
+        heading: `${esc(lead.company)} wants a ${esc(lead.role)} intern.`,
+        body: details(rows.map(([k, v]) => [k, esc(v)])) +
+          p('Call them to settle stipend, number of interns, duration and start date.') +
+          small('Reply to this email to write to the founder directly.'),
+        cta: { label: `Call ${esc(lead.contactName.split(' ')[0])}`, url: tel },
+        signoff: false,
+      }),
+    });
+  } catch (err) {
+    console.error('Hire lead email failed:', err.message);
+  }
+}
+
 export async function notifyFounderReportReady(app) {
   try {
     const job = await HireJob.findById(app.jobId).select('title ownerUserId').lean();
