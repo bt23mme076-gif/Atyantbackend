@@ -757,6 +757,13 @@ router.post('/a/:token/integrity', express.json(), handle(async (req, res) => {
 // POST /api/hire/requirements   JSON intern requirement from the public form.
 // A resubmit of the same role from the same phone within an hour updates it.
 const LEAD_RESUBMIT_MS = 60 * 60 * 1000;
+// Indian mobile: 10 digits starting 6-9, optionally written with +91 / 91 / 0.
+const indianMobile = p => {
+  let d = String(p || '').replace(/\D/g, '');
+  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+  else if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+  return /^[6-9]\d{9}$/.test(d) ? d : null;
+};
 router.post('/requirements', leadLimiter, express.json({ limit: '20kb' }), handle(async (req, res) => {
   const b = req.body || {};
   if (str(b.website, 200)) return res.json({ ok: true }); // honeypot
@@ -764,7 +771,7 @@ router.post('/requirements', leadLimiter, express.json({ limit: '20kb' }), handl
   const lead = {
     company    : str(b.company, 120),
     contactName: str(b.contactName, 120),
-    phone      : normalizePhone(b.phone),
+    phone      : indianMobile(b.phone),
     email      : str(b.email, 200).toLowerCase(),
     role       : str(b.role, 120),
     source     : str(b.source, 40).toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'link',
@@ -773,7 +780,7 @@ router.post('/requirements', leadLimiter, express.json({ limit: '20kb' }), handl
   const bad = (field, msg) => fail(res, 400, msg, { field });
   if (!lead.company) return bad('company', "Enter your startup's name.");
   if (!lead.contactName) return bad('contactName', 'Enter the name of the person we should contact.');
-  if (!lead.phone) return bad('phone', 'Enter a 10-digit mobile number.');
+  if (!lead.phone) return bad('phone', 'Enter a valid 10-digit mobile number.');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email)) return bad('email', 'Enter a valid email, like name@startup.com.');
   if (!lead.role) return bad('role', "Tell us the role you're hiring for.");
 

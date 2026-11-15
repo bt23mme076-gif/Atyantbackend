@@ -71,6 +71,7 @@ import Message from './models/Message.js';
 import User from './models/User.js';
 import { moderator } from './utils/ContentModerator.js';
 import { globalRateLimit } from './middleware/globalRateLimiter.js';
+import { vercelProxyIp } from './middleware/vercelProxyIp.js';
 import { sendAutoReply } from './controllers/messageController.js';
 import ReminderCron from './services/ReminderCron.js';
 import TranscriptRecoveryCron from './services/TranscriptRecoveryCron.js';
@@ -92,6 +93,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', 1);
+app.use(vercelProxyIp); // real visitor IP for requests proxied by www.atyant.in/api/*
 
 
 // Static uploads
