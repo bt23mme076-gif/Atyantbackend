@@ -31,6 +31,8 @@ export async function notifyTeamNewLead(lead, { updated = false } = {}) {
       ['Phone', lead.phone],
       ['Email', lead.email],
       ['Role', lead.role],
+      ['Stipend', lead.stipend || '—'],
+      ['Duration', lead.duration || '—'],
       ['Source', lead.source],
     ];
     const tel = lead.phone.length === 10 ? `tel:+91${lead.phone}` : `tel:+${lead.phone}`;
@@ -40,12 +42,12 @@ export async function notifyTeamNewLead(lead, { updated = false } = {}) {
       replyTo: lead.email,
       to,
       subject,
-      text: `${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\nCall to settle stipend, seats, duration and start date: ${tel}`,
+      text: `${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\nCall to settle number of interns and start date: ${tel}`,
       html: renderLayout({
         tag: 'Atyant Hire',
         heading: `${esc(lead.company)} wants a ${esc(lead.role)} intern.`,
         body: details(rows.map(([k, v]) => [k, esc(v)])) +
-          p('Call them to settle stipend, number of interns, duration and start date.') +
+          p('Call them to settle the number of interns and start date.') +
           small('Reply to this email to write to the founder directly.'),
         cta: { label: `Call ${esc(lead.contactName.split(' ')[0])}`, url: tel },
         signoff: false,

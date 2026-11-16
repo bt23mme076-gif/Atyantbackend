@@ -774,15 +774,19 @@ router.post('/requirements', leadLimiter, express.json({ limit: '20kb' }), handl
     phone      : indianMobile(b.phone),
     email      : str(b.email, 200).toLowerCase(),
     role       : str(b.role, 120),
+    stipend    : str(b.stipend, 80),
+    duration   : str(b.duration, 80),
     source     : str(b.source, 40).toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'link',
   };
   // `field` lets the form show the message next to the right input.
   const bad = (field, msg) => fail(res, 400, msg, { field });
-  if (!lead.company) return bad('company', "Enter your startup's name.");
+  if (!lead.company) return bad('company', "Enter your company's name.");
   if (!lead.contactName) return bad('contactName', 'Enter the name of the person we should contact.');
   if (!lead.phone) return bad('phone', 'Enter a valid 10-digit mobile number.');
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email)) return bad('email', 'Enter a valid email, like name@startup.com.');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email)) return bad('email', 'Enter a valid email, like name@company.com.');
   if (!lead.role) return bad('role', "Tell us the role you're hiring for.");
+  if (!lead.stipend) return bad('stipend', 'Enter the stipend you can offer.');
+  if (!lead.duration) return bad('duration', 'Pick the internship duration.');
 
   const recent = await HireLead.findOne({ phone: lead.phone, role: lead.role, createdAt: { $gte: new Date(Date.now() - LEAD_RESUBMIT_MS) } })
     .collation({ locale: 'en', strength: 2 }).sort({ createdAt: -1 });
