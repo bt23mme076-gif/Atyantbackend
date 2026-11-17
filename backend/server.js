@@ -65,6 +65,7 @@ import reviewRoutes from './routes/reviewRoutes.js';
 import eventRoutes from './routes/eventRoutes.js';
 import inviteRoutes from './routes/inviteRoutes.js';
 import whatsappRoutes from './routes/whatsappRoutes.js';
+import iimRoutes from './routes/iimRoutes.js';
 
 // ─── Models / utils ────────────────────────────────────────────────────────
 import Message from './models/Message.js';
@@ -296,6 +297,7 @@ app.use('/api/reviews', reviewRoutes);    // ratings: platform feedback + mock i
 app.use('/api/events', eventRoutes);      // product funnel steps (chat → mentor → booking)
 app.use('/api/invites', inviteRoutes);    // no mentor matched → student invites a senior found on the web
 app.use('/api/whatsapp', whatsappRoutes); // WhatsApp Cloud API: ask → answer → ₹99 call booking
+app.use('/api/iim', iimRoutes);          // IIM professor emails (Google Sheet tabs) for /internships
 app.use('/api', chatRoutes);   // chat: conversations, messages (paginated), users/:id
 
 // ─── Book a session (from BookingPage) ─────────────────────────────────────
